@@ -1,0 +1,13 @@
+// Fur on everything except paws, toes, snout and hard parts; bare skin shows there.
+(
+    base: (0.55, 0.38, 0.22),
+    secondary: (0.3, 0.2, 0.12),
+    accent: (0.92, 0.85, 0.7),
+    roughness: 0.85,
+    coverings: [
+        (
+            regions: AllExcept([Kind(LimbEnd), Kind(Digit), Kind(Snout), Kind(Hard)]),
+            kind: Fur((length: 0.03, density: 450.0, thickness: 0.75, tip: 0.5, shells: 12)),
+        ),
+    ],
+)

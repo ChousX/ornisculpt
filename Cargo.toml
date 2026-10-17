@@ -4,3 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bevy = { version = "0.20", default-features = false, features = ["3d", "serialize", "png"] }
+bytemuck = { version = "1", features = ["derive"] }
+fast-surface-nets = "0.2"
+fastnoise-lite = "1.1"
+mesh_to_sdf = "0.4"
+meshopt = "0.6"
+rand = "0.10"
+rand_pcg = "0.10"
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+smallvec = { version = "1", features = ["serde", "union", "const_generics"] }
+thiserror = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+# Hot reload for the examples.
+bevy = { version = "0.20", default-features = false, features = ["file_watcher"] }
+
+# Bevy is slow in debug; optimize dependencies but keep our crate fast to rebuild.
+[profile.dev.package."*"]
+opt-level = 3

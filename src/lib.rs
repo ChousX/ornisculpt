@@ -1,14 +1,32 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Ornisculpt: procedural creature/mob generation for Bevy.
+//!
+//! Design reference: `docs/design/types.md`.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod anatomy;
+pub mod clothing;
+pub mod coat;
+pub mod equip;
+pub mod mob;
+pub mod motion;
+pub mod random;
+pub mod surface;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+use bevy::prelude::*;
+
+/// Top-level plugin. Adds every Ornisculpt sub-plugin.
+#[derive(Default)]
+pub struct OrnisculptPlugin;
+
+impl Plugin for OrnisculptPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((
+            anatomy::AnatomyPlugin,
+            coat::CoatPlugin,
+            surface::SurfacePlugin,
+            mob::MobPlugin,
+            motion::MotionPlugin,
+            equip::EquipPlugin,
+            clothing::ClothingPlugin,
+        ));
     }
 }

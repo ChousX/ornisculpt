@@ -1,0 +1,14 @@
+// Feathered body, scaly legs: later coverings win, so feathers skip the legs explicitly.
+(
+    base: (0.25, 0.32, 0.55),
+    secondary: (0.15, 0.2, 0.42),
+    accent: (0.95, 0.85, 0.35),
+    roughness: 0.6,
+    coverings: [
+        (regions: Role(Locomotor), kind: Scales((size: 0.008, relief: 0.7, contrast: 0.3))),
+        (
+            regions: AllExcept([Role(Locomotor), Kind(Snout), Kind(Face), Kind(Hard)]),
+            kind: Feathers((length: 0.08, width: 0.045, density: 1800.0, lift_deg: 8.0, tip: 0.5)),
+        ),
+    ],
+)

@@ -1,0 +1,70 @@
+//! Surface building blocks emitted by parts. Consumed by the `surface` module's SDF.
+
+use std::sync::Arc;
+
+use bevy::prelude::*;
+
+use super::{BoneId, CrossSection, HardParams, LodLevel, RegionId, SdfGrid, TriMesh};
+
+/// One SDF primitive, owned by a bone. Its owning bone is also its skin-weight source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Primitive {
+    pub bone: BoneId,
+    pub shape: PrimShape,
+    /// Relative to the owning bone.
+    pub local: Transform,
+    /// Smooth-min radius against everything already in the field.
+    pub blend: f32,
+    /// If set, `blend` only applies near this point (primitive-local) and fades to a hard union
+    /// at `reach`. Keeps limbs from webbing onto bodies they hang beside.
+    pub blend_anchor: Option<(Vec3, f32)>,
+    pub op: PrimOp,
+    pub layer: PrimLayer,
+    pub region: RegionId,
+    /// Coarsest level this primitive appears in (also gated by its part's LOD).
+    pub lod: LodLevel,
+}
+
+/// Shapes are aligned to local +Y where they have an axis.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimShape {
+    Sphere { r: f32 },
+    Ellipsoid { radii: Vec3 },
+    /// Tapered capsule from `r0` at the origin to `r1` at `len`.
+    Capsule { r0: f32, r1: f32, len: f32 },
+    RoundCone { r0: f32, r1: f32, len: f32 },
+    /// Rounded box (snouts, hooves, blocky masses).
+    RoundBox { half: Vec3, round: f32 },
+    /// Swept cross-section along a polyline (necks, tails, tentacles).
+    Sweep { points: Vec<Vec3>, radii: Vec<f32>, cross: CrossSection },
+    /// Authored shape sampled from a grid; `mirror_x` samples it reflected (right-side copies).
+    Grid { grid: Arc<SdfGrid>, mirror_x: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimOp {
+    Union,
+    Subtract,
+}
+
+/// Which tone layer a primitive belongs to (scaled by [`Tone`](super::Tone)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimLayer {
+    Base,
+    Muscle,
+    Landmark,
+    Fat,
+}
+
+/// A non-SDF mesh piece (claw, horn, beak, tooth, eye), 100% weighted to its bone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HardPart {
+    pub bone: BoneId,
+    pub local: Transform,
+    pub params: HardParams,
+    pub region: RegionId,
+    /// Resolved mesh for `HardKind::Mesh`.
+    pub mesh: Option<Arc<TriMesh>>,
+    /// Right-side copy: geometry must be reflected across local X.
+    pub mirror: bool,
+}

@@ -1,0 +1,60 @@
+// An upright two-legged creature with grasping hands. The torso is rotated to stand vertically:
+// its Start (t = 0) is the pelvis, its End the shoulders; around 0 = back, 180 = belly.
+(
+    root: (
+        name: "torso",
+        kind: Torso((
+            chain: (segments: 3, length: 0.55, radius: (curve: [(0.0, 0.9), (0.5, 0.8), (1.0, 1.0)], scale: 0.15, cross: Ellipse(aspect: 1.4))),
+            belly: 0.3,
+        )),
+        offset: (rotate_deg: (-90.0, 0.0, 0.0)),
+        detail: Always,
+        children: [
+            (
+                name: "neck",
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.12, radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.06)))),
+                attach: End,
+                detail: Always,
+                children: [
+                    (
+                        name: "head",
+                        kind: Head((
+                            skull: (shape: Ellipsoid, size: (0.09, 0.1, 0.1)),
+                            snout: 0.05,
+                            jaw: Some((segments: 1, length: 0.09)),
+                            eye_spacing: 0.45,
+                        )),
+                        detail: Always,
+                        children: [
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.018)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.07, radius: (curve: [(0.0, 0.6), (0.5, 1.0), (1.0, 0.3)], scale: 0.03, cross: Flat(aspect: 3.0)), blend: 0.01))), attach: Ear, mirror: true),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                name: "leg",
+                kind: Limb((chain: (segments: 2, length: 0.75, radius: (curve: [(0.0, 1.0), (1.0, 0.55)], scale: 0.075)), role: Locomotor, stance: Plantigrade, end: Foot(length: 0.2))),
+                attach: Surface(t: 0.02, around_deg: 110.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "arm",
+                kind: Limb((chain: (segments: 2, length: 0.55, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.05)), role: Manipulator, end: Hand(palm: 0.07), splay_deg: 18.0)),
+                attach: Surface(t: 0.92, around_deg: 95.0),
+                mirror: true,
+                detail: Always,
+                children: [
+                    (
+                        name: "fingers",
+                        kind: Digits((count: 4, chain: (segments: 2, length: 0.06, radius: (scale: 0.009), curl: 200.0), spread_deg: 25.0, opposable: true)),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    tone: (muscle: 0.6, fat: 0.2),
+)

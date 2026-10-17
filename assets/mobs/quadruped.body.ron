@@ -1,0 +1,73 @@
+// A generic four-legged mammal. Lengths in metres.
+(
+    root: (
+        name: "torso",
+        kind: Torso((
+            chain: (segments: 4, length: 0.9, radius: (curve: [(0.0, 0.8), (0.5, 1.0), (1.0, 0.9)], scale: 0.18)),
+            arch: [(0.0, 0.0), (0.5, 0.05), (1.0, 0.0)],
+            belly: 0.4,
+        )),
+        detail: Always,
+        children: [
+            (
+                name: "neck",
+                kind: Chain((role: Neck, chain: (segments: 3, length: 0.35, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.1)))),
+                attach: End,
+                offset: (rotate_deg: (-30.0, 0.0, 0.0)),
+                detail: Always,
+                children: [
+                    (
+                        name: "head",
+                        kind: Head((
+                            skull: (shape: Ellipsoid, size: (0.1, 0.09, 0.14)),
+                            snout: 0.12,
+                            jaw: Some((segments: 1, length: 0.15)),
+                            eye_spacing: 0.6,
+                        )),
+                        detail: Always,
+                        children: [
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.02)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.09, radius: (curve: [(0.0, 0.6), (0.5, 1.0), (1.0, 0.3)], scale: 0.035, cross: Flat(aspect: 3.0)), blend: 0.01))), attach: Ear, mirror: true),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                name: "limb.front",
+                kind: Limb((chain: (segments: 3, length: 0.55), role: Locomotor, stance: Digitigrade, end: Pad)),
+                attach: Surface(t: 0.9, around_deg: 120.0),
+                mirror: true,
+                detail: Always,
+                children: [
+                    (
+                        name: "toes",
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.04, radius: (scale: 0.012), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.02)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
+            ),
+            (
+                name: "limb.hind",
+                kind: Limb((chain: (segments: 3, length: 0.6), role: Locomotor, stance: Digitigrade, end: Pad)),
+                attach: Surface(t: 0.1, around_deg: 120.0),
+                mirror: true,
+                detail: Always,
+                children: [
+                    (
+                        name: "toes",
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.04, radius: (scale: 0.012), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.02)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
+            ),
+            (
+                name: "tail",
+                kind: Chain((role: Tail, chain: (segments: 6, length: 0.7, radius: (curve: [(0.0, 1.0), (1.0, 0.2)], scale: 0.05), curl: 20.0))),
+                attach: Start,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.6, fat: 0.2, fold_noise: (kind: OpenSimplex2, fractal: Ridged, frequency: 25.0, amplitude: 0.003)),
+)

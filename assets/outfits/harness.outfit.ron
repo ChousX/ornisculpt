@@ -1,0 +1,8 @@
+// Gear for four-legged bodies: a girth strap round the chest and leg wraps.
+(
+    garments: [
+        (name: "girth", on: "torso", span: (0.62, 0.72), mesh: "garments/garments.gltf#Mesh2/Primitive0", color: (0.3, 0.19, 0.1), roughness: 0.55, ease: 0.008),
+        (name: "wrap", on: "torso/limb.front", span: (0.45, 0.8), mesh: "garments/garments.gltf#Mesh1/Primitive0", color: (0.7, 0.66, 0.55), ease: 0.004),
+        (name: "wrap", on: "torso/limb.hind", span: (0.45, 0.8), mesh: "garments/garments.gltf#Mesh1/Primitive0", color: (0.7, 0.66, 0.55), ease: 0.004),
+    ],
+)

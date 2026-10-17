@@ -1,0 +1,11 @@
+// Everyday clothes for upright bodies: a tunic, sleeves, trousers and a belt.
+// Part patterns match mirrored copies too ("torso/arm" = arm.l and arm.r).
+(
+    garments: [
+        (name: "tunic", on: "torso", span: (0.0, 0.93), mesh: "garments/garments.gltf#Mesh0/Primitive0", color: (0.62, 0.55, 0.42), ease: 0.008),
+        (name: "sleeve", on: "torso/arm", span: (0.0, 0.42), mesh: "garments/garments.gltf#Mesh0/Primitive0", color: (0.62, 0.55, 0.42), ease: 0.011),
+        (name: "breeches", on: "torso", span: (0.0, 0.12), mesh: "garments/garments.gltf#Mesh5/Primitive0", color: (0.3, 0.27, 0.24), ease: 0.01, reach: 0.7),
+        (name: "trousers", on: "torso/leg", span: (0.1, 0.82), mesh: "garments/garments.gltf#Mesh0/Primitive0", color: (0.3, 0.27, 0.24), ease: 0.006),
+        (name: "belt", on: "torso", span: (0.06, 0.14), mesh: "garments/garments.gltf#Mesh2/Primitive0", color: (0.28, 0.17, 0.09), roughness: 0.6, ease: 0.012),
+    ],
+)

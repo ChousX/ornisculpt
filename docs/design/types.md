@@ -1,657 +1,650 @@
-# Ornisculpt: Types & Traits (draft v0)
+# Ornisculpt: Types & Traits (draft v1)
 
-This document defines the vocabulary of the system: every major type, every trait, and which crate owns each one. No implementations yet.
+> How to review: decisions are tagged **[T-x]** and open questions **[TQ-x]**. Reply by tag.
+> v1 changes: one crate, Bevy math, no species (mobs are composed from anatomy pieces), ECS-first, no genetics, no wings.
 
-> **How to review:** each decision is tagged **[T-x]** and each open question **[TQ-x]**. Reply by tag. The doc follows the order data flows through the pipeline, so reviewing top to bottom makes the most sense.
-
----
-
-## 0. Design principles for the type system
-
-| # | Principle | Consequence |
-|---|---|---|
-| **T-1** | **Enums for closed, serialized, hot-path data. Traits for algorithms and environment boundaries.** | Primitive shapes, part kinds and regions are enums: matched, `serde`-able, no vtables in the SDF inner loop. Meshers, IK solvers, ground queries and stores are traits. |
-| **T-2** | **Desc / State split.** Shared, immutable, per-species data (`*Desc`, `*Def`, `*Rig`) is kept separate from per-creature mutable data (`*State`). | Thousands of creatures share one `Arc<LocomotionRig>`. Each creature only owns a small state struct. |
-| **T-3** | **Only the `ornisculpt_bevy` crate depends on Bevy.** The core crates use `glam` (same version as Bevy's re-export), `serde`, `smallvec`, `smol_str`. | Headless bake CLI, fast unit tests, fast compiles. |
-| **T-4** | **Determinism is a type-level concern.** All randomness flows through `GenRng`, which is forked by *label*, not by draw order. | Editing one part of a template doesn't reshuffle every other part's randomness. |
-| **T-5** | **Indices, not pointers.** `BoneId(u16)`, `SocketId(u16)`, `GeneId(u16)`, `ClipId(u16)`. | Compact, GPU-friendly, trivially serializable. |
-| **T-6** | **Everything produced by generation is `Send + Sync` and plain data.** | Can be generated on any thread, cached, and shared via `Arc`. |
-
----
-
-## 1. Crate map and dependency direction
-
-```
-ornisculpt_core      ← math aliases, ids, Xform, Skeleton, Region, Socket, GenRng, Curve
-   ▲
-ornisculpt_genome    ← genes, templates, parts, PlanBuilder, BodyPlan
-   ▲
-ornisculpt_mesh      ← Field, Mesher, mesh types, weights, attrs, LODs, hard parts, garments
-ornisculpt_anim      ← Pose, IK, gait, layers, actions, clip baking (depends on core + genome::BodyPlan)
-   ▲
-ornisculpt_gen       ← pipeline: generate(), CreatureKey, assets, CreatureStore, GenSettings
-   ▲
-ornisculpt_bevy      ← plugin, components, AssetLoaders, material, crowd render pipeline
-ornisculpt_editor / ornisculpt-bake (bins)
-```
-- **T-7** A new `ornisculpt_core` crate holds the types *every* layer needs. Without it, `mesh` and `anim` would both depend on `genome` just for `Skeleton`.
-- **T-8** A new `ornisculpt_gen` crate is the pipeline orchestrator, so neither `mesh` nor `anim` has to know about the other.
+> **v2 changes (anatomy stubs review)** — these supersede the sections below where they conflict:
+> - RNG = `rand` + `rand_pcg::Pcg64Mcg`, forked by `xxh3(seed, label)`; noise = `fastnoise-lite` via a serializable `NoiseSettings` (`src/random.rs`). No custom RNG.
+> - **Anatomy has no RNG and no seed.** `build_anatomy(live_plan, lod_rules)` is a pure function, so equal bodies always share one anatomy and base mesh. Seeds only feed surface noise and coat variation.
+> - `BodyPlan::expand_symmetry` makes every mirrored/radial copy an explicit node (with `side`). `LiveBody` stores the expanded plan, so one copy can be patched or severed alone. A `FormPatch` on an unsuffixed path hits all copies.
+> - `Neck`/`Tail` merged into `Chain(ChainPart { role: Neck|Tail|Ear|Antenna|Tentacle, chain })`; new `RegionKind::Appendage`.
+> - `Attach { slot, t }` → closed enum `AttachSlot { Start, End, Along(t), Jaw, Eye, Ear, Horn, Mouth }` (typos fail at parse time).
+> - Part offsets are `PartOffset { translate, rotate_deg, scale }` instead of `Transform` (no quaternions in RON).
+> - `Form` is a component only (not an asset). `RegionSelector::Not(Box)` → `AllExcept(Vec)`.
+> - `MobTier` will reuse `LodLevel`; "pending" = no tier component yet (one enum instead of two).
+> - **Levers replace reflect paths.** `FormPatch { part, lever: Lever, value }`. Each `Lever` has a fixed `LeverKind` (Factor ×, Delta +, Count =); part kinds declare supported levers (`PartKind::levers`), placement levers work on every part. `Segments`/`Count`/`Tines` are flagged `changes_topology` (breaks skeleton/motion sharing). See `src/anatomy/lever.rs`.
+> - **Symmetry → `mirror: bool` + `repeat: Repeat { Once, Series { count, from, to }, Radial { count } }`**, so mirrored series (centipede legs) work. New attach slots `Surface { t, around_deg }`, `Nose`, `Crown`.
+> - **Equipment (implemented, `src/equip/`)**: hold only. Sockets are emitted by parts: `grip.l/.r` (grasping manipulator limbs), `head`, `mouth`, `neck` (neck chains), `tail_tip`, and on the torso `back`, `saddle`, `chest`, `hip.l/.r`, `shoulder.l/.r`. Socket frame convention: origin at the hold point, +Y along the held tool's main axis (across the fist, forward when the arm hangs; out of the skin for body sockets; forward out of the mouth). A tool is any entity the game spawns (mesh, scene, physics body); `HeldBy { mob, socket: SocketSel::Kind(kind, side) | Named(name), grip }` (relationship, target `Holding`) puts it in a socket, and removing it drops the tool in place. Deviation from T-17: there are no socket entities and no crowd-pipeline tool draws. Held tools stay root entities and `place_held` (PostUpdate, before transform propagation) writes their world `Transform` every frame. At hero tier this comes from the joint entities; in crowd tiers it comes from the socket bone's skin matrix, blended on the CPU from the same baked frames and weights the GPU uses. So tools survive tier changes, regeneration and the holder's despawn, and gameplay always has a real transform. Bevy instances identical tool meshes itself. Measured: 2000 mobs holding ~5000 tools, 12–19 ms/frame. Not yet: fingers closing around a held grip, `Reach` (arm IK toward a target), BoneScales in crowd-tier placement, clothing.
+> - **Coat (implemented, `src/coat/`)**: `Coat` asset (`*.coat.ron`, worn via `MobCoat`; none = plain skin) = sRGB base/secondary/accent + `coverings: [(regions: RegionSelector, kind: Scales|Fur|Feathers)]` (later coverings win overlaps). Coat is part of the `BodyKey`, hot-reloads. One material type `MobMaterial = ExtendedMaterial<StandardMaterial, CoatExt>` for every surface and tier, specialised by `CoatKey { crowd, layer: Skin|Shell|Feather|Hard }` (shader defs); generation bakes per-vertex coat inputs (`coat::annotate`): coverage weights (scales, fur, feathers) smoothed over the skin so borders blend, plus a flow direction (primary bone axis, signed by region, tangent to the skin) and a distance-along-flow field integrated over the mesh so rows stay evenly spaced across bones. Vertex colour = rest position + scale weight; skin UV0 = (fur, feather) weights; tangent = flow + along (w). Bodies without coverings get none of these attributes. Scales: cellular colour + derivative bump in the skin shader (crowd: cheaper 2×2×2 search, no relief, covered pixels only). Fur: shells built from a 20%-simplified hero skin, `Fur::shells` layers, hero tier only. Feathers: cards scattered by area × density over covered skin, laid along body flow, skinned to the surface, hero tier only. Crowd tiers carry fur and feathers in the skin: fur = matte two-scale clump mottling plus a tip-coloured grazing rim, skin inflated by 0.8 × fur length; feathers = overlapping rows along the flow (3D Voronoi per row, rounded tips, shadow under the row above), skin inflated slightly. Every procedural pattern (scales too, hero included) fades to its average colour by world-space pixel footprint, with no derivatives, and skips its noise entirely once it is below a pixel. `HardKind::Plate` for scutes. `RegionSelector::mask` implemented. Measured: 4000 mobs in mixed coats ~15 ms/frame (plain ~14–15 ms). Not yet: patterns (stripes/spots), fur/feather shadows, multiple coverings of the same kind with different params.
+> - **Crowd (implemented)**: joint entities exist only at `Hero` tier (`sync_hero_visuals`). Generation bakes `BakedMotion` (the procedural solver run headlessly per gait mode, 24-frame loops of final crowd-skeleton skin matrices + idle). Each body's clips are appended once to a GPU clip atlas. Non-hero mobs have a `CrowdSlot` and a 32-byte `CrowdInstance` (frame A/B/idle atlas offsets + weights), computed in parallel and uploaded only when it changes (standing mobs stop uploading). A compute pass (`crowd_blend.wesl`, scheduled once per frame in `RenderGraphSystems::Begin`) blends the frames into a GPU-only bone buffer; near/far meshes use `CrowdMaterial` whose vertex shader (`crowd_skin.wesl`) skins from it at `MeshTag` = slot. Crowd joints use custom attributes (`ATTRIBUTE_CROWD_JOINT_*`) because Bevy treats meshes with standard joint attributes as skinned. Measured at 4000 mobs: ~13.7 ms/frame, ~99 KB/frame of instance uploads (was 8 MB of matrices). Not yet: crowd shadows, `BoneScales` and custom `MobGait` in crowd tiers, atlas compaction when bodies are freed, dispatch splitting above ~2M crowd bones.
+> - **Motion (implemented, `src/motion/`)**: `MobIntent { velocity, facing, look_at }` drives each mob; the plugin moves the root (or reads it with `ExternalRoot`). `Gait` asset (`*.gait.ron`) = modes picked by speed in leg lengths/s, each with a `PhasePattern` (Alternate, LateralSequence, Diagonal, Bound, Gallop, Tripod, Wave, Custom) assigning phase from `(pair, side)`; `Gait::for_legs` default. Per frame (one system, layered functions): root → phase → feet (planted in stance, arcs in swing toward home + velocity·stance/2) → bob → spine bends into turns → spring chains (accel/turn driven) → FABRIK leg IK → look-at (shared across neck bones, clamped) → joints. Ground = root height or game-written `FootGround` (from `FootProbes`). Runs for every tier for now; crowd tiers will switch to baked motion. `AxisSample` now carries lateral/dorsal radii so surface placement follows elliptical cross-sections.
+> - **Authored parts (implemented)**: `PartKind::Sculpt(SculptParams { mesh, scale, blend, resolution, orient, region, own_bone })` converts a watertight glTF mesh primitive to an SDF grid (`mesh_to_sdf`, BVH + raycast sign) and smooth-blends it into the body (`PrimShape::Grid`). `HardKind::Mesh { path, orient, scale }` attaches an authored mesh rigidly. Authoring convention = glTF's (Y up, +Z forward, origin at the attach point); `Orient::Model` keeps it, `Orient::Slot` aligns +Y to the slot. Right copies sample the grid / mesh reflected. Meshes are resolved before building (`PartAssets`, `referenced_assets`) so `build_anatomy(live, rules, assets)` stays pure; their content hashes are in the `BodyKey`. Body plans and part meshes hot-reload (`reload_changed_assets`). Samples: `assets/mobs/beast.body.ron`, `assets/parts/sample_parts.gltf` (from `tools/gen_sample_parts.py`).
+> - **ECS integration (implemented, `src/mob/`)**: `Mob { body: Handle<BodyPlan> }` (+ required `Form`, `MobSeed`, `BoneScales`) → observer inserts `GenRequest` → `LiveBody` resolved → async task on `AsyncComputeTaskPool`, deduplicated by `BodyKey` (xxh3-128 of live plan + surface settings + generator version; seed only if seed-dependent geometry is on) in `GenCache` → `GeneratedBody` asset → joints (`MobJoint`), per-LOD skinned meshes (`LodMesh`), `Placeholder` while waiting → `BodyReady` triggered. `MobTier(LodLevel)` from on-screen size over `TierCamera`s with hysteresis, hero cap and promotion budget (`QualityProfile` LOW/MEDIUM/HIGH); `ForceTier` override. Part entities (`Part`, `PartLod`, `PartOf`/`MobParts`) exist per tier; editing `Part.kind` writes `LiveBody` and regenerates. `SeverPart`/`GraftPart` entity events. Not yet: disk cache, `HiddenRegions` (needs coat shader), `MobIntent` (motion), crowd instancing (crowd tiers still use per-mob skinned meshes).
+> - **Tone (implemented)**: deterministic, seed-free stamps from built-in per-part tables (`src/anatomy/tone.rs`): muscle bellies, fat pads, landmarks, subtractive hollows, placed by `Surface{t, around}`, `Skull{dir}` or `Slot{..}`, scaled by `Tone` × part levers; per-primitive LOD (fat Far, muscle Near, landmarks/hollows Hero). RON override per part: `stamps: Default | None | Custom([...])`. Joint creases are field displacement masked to joints (Hero only). **Deferred, required later:** muscle flex deformation (stamps currently move rigidly with their bone).
+> - **Surface stubs (`src/surface/`)**: `Mesher::mesh` takes a `BodyField` (not generic `F: Field`) so it can cull per chunk via `BodyField::view → ChunkView`; no BVH crate, primitives are binned per chunk. Crates: `fast-surface-nets` (meshing), `meshopt` (simplify/optimize). `BuiltPart` gains a resolved `tone`. `SurfaceSettings` resource holds one `LodSpec` per `LodLevel` (voxel size, simplify ratio, geometric folds, hard parts). Bevy 0.20 note: bounding volumes live in `bevy::shape`, not `bevy::math::bounding`.
+> - Enum variants filled out (adding later is non-breaking; renaming is): `ChainRole` +Trunk/Tongue/Whisker, `LimbRole` +Swimmer, `Stance` +Arched, `LimbEnd` +Pincer/Blade/Point/Paddle, `MassShape` +Hump/Flap/Sac, `HardKind` +Nail/Antler/Tusk/Fang/Spike, `CrossSection` +Teardrop, `SocketKind` +Neck/Chest/Saddle/Wrist/TailTip, `PrimShape` +RoundBox, `RegionKind` +Snout. Reserved: Wing, Fin, Shell.
 
 ---
 
-## 2. `ornisculpt_core`
+## 0. Settled direction
 
-### 2.1 Math and ids
-```rust
-pub use glam::{Vec2, Vec3, Vec3A, Vec4, Quat, Mat4, Affine3A};
-
-/// Bevy-free TRS transform (mirrors bevy::Transform; From/Into provided in ornisculpt_bevy).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Xform { pub translation: Vec3, pub rotation: Quat, pub scale: Vec3 }
-impl Xform {
-    pub const IDENTITY: Self;
-    pub fn mul(&self, rhs: &Xform) -> Xform;
-    pub fn to_affine(&self) -> Affine3A;
-    pub fn mirror_x(&self) -> Xform;          // for bilateral symmetry
-}
-
-macro_rules! id { ($n:ident, $t:ty) => {
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-    pub struct $n(pub $t);
-}}
-id!(BoneId, u16); id!(SocketId, u16); id!(GeneId, u16); id!(ClipId, u16);
-id!(SpeciesId, u32); id!(ToolId, u32); id!(ActionId, u16);
-
-pub type Name = smol_str::SmolStr;            // bone/part/socket/gene names
-pub struct Aabb { pub min: Vec3A, pub max: Vec3A }
-```
-
-### 2.2 Skeleton
-```rust
-pub struct Skeleton {
-    pub bones: Vec<BoneDef>,          // topologically sorted: parent index < child index
-    pub inverse_bind: Vec<Affine3A>,  // model-space rest → bone space
-}
-pub struct BoneDef {
-    pub name: Name,                   // "spine.3", "arm.l.upper", ...
-    pub parent: Option<BoneId>,
-    pub rest: Xform,                  // local, relative to parent
-    pub length: f32,                  // along local +Y (bone convention, matches Blender/glTF export)
-    pub region: Region,
-    pub flags: BoneFlags,             // DEFORM | IK_EFFECTOR | SPRING | NO_CROWD (dropped in crowd LOD)
-}
-impl Skeleton {
-    pub fn find(&self, name: &str) -> Option<BoneId>;
-    pub fn children(&self, b: BoneId) -> impl Iterator<Item = BoneId>;
-    pub fn chain(&self, root: BoneId, tip: BoneId) -> SmallVec<[BoneId; 8]>;
-}
-```
-- **T-9** The bone budget is `MAX_BONES = 128` hard and **64 for crowd tiers**. `BoneFlags::NO_CROWD` bones (fingers, ear tips) get their weights folded into the parent in crowd LODs. Answers Q-1 from the plan without banning fingers.
-
-### 2.3 Regions
-```rust
-#[repr(u8)] #[derive(Clone, Copy, Serialize, Deserialize)]
-pub enum Region { Head, Face, Jaw, Neck, Chest, Belly, Back, Pelvis,
-                  UpperArm, Forearm, Hand, Digit, Thigh, Shin, Foot,
-                  Tail, Wing, Ear, Appendage, Hard /* claws, horns */ }
-bitflags! { pub struct RegionMask: u32 { ... one bit per Region ... } }
-```
-Regions drive pattern masks, clothing coverage, hide masks and hit locations.
-
-- **TQ-1** Is a fixed region enum (≤32) expressive enough, or do you want designer-defined regions (`RegionId(u8)` + a name table per species)?
-
-### 2.4 Sockets
-```rust
-pub struct SocketDef {
-    pub name: Name,          // "hand.r", "back", "mouth"
-    pub kind: SocketKind,
-    pub bone: BoneId,
-    pub local: Xform,
-    pub size: f32,           // characteristic size (palm width, back width) for tool scaling
-}
-pub enum SocketKind { Grip, Back, Hip, Head, Mouth, Shoulder, Custom(Name) }
-```
-
-### 2.5 Deterministic RNG
-```rust
-pub struct GenRng(rand_pcg::Pcg64Mcg);
-impl GenRng {
-    pub fn from_seed(seed: u64) -> Self;
-    /// Child stream derived from (this stream's seed, label). Stable across template edits.
-    pub fn fork(&self, label: impl Hash) -> GenRng;
-    pub fn f32(&mut self) -> f32; pub fn range(&mut self, r: Range<f32>) -> f32; pub fn normal(&mut self, mean: f32, sd: f32) -> f32;
-}
-```
-- **T-10** `fork` hashes `(parent_seed, label)` with a fixed hasher (e.g. `rustc_hash`/`xxhash` with fixed seed). It does not use `std` `DefaultHasher`, whose output isn't guaranteed stable.
-
-### 2.6 Curves
-```rust
-pub struct Curve1 { pub keys: SmallVec<[(f32, f32); 6]>, pub interp: Interp }   // t∈[0,1] → value
-pub struct Curve3 { pub keys: SmallVec<[(f32, Vec3); 6]>, pub interp: Interp }
-pub enum Interp { Linear, CatmullRom, Step }
-```
+| Topic | Decision |
+|---|---|
+| Crate | **One crate**, `ornisculpt`. Modules are listed in §1. The bake tool lives in `src/bin/`. |
+| Math | `bevy::math` (`Vec3`, `Vec3A`, `Quat`, `Affine3A`, `Mat4`) and `bevy::prelude::Transform`. No custom transform type. |
+| Composition | A mob = **BodyPlan + Form + Gait + Coat** (+ held tools). There is no species concept. Sharing comes from **content hashes**. |
+| Part tree | **Hybrid.** The `BodyPlan` asset is the authored source. Spawning expands it into **Part entities**. Live edits to those entities trigger regeneration. |
+| Regions | **Derived from parts.** Each part kind emits its own regions, and clothing, patterns and fur use **selectors** to pick them. |
+| Variation | Shape and proportion vary per mob. Crowds share a **base mesh per BodyPlan**, plus a per-bone length/girth scale and a coat on each instance. |
+| Runtime change | The plugin provides **levers**: per-bone scale, region hiding, part edits/despawn → async regen. It never defines age, fat, and so on. |
+| Control | A `MobIntent` component. The plugin owns all bone motion. |
+| Cameras | Top-down and first-person. Tiering uses **screen-space size**, not distance, so it works for both. |
+| Hardware | Runs on low-end and scales up through a `QualityProfile` resource. |
+| Skin detail | Triplanar detail at runtime. Pre-baked mobs also get baked normal maps. |
+| Bones | **≤ 64** per mob at close range (fingers included). **≤ 32** in crowds, where fine bones fold into their parent. Crowd bones are GPU-instanced data, not entities. |
+| Tools | **Hold only** for v1. |
+| Coverings | **Fur** (shell rendering). Feathers and plates come later. |
+| Wings, genetics | Out of scope. The data stays plain, ordered and reflectable so genetics can encode it later. |
+| Form source | The **game always supplies `Form`**. The plugin does no random sampling. |
+| Physics | **User's choice.** The plugin has no physics dependency, and the game fills foot ground hits. |
+| Part LOD | Parts have detail levels. Small parts drop out of the mesh, skeleton and ECS at coarser tiers (§2.10). |
+| Cache | postcard + zstd. |
+| Tooling | No editor. **Examples** for testing and **benches** for performance (§12). |
 
 ---
 
-## 3. `ornisculpt_genome`: from template to body plan
+## 1. Module map
 
-### 3.1 Genes (the expressive core)
-Every tunable number in a template is either a literal or an **expression over genes**. Genes are normalized `0..1` values. That makes sliders, breeding, mutation and "find me something between these two" trivial.
-```rust
-pub struct GeneDef {
-    pub name: Name,                 // "bulk", "leg_length", "horn_curl", "fat"
-    pub dist: GeneDist,             // how wild individuals sample it
-    pub default: f32,               // used for the species' canonical/crowd mesh
-    pub mesh_affecting: bool,       // false ⇒ only palette/anim (doesn't force a unique mesh)
-}
-pub enum GeneDist { Fixed, Uniform { lo: f32, hi: f32 }, Normal { mean: f32, sd: f32 } }
-
-/// A number that may depend on genes and per-part jitter. Serializable expression tree.
-pub enum Scalar {
-    Lit(f32),
-    Gene { gene: Name, lo: f32, hi: f32, curve: Option<Curve1> },  // remap gene 0..1 → lo..hi
-    Jitter { base: Box<Scalar>, amount: f32 },                     // uses the part's forked rng
-    Sum(Vec<Scalar>), Product(Vec<Scalar>),
-}
-pub struct Genome { pub species: SpeciesId, pub values: Vec<f32> /* indexed by GeneId */, pub seed: u64 }
-pub struct EvalCx<'a> { pub genome: &'a Genome, pub gene_index: &'a GeneIndex, pub rng: GenRng }
-impl Scalar { pub fn eval(&self, cx: &mut EvalCx) -> f32; }
 ```
-- **T-11** Genes are 0..1 and remapped per use, so the same gene ("bulk") can drive leg radius 0.1–0.2 *and* muscle stamp size 0.5–1.4 at once, without the two drifting apart.
-- **T-12** `mesh_affecting` decides whether an individual needs its own mesh (§6.3).
-- **TQ-2** Do you want gene **correlation** (e.g. bulk ↑ ⇒ leg_length ↓ slightly) as an explicit construct, or is it enough to express it via `Scalar::Sum` inside parts?
-
-### 3.2 Template: a tree of parts
-```rust
-pub struct SpeciesTemplate {
-    pub id: SpeciesId,
-    pub name: Name,
-    pub genes: Vec<GeneDef>,
-    pub root: PartNode,               // usually a Spine
-    pub tone: ToneDesc,
-    pub palette: PaletteDesc,
-    pub locomotion: LocomotionDesc,   // gaits, speeds; legs are discovered from parts
-    pub actions: Vec<ActionId>,       // which shared action defs this species can perform
-    pub clip_set: ClipSetDesc,        // which clips to bake (§5.6)
-}
-pub struct PartNode { pub name: Name, pub desc: PartDesc, pub children: Vec<ChildPart> }
-pub struct ChildPart {
-    pub attach: AttachRef,            // where on the parent part
-    pub offset: XformExpr,            // extra rotation/translation (genes allowed)
-    pub symmetry: Symmetry,
-    pub enabled: Option<Scalar>,      // gene-gated parts: >0.5 ⇒ present (horns on some individuals)
-    pub node: PartNode,
-}
-pub enum Symmetry { None, MirrorX, Radial { count: u8 } }   // Radial: starfish, spider legs
-pub struct AttachRef { pub point: Name /* "end", "segment", "jaw", ... */, pub t: Option<Scalar>, pub side: Side }
-pub struct XformExpr { pub translate: [Scalar; 3], pub rotate_euler_deg: [Scalar; 3], pub scale: Scalar }
+ornisculpt/src/
+├─ lib.rs            OrnisculptPlugin, MobSet (system sets), QualityProfile
+├─ anatomy/          BodyPlan asset, parts, Form, regions, build → Anatomy, viability checks
+├─ surface/          Field trait, SDF body, meshing, skinning, attrs, LODs, hard parts
+├─ coat/             Coat asset: palette, pattern, fur; material
+├─ motion/           Gait asset, hero pose layers (systems), IK, baked motion
+├─ gen/              keys, generation pipeline systems, cache, disk store
+├─ tier/             screen-size tiering, hero↔crowd transitions
+├─ crowd/            render-world extraction, GPU skinning compute, instanced draw, fur shells
+├─ equip/            sockets, tools, holding
+└─ bin/bake.rs       headless pre-bake (same crate)
+examples/            visual test beds (§12)
+benches/             criterion benchmarks (§12)
+assets/mobs/         sample BodyPlan / Gait / Coat / MobDesc RON files used by examples and benches
 ```
 
-### 3.3 Part kinds
-```rust
-pub enum PartDesc {
-    Spine(SpineDesc),      // the trunk: N segments along a curve, cross-section profile
-    Neck(ChainDesc),
-    Head(HeadDesc),        // skull blob + jaw bone + eye/ear/mouth attach points
-    Limb(LimbDesc),        // 2–4 segments + optional hand/foot; registers an IK chain
-    Digit(ChainDesc),      // fingers/toes; NO_CROWD by default
-    Tail(ChainDesc),       // registers a spring chain
-    Wing(WingDesc),        // see TQ-3
-    Blob(BlobDesc),        // free primitive(s) on a bone: humps, crests, bellies
-    Hard(HardPartDesc),    // claw, horn, beak, tooth, eye: non-SDF mesh (§4.5)
-}
-pub struct ChainDesc {
-    pub segments: Scalar,             // rounded
-    pub length: Scalar,
-    pub radius: ProfileDesc,          // radius along the chain
-    pub curl: Scalar,                 // rest curvature
-    pub blend: Scalar,                // smooth-min radius to parent
-}
-pub struct ProfileDesc { pub curve: Curve1, pub scale: Scalar, pub cross_section: CrossSection }
-pub enum CrossSection { Round, Ellipse { aspect: Scalar }, Flat { aspect: Scalar } }
-pub struct SpineDesc { pub chain: ChainDesc, pub arch: Curve1 /* vertical bend */, pub belly: Scalar }
-pub struct LimbDesc { pub chain: ChainDesc, pub stance: LimbStance, pub end: LimbEnd }
-pub enum LimbStance { Plantigrade, Digitigrade, Unguligrade, Sprawl, Arm /* non-locomotor */ }
-pub enum LimbEnd { None, Hand { palm: Scalar }, Foot { length: Scalar }, Hoof, Pad }
-pub struct HeadDesc { pub skull: BlobDesc, pub snout: Scalar, pub jaw: Option<ChainDesc>, pub eyes: EyeDesc }
-```
-- **TQ-3** Wings: are they visual and folding only (a membrane is a flattened SDF sweep), or does flight need its own locomotion mode? This changes `LocomotionDesc`.
+- **T-1** Plain functions and slices are used **only** for hot inner loops: SDF evaluation, meshing, IK math and skinning math. Everything else is ECS: components, systems, observers, assets and relationships.
+- **T-2** All authored data derives `Reflect + Serialize + Deserialize + Clone`, so it works with the inspector, RON assets, reflect-path overrides and future genetics encoding.
+- **T-3** Pin one Bevy version. This assumes at least Bevy 0.16 (required components, relationships, observers).
 
-### 3.4 The `PartGen` trait and `PlanBuilder`
-Each `PartDesc` variant implements `PartGen`. The template tree is walked recursively, and each part emits bones, primitives, sockets and rigs into the builder, plus named attach points for its children.
-```rust
-pub trait PartGen {
-    fn emit(&self, b: &mut PlanBuilder, at: AttachPoint, cx: &mut EvalCx) -> Result<PartOutputs, PlanError>;
-}
-pub struct AttachPoint { pub bone: BoneId, pub local: Xform, pub side: Side, pub path: PartPath }
-pub struct PartOutputs { pub attach: SmallVec<[(Name, AttachSlot); 4]> }
-pub enum AttachSlot { Point(AttachPoint), Along(SmallVec<[AttachPoint; 8]>) /* t ∈ 0..1 over segments */ }
+---
 
-pub struct PlanBuilder { /* accumulates a BodyPlan */ }
-impl PlanBuilder {
-    pub fn add_bone(&mut self, parent: Option<BoneId>, name: Name, rest: Xform, length: f32, region: Region, flags: BoneFlags) -> BoneId;
-    pub fn add_primitive(&mut self, p: Primitive);
-    pub fn add_hard_part(&mut self, h: HardPart);
-    pub fn add_socket(&mut self, s: SocketDef) -> SocketId;
-    pub fn add_leg(&mut self, leg: LegRig);
-    pub fn add_spring_chain(&mut self, c: SpringChain);
-    pub fn set_look_at(&mut self, l: LookAtRig);
-    pub fn add_joint_limit(&mut self, bone: BoneId, lim: JointLimit);
-    pub fn finish(self) -> Result<BodyPlan, PlanError>;   // validates, computes inverse binds
-}
-pub fn build_plan(t: &SpeciesTemplate, g: &Genome) -> Result<BodyPlan, PlanError>;
-```
-- **T-13** Parts are an *enum* for serialization and dispatch, but each variant's logic lives in its own `impl PartGen`. Adding a new part kind is one variant plus one impl.
-- **T-14** `PartPath` (e.g. `root/limb.front.l/digit.2`) is the `GenRng::fork` label, which delivers the stable randomness from T-4.
+## 2. Anatomy (authored data)
 
-### 3.5 Body plan (output)
+### 2.1 Body plan: the anatomical topology
 ```rust
+#[derive(Asset, Reflect, Serialize, Deserialize, Clone)]
 pub struct BodyPlan {
+    pub root: PartNode,                 // usually a Torso
+    pub tone: Tone,                     // global muscle/fat/fold intensity defaults
+}
+
+#[derive(Reflect, Serialize, Deserialize, Clone)]
+pub struct PartNode {
+    pub name: String,                   // unique among siblings; forms the PartPath
+    pub kind: PartKind,
+    pub attach: Attach,                 // where on the parent
+    pub offset: Transform,              // extra local offset/rotation
+    pub symmetry: Symmetry,
+    pub detail: PartDetail,             // part-level LOD (§2.10)
+    pub children: Vec<PartNode>,
+}
+pub enum Symmetry { None, Mirror, Radial { count: u8 } }
+pub struct Attach { pub slot: AttachSlot, pub t: f32 /* along a segmented slot */ }
+pub enum AttachSlot { Start, End, Along, Socket(String) /* head.jaw, head.eye ... */ }
+```
+
+### 2.2 Part kinds (closed enum, all values plain `f32`)
+```rust
+pub enum PartKind {
+    Torso(TorsoParams),     // segmented trunk; also the serpent body
+    Neck(ChainParams),
+    Head(HeadParams),       // skull + optional jaw; exposes eye/ear/mouth/horn slots
+    Limb(LimbParams),       // 2–4 segments + end; may be locomotor
+    Digits(DigitParams),    // fingers/toes as a group; bones are BoneDetail::Fine
+    Tail(ChainParams),
+    Mass(MassParams),       // free blob(s): humps, crests, bellies, cheeks
+    Hard(HardParams),       // claw, horn, beak, tooth, eye; separate mesh, not SDF
+}
+pub struct ChainParams { pub segments: u8, pub length: f32, pub radius: Profile, pub curl: f32, pub blend: f32 }
+pub struct Profile { pub curve: Vec<(f32, f32)>, pub scale: f32, pub cross: CrossSection }
+pub enum CrossSection { Round, Ellipse { aspect: f32 }, Flat { aspect: f32 } }
+pub struct TorsoParams { pub chain: ChainParams, pub arch: Vec<(f32, f32)>, pub belly: f32 }
+pub struct LimbParams { pub chain: ChainParams, pub role: LimbRole, pub stance: Stance, pub end: LimbEnd }
+pub enum LimbRole { Locomotor, Manipulator /* arms */, Both /* knuckle-walkers */, Display }
+pub enum Stance { Plantigrade, Digitigrade, Unguligrade, Sprawl }
+pub enum LimbEnd { None, Hand { palm: f32 }, Foot { length: f32 }, Hoof, Pad }
+pub struct HeadParams { pub skull: MassParams, pub snout: f32, pub jaw: Option<ChainParams>, pub eye_spacing: f32 }
+pub struct DigitParams { pub count: u8, pub chain: ChainParams, pub spread_deg: f32, pub opposable: bool }
+pub struct MassParams { pub shape: MassShape, pub size: Vec3, pub blend: f32 }
+pub struct HardParams { pub kind: HardKind, pub size: f32, pub curve: f32, pub twist: f32 }
+pub enum HardKind { Claw, Horn, Beak, Tooth, Eye, Mesh(String /* asset path */) }
+pub struct Tone { pub muscle: f32, pub fat: f32, pub folds: f32, pub landmarks: f32 }
+```
+
+### 2.3 Part paths
+```rust
+#[derive(Reflect, Clone, Hash, Eq, PartialEq)]
+pub struct PartPath(pub String);   // "torso/limb.front.l/digits"; mirrored copies get .l / .r
+```
+- **T-4** The path is a stable address. Form overrides, RNG forking and region names all use it, and future genetics will swap sequences by path.
+
+### 2.4 Form: an individual's proportions
+```rust
+#[derive(Component, Asset, Reflect, Serialize, Deserialize, Clone, Default)]
+pub struct Form {
+    pub overall_scale: f32,
+    pub patches: Vec<FormPatch>,       // ordered, plain data
+}
+pub struct FormPatch { pub part: PartPath, pub field: String /* reflect path, e.g. "chain.length" */, pub value: f32 }
+pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError>;   // FormError: bad path / wrong type
+```
+- **T-5** Overrides use **Bevy reflect paths** on the part's params. That's generic, needs no per-field code, and is already the "interpretable data" a genetics layer would need.
+- **T-5a (from TQ-3)** The **game always supplies the `Form`**. The plugin has no randomizer and no ranges. An empty `Form` means the body plan as authored.
+
+### 2.5 Mob description (the composition)
+```rust
+#[derive(Asset, Reflect, Serialize, Deserialize, Clone)]
+pub struct MobDesc {
+    pub body: Handle<BodyPlan>,
+    pub form: Form,
+    pub gait: Handle<Gait>,
+    pub coat: Handle<Coat>,
+    pub seed: u64,                     // noise/pattern seed
+}
+```
+
+### 2.6 Regions (derived)
+```rust
+#[derive(Reflect, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionId(pub u8);           // ≤ 64 per mob (fits a u64 mask)
+pub struct RegionDef { pub part: PartPath, pub kind: RegionKind, pub side: Side }
+pub enum RegionKind {
+    TorsoFront, TorsoMid, TorsoRear, Belly, Neck,
+    Skull, Face, Jaw,
+    LimbUpper, LimbLower, LimbEnd, Digit,
+    TailBase, TailTip, Mass, Hard,
+}
+pub enum Side { Center, Left, Right }
+pub struct RegionTable { pub regions: Vec<RegionDef> }
+
+/// How coats, fur and clothing pick regions on ANY body plan.
+#[derive(Reflect, Serialize, Deserialize, Clone)]
+pub enum RegionSelector {
+    All, Kind(RegionKind), Part(PartPath), Role(LimbRole), Side(Side),
+    And(Vec<RegionSelector>), Or(Vec<RegionSelector>), AllExcept(Vec<RegionSelector>), // no Box: Bevy reflect can't represent it
+}
+impl RegionSelector { pub fn mask(&self, t: &RegionTable, a: &Anatomy) -> RegionMask; }
+#[derive(Reflect, Clone, Copy, Default)] pub struct RegionMask(pub u64);
+```
+- Example: "fur on everything except limb ends and the face" is `AllExcept([Kind(LimbEnd), Kind(Face)])`. That works for a biped and a hexapod alike.
+
+### 2.7 Built anatomy (resolved, CPU-side, not authored)
+```rust
+pub struct Anatomy {
     pub skeleton: Skeleton,
     pub primitives: Vec<Primitive>,
     pub hard_parts: Vec<HardPart>,
     pub sockets: Vec<SocketDef>,
+    pub regions: RegionTable,
+    pub legs: Vec<LegInfo>,            // discovered from Locomotor limbs
+    pub spine: Vec<BoneId>,
+    pub springs: Vec<SpringChainDef>,  // tails, ears
+    pub look: Option<LookDef>,         // neck/head bones
     pub joint_limits: Vec<(BoneId, JointLimit)>,
-    pub rig: LocomotionRig,           // consumed by ornisculpt_anim
-    pub palette: Palette,             // resolved colors (§4.6)
-    pub tone: ResolvedTone,
+    pub parts: Vec<BuiltPart>,         // PartPath → bones/primitive/region ranges
 }
-pub struct Primitive {
-    pub bone: BoneId,
-    pub shape: PrimShape,
-    pub local: Xform,                 // relative to bone
-    pub blend: f32,                   // smooth-min k
-    pub op: PrimOp,                   // Union | Subtract
-    pub layer: PrimLayer,             // Base | Muscle | Landmark | Fat
-    pub region: Region,
+pub fn build_anatomy(plan: &BodyPlan, form: &Form, seed: u64, lod_rules: &PartLodRules) -> Result<Anatomy, AnatomyError>;
+```
+
+### 2.8 `PartBuild` trait and `AnatomyBuilder`
+```rust
+pub trait PartBuild {
+    fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &mut BuildCx) -> Result<PartSlots, AnatomyError>;
 }
-pub enum PrimShape {
-    Sphere { r: f32 }, Ellipsoid { radii: Vec3 },
-    Capsule { r0: f32, r1: f32, len: f32 },          // tapered capsule along +Y
-    RoundCone { r0: f32, r1: f32, len: f32 },
-    Sweep { spline: Curve3, radius: Curve1, cross: CrossSection },   // necks, tails, tentacles
+// implemented for TorsoParams, LimbParams, HeadParams, ...; PartKind dispatches by match.
+pub struct BuildCx<'a> { pub path: &'a PartPath, pub rng: MobRng, pub tone: &'a Tone }
+pub struct AttachPoint { pub bone: BoneId, pub local: Transform, pub side: Side }
+pub struct PartSlots { pub slots: SmallVec<[(AttachSlot, SlotPoints); 4]> }
+pub enum SlotPoints { One(AttachPoint), Along(SmallVec<[AttachPoint; 8]>) }
+
+impl AnatomyBuilder {
+    pub fn bone(&mut self, parent: Option<BoneId>, name: &str, rest: Transform, length: f32, region: RegionId, detail: BoneDetail) -> BoneId;
+    pub fn region(&mut self, def: RegionDef) -> RegionId;
+    pub fn primitive(&mut self, p: Primitive);
+    pub fn hard_part(&mut self, h: HardPart);
+    pub fn socket(&mut self, s: SocketDef);
+    pub fn leg(&mut self, l: LegInfo);
+    pub fn spring_chain(&mut self, c: SpringChainDef);
+    pub fn look(&mut self, l: LookDef);
+    pub fn limit(&mut self, b: BoneId, l: JointLimit);
+    pub fn finish(self) -> Result<Anatomy, AnatomyError>;
 }
-pub struct JointLimit { pub swing_deg: Vec2, pub twist_deg: Vec2 }
-pub struct HardPart { pub bone: BoneId, pub local: Xform, pub kind: HardKind, pub size: f32, pub region: Region }
-pub enum HardKind { Claw { curve: f32 }, Horn { curl: f32, twist: f32 }, Beak { hook: f32 }, Tooth, Eye { iris: f32 }, Mesh(AssetRef) }
+```
+
+### 2.9 Viability checks (designed now for future genetics; useful for authoring too)
+```rust
+pub trait ViabilityCheck: Send + Sync + 'static {
+    fn name(&self) -> &'static str;
+    fn check(&self, a: &Anatomy) -> Viability;   // gait compatibility moves to motion (needs a Gait)
+}
+pub enum Viability { Ok, Warn(String), Fail(String) }
+#[derive(Resource, Default)] pub struct ViabilityChecks(pub Vec<Box<dyn ViabilityCheck>>);
+// Built-ins: BoneBudget, FeetReachGround, StaticBalance (COM over support polygon),
+//            GaitCompatible (leg count/pattern), RestSelfIntersection.
+```
+
+### 2.10 Part LOD (from TQ-4)
+Each part has a detail level. It decides the **lowest tier at which the part still exists** in the mesh, the skeleton and the ECS. Small parts drop out as the mob shrinks on screen.
+```rust
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Default)]
+pub enum PartDetail {
+    #[default] Auto,          // from size: part bounding radius / mob bounding radius vs PartLodRules
+    Always,                   // never culled (torso, main limbs, head)
+    UpTo(LodLevel),           // present at this level and finer
+}
+#[derive(Reflect, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LodLevel { Hero = 0, Near = 1, Far = 2 }   // matches MobTier, excluding Pending
+
+pub struct BuiltPart {
+    pub path: PartPath, pub parent: Option<u16>,
+    pub bones: Range<u8>, pub primitives: Range<u32>, pub hard_parts: Range<u16>, pub regions: Range<u8>,
+    pub lod: LodLevel,                    // resolved: coarsest level this part appears in
+}
+#[derive(Resource, Reflect)]
+pub struct PartLodRules { pub near_min_ratio: f32, pub far_min_ratio: f32 }   // e.g. 0.08, 0.2
+```
+- **T-20** Part LOD applies at three layers:
+  1. **Mesh.** Each LOD level is **re-meshed** from the SDF without the culled parts, at a coarser voxel size. `meshopt` then trims the rest. Culled hard parts (teeth, claws, eyes) are simply omitted. This beats decimating, which leaves lumps where small parts used to be.
+  2. **Skeleton.** Bones of culled parts fold into the nearest surviving ancestor in the crowd skeleton. This generalizes `BoneDetail::Fine` from §3: the crowd skeleton is now "bones of parts with `lod ≥ Near`".
+  3. **ECS.** Part entities exist only while their part is present at the mob's current tier. On demotion, an observer despawns the finer part entities. On promotion they respawn from the `Anatomy`, cheap because it's data only. Core parts (`Always`) keep their entities in every tier, so gameplay always has hit locations.
+- Edits are preserved: changing a part that is currently culled is stored on the mob's live `BodyPlan` snapshot component (§8.2), not lost with the entity.
+
+---
+
+## 3. Skeleton, bones and sockets
+
+```rust
+pub struct Skeleton { pub bones: Vec<BoneDef>, pub inverse_bind: Vec<Mat4>, pub crowd: CrowdSkeleton }
+pub struct BoneDef {
+    pub name: String, pub parent: Option<BoneId>, pub rest: Transform, pub length: f32,
+    pub region: RegionId, pub part: u16 /* index into Anatomy.parts */, pub detail: BoneDetail,
+}
+pub enum BoneDetail { Core, Fine }                   // Fine: digits, ear tips, tail tips
+pub struct CrowdSkeleton { pub map: Vec<u8> /* full bone → crowd bone (Fine folds to Core parent) */, pub bones: Vec<BoneId> }
+#[derive(Reflect, Clone, Copy, PartialEq, Eq, Hash, Debug)] pub struct BoneId(pub u8);
+
+pub const MAX_BONES: usize = 64;
+pub const MAX_CROWD_BONES: usize = 32;
+```
+- **T-6** 64 bones is enough for a torso, neck, head, jaw, four limbs, two hands of fingers and a tail. 32 crowd bones = 64 texels per frame row in the baked motion texture.
+
+### 3.1 Sockets
+```rust
+pub struct SocketDef { pub name: String, pub kind: SocketKind, pub bone: BoneId, pub local: Transform, pub size: f32 }
+pub enum SocketKind { Grip, Back, Hip, Head, Mouth, Shoulder }
 ```
 
 ---
 
-## 4. `ornisculpt_mesh`: body plan to skinned mesh
+## 4. Surface (mesh generation)
 
-### 4.1 The `Field` trait
+### 4.1 Field
 ```rust
 pub trait Field: Send + Sync {
-    fn bounds(&self) -> Aabb;
-    /// Signed distance (negative inside). The meshing hot path calls only this.
-    fn distance(&self, p: Vec3A) -> f32;
-    /// Batch version for SIMD and cache-friendly evaluation. Default loops over `distance`.
-    fn distance_batch(&self, ps: &[Vec3A], out: &mut [f32]) { for (p, o) in ps.iter().zip(out) { *o = self.distance(*p) } }
+    fn bounds(&self) -> Aabb3d;
+    fn distance(&self, p: Vec3A) -> f32;                                   // hot path
+    fn distance_batch(&self, ps: &[Vec3A], out: &mut [f32]) { /* default loop */ }
     fn gradient(&self, p: Vec3A) -> Vec3A { /* central differences */ }
-    /// Called once per *output vertex*, not per voxel: bone influences, region, layer.
-    fn surface_info(&self, p: Vec3A) -> SurfaceInfo;
+    fn surface_info(&self, p: Vec3A) -> SurfaceInfo;                       // per output vertex only
 }
-pub struct SurfaceInfo { pub influences: Influences, pub region: Region, pub layer: PrimLayer }
-pub struct Influences { pub bones: [BoneId; 4], pub weights: [f32; 4] }   // top-4, normalized
+pub struct SurfaceInfo { pub bones: [BoneId; 4], pub weights: [f32; 4], pub region: RegionId, pub layer: PrimLayer }
+pub struct BodyField { /* primitives + BVH; built from Anatomy */ }
+// combinators: Offset<F>, Intersect<A,B>, Subtract<A,B>, RegionClip<F>, Displace<F>
 ```
-- **T-15** Distance and influence are separate calls. Meshing needs about 100× more distance samples than vertices, so the expensive top-4 bookkeeping only happens at the vertices.
-- Implementations:
-  - `BodyField`: built from `BodyPlan.primitives`, with a BVH for culling, smooth-min and the tone layers.
-  - Combinators `Offset<F>`, `Intersect<A,B>`, `Subtract<A,B>`, `RegionClip<F>` (keep the surface only where `surface_info.region ∈ mask`), `Displace<F, N>` (noise folds). Garments use the same combinators (§4.7).
 
-### 4.2 The `Mesher` trait
+### 4.2 Primitives
 ```rust
-pub trait Mesher {
-    fn mesh<F: Field>(&self, field: &F, s: &MeshSettings) -> Result<RawMesh, MeshError>;
-}
-pub struct MeshSettings { pub voxel_size: f32, pub chunk_voxels: u32, pub max_triangles: u32 }
-pub struct SurfaceNetsMesher;      // v1
-// later: DualContourMesher, GpuSurfaceNets (lives in ornisculpt_bevy, since it needs wgpu)
+pub struct Primitive { pub bone: BoneId, pub shape: PrimShape, pub local: Transform, pub blend: f32,
+                       pub op: PrimOp, pub layer: PrimLayer, pub region: RegionId }
+pub enum PrimShape { Sphere { r: f32 }, Ellipsoid { radii: Vec3 }, Capsule { r0: f32, r1: f32, len: f32 },
+                     RoundCone { r0: f32, r1: f32, len: f32 }, Sweep { points: Vec<Vec3>, radii: Vec<f32>, cross: CrossSection } }
+pub enum PrimOp { Union, Subtract }
+pub enum PrimLayer { Base, Muscle, Landmark, Fat }
+pub struct HardPart { pub bone: BoneId, pub local: Transform, pub params: HardParams, pub region: RegionId }
 ```
-- **T-16** `Mesher::mesh` is generic over `F` (static dispatch in the hot loop), so `Mesher` itself isn't object-safe. If a runtime-swappable mesher is needed, wrap it in an enum.
 
-### 4.3 Mesh types
+### 4.3 Meshing and output
 ```rust
+pub trait Mesher { fn mesh<F: Field>(&self, f: &F, s: &MeshSettings) -> RawMesh; }
+pub struct SurfaceNets;                               // v1; a GPU mesher can come later
+pub struct MeshSettings { pub voxel_size: f32, pub chunk: u32 }
 pub struct RawMesh { pub positions: Vec<Vec3>, pub normals: Vec<Vec3>, pub indices: Vec<u32> }
 
-pub struct CreatureMesh {
-    pub positions: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
-    pub joints: Vec<[u16; 4]>,        // matches Bevy ATTRIBUTE_JOINT_INDEX (Uint16x4)
-    pub weights: Vec<[f32; 4]>,       // matches ATTRIBUTE_JOINT_WEIGHT (Float32x4)
-    pub attrs: Vec<PackedAttrs>,
-    pub uvs: Option<Vec<Vec2>>,       // bake-time only (normal maps, decals)
-    pub indices: Vec<u32>,
-    pub submeshes: SmallVec<[Submesh; 4]>,   // body, hard parts, garments → material slots
-}
-pub struct Submesh { pub index_range: Range<u32>, pub material: MaterialSlot }
-pub enum MaterialSlot { Skin, Hard, Eye, Garment(u8) }
-
-/// Two u32s per vertex on the GPU.
-#[repr(C)] pub struct PackedAttrs {
-    pub a: u32,   // region:u8 | cavity:u8 | curvature:u8 | limb_t:u8
-    pub b: u32,   // hide_mask:u8 | layer:u8 | primary_bone:u16   (bone-local pos is derived in shader from primary bone)
-}
-pub struct LodChain { pub levels: SmallVec<[LodLevel; 4]> }
-pub struct LodLevel { pub mesh: CreatureMesh, pub screen_coverage: f32 }
-```
-- **T-17** Bone-local position is **not stored**. The shader reconstructs it from `primary_bone` and the bind pose, which saves 6–12 bytes per vertex.
-
-### 4.4 Post-processing (free functions, not traits)
-```rust
+// Free functions (fixed pipeline steps):
 pub fn weld(m: &mut RawMesh, eps: f32);
-pub fn taubin_smooth(m: &mut RawMesh, iters: u32, lambda: f32, mu: f32);
-pub fn skin<F: Field>(m: RawMesh, field: &F, smooth_passes: u32) -> CreatureMesh;
-pub fn compute_attrs(m: &mut CreatureMesh, field: &impl Field, plan: &BodyPlan);
-pub fn build_lods(m: &CreatureMesh, spec: &[LodSpec], plan: &BodyPlan) -> LodChain;   // meshopt; folds NO_CROWD bones
-pub fn unwrap_uvs(m: &mut CreatureMesh) -> Result<(), MeshError>;                      // xatlas, bake only
-pub fn bake_normal_map<F: Field>(m: &CreatureMesh, detail: &F, res: u32) -> Image2D;
+pub fn smooth(m: &mut RawMesh, iters: u32);
+pub fn skin_and_attrs<F: Field>(m: RawMesh, f: &F, a: &Anatomy) -> BodyMeshData;
+pub fn mesh_lod<M: Mesher>(m: &M, a: &Anatomy, level: LodLevel, s: &MeshSettings) -> BodyMeshData; // re-mesh without culled parts (T-20)
+pub fn simplify(d: &BodyMeshData, target_ratio: f32) -> BodyMeshData;                          // meshopt trim after re-mesh
+pub fn to_bevy_mesh(d: &BodyMeshData) -> Mesh;
 ```
-- **T-18** These are plain functions because they are fixed pipeline steps with no reason to swap them. A trait can be introduced later if one of them grows real alternatives.
-
-### 4.5 Hard parts
-```rust
-pub trait HardPartGen { fn generate(&self, h: &HardPart, rng: &mut GenRng) -> CreatureMesh; }   // 100% weight to h.bone
-```
-
-### 4.6 Palette and tone
-```rust
-pub struct PaletteDesc { pub base: HueRange, pub secondary: HueRange, pub accent: HueRange, pub pattern: PatternDesc }
-pub struct HueRange { pub h: Scalar, pub s: Scalar, pub v: Scalar }
-pub enum PatternDesc { Solid, Countershade { sharpness: Scalar }, Stripes { freq: Scalar, warp: Scalar },
-                       Spots { density: Scalar, size: Scalar }, Rosettes { .. }, Mottle { .. }, Scales { size: Scalar } }
-pub struct Palette { pub base: [f32; 3], pub secondary: [f32; 3], pub accent: [f32; 3], pub pattern: PatternGpu }
-#[repr(C)] pub struct PatternGpu { pub kind: u32, pub params: [f32; 3], pub region_mask: u32 }   // goes into instance data
-pub struct ToneDesc { pub muscle: Scalar, pub fat: Scalar, pub folds: Scalar, pub landmark: Scalar, pub stamps: Vec<StampSet> }
-```
-
-### 4.7 Garments (types only for now)
-```rust
-pub enum GarmentDesc {
-    Shell { cover: RegionMask, thickness: Scalar, extend: Scalar, hides: RegionMask, material: GarmentMaterial },
-    Sweep { from: SocketKind, to: Option<SocketKind>, profile: ProfileDesc, .. },   // cloaks, belts, straps
-    Authored { mesh: AssetRef, landmarks: Vec<(Name, Vec3)>, hides: RegionMask },   // RBF-fitted
-}
-pub struct Outfit { pub garments: SmallVec<[GarmentDesc; 4]> }
-pub fn build_garment(g: &GarmentDesc, body: &BodyField, plan: &BodyPlan, base: &CreatureMesh) -> CreatureMesh;
-```
+- **T-7** The output is a **Bevy `Mesh`** with standard `POSITION`, `NORMAL`, `JOINT_INDEX` and `JOINT_WEIGHT`, plus one custom attribute:
+  ```rust
+  pub const ATTRIBUTE_MOB_DATA: MeshVertexAttribute = /* Uint32x2 */;
+  // x: region u8 | cavity u8 | curvature u8 | limb_t u8
+  // y: primary_bone u8 | layer u8 | reserved u16
+  ```
 
 ---
 
-## 5. `ornisculpt_anim`
+## 5. Coat (look: palette, pattern, fur)
 
-### 5.1 Pose types
 ```rust
-pub struct Pose { pub local: Vec<Xform> }               // one per bone, parent-relative
-pub struct ModelPose { pub model: Vec<Affine3A> }
-pub fn forward_kinematics(sk: &Skeleton, p: &Pose, root: Affine3A, out: &mut ModelPose);
-pub fn skinning_matrices(sk: &Skeleton, mp: &ModelPose, out: &mut [Affine3A]);   // model * inverse_bind
+#[derive(Asset, Reflect, Serialize, Deserialize, Clone)]
+pub struct Coat {
+    pub base: Color, pub secondary: Color, pub accent: Color,
+    pub variation: ColorVariation,             // per-mob hue/value jitter from MobDesc.seed
+    pub layers: Vec<PatternLayer>,             // ordered, blended
+    pub fur: Option<Fur>,
+    pub skin_detail: SkinDetail,               // triplanar scale/wrinkle/pore settings
+}
+pub struct PatternLayer { pub pattern: Pattern, pub color: CoatColor /* Secondary|Accent|Custom */, pub regions: RegionSelector, pub strength: f32 }
+pub enum Pattern { Countershade { sharpness: f32 }, Stripes { freq: f32, warp: f32 }, Spots { density: f32, size: f32 },
+                   Rosettes { density: f32 }, Mottle { scale: f32 }, Gradient { along: GradientAxis } }
+pub struct Fur { pub regions: RegionSelector, pub length: f32, pub density: f32, pub clump: f32, pub stiffness: f32,
+                 pub tip_color: Option<CoatColor> }
+
+/// GPU form, shared by the hero material and the crowd pipeline.
+#[repr(C)] #[derive(ShaderType, Clone, Copy)]
+pub struct CoatGpu { pub colors: [Vec4; 3], pub layers: [PatternGpu; 4], pub fur_mask: UVec2, pub fur: Vec4 }
 ```
-
-### 5.2 Rig descriptions (from the body plan, shared via `Arc`)
-```rust
-pub struct LocomotionRig {
-    pub legs: SmallVec<[LegRig; 8]>,
-    pub spine: SmallVec<[BoneId; 16]>,
-    pub springs: SmallVec<[SpringChain; 8]>,
-    pub look_at: Option<LookAtRig>,
-    pub gaits: SmallVec<[GaitDef; 4]>,
-    pub root_height: f32,
-}
-pub struct LegRig { pub chain: SmallVec<[BoneId; 4]>, pub foot: BoneId, pub pole: Vec3, pub rest_foot: Vec3, pub phase: f32, pub stance: LimbStance }
-pub struct GaitDef { pub name: Name, pub speed: Range<f32>, pub duty: f32, pub phase_override: Option<SmallVec<[f32; 8]>>, pub stride: f32, pub lift: f32 }
-pub struct SpringChain { pub bones: SmallVec<[BoneId; 12]>, pub stiffness: f32, pub damping: f32, pub gravity: f32 }
-pub struct LookAtRig { pub bones: SmallVec<[(BoneId, f32 /*share*/); 4]>, pub limit_deg: f32 }
-```
-
-### 5.3 Environment and control boundaries
-```rust
-/// Implemented by avian3d in-game and by `FlatGround` in the baker.
-pub trait GroundQuery: Sync {
-    fn ground(&self, origin: Vec3, max_drop: f32) -> Option<GroundHit>;
-}
-pub struct GroundHit { pub point: Vec3, pub normal: Vec3 }
-
-/// What gameplay/AI writes; the only input animation reads.
-#[derive(Clone, Default)]
-pub struct ControlInput {
-    pub velocity: Vec3,                 // desired, world
-    pub facing: Quat,
-    pub look_target: Option<Vec3>,
-    pub action: Option<ActionRequest>,  // attack, emote...
-    pub ik_overrides: SmallVec<[IkOverride; 2]>,   // "put hand.r here" (grab, lever, tool)
-}
-pub struct IkOverride { pub effector: Effector, pub target: Xform, pub weight: f32 }
-pub enum Effector { Socket(SocketId), Bone(BoneId), Leg(u8) }
-```
-- **TQ-4** Is `ControlInput` the right granularity for gameplay? Alternatives are bone-level access (more power, easier to break) or higher-level intents ("go to X") pushed into the anim layer (less power).
-
-### 5.4 IK
-```rust
-pub trait IkSolver {
-    fn solve(&self, sk: &Skeleton, chain: &[BoneId], pose: &mut Pose, model: &mut ModelPose,
-             target: Xform, pole: Option<Vec3>, limits: &JointLimits);
-}
-pub struct TwoBoneIk; pub struct Fabrik { pub iters: u8, pub tolerance: f32 }
-```
-
-### 5.5 Pose layers (the procedural animation stack)
-```rust
-pub trait PoseLayer {
-    type State: Default + Send + Sync;
-    fn update(&self, st: &mut Self::State, cx: &mut AnimCx, pose: &mut Pose);
-}
-pub struct AnimCx<'a> {
-    pub dt: f32, pub root: Affine3A, pub skeleton: &'a Skeleton, pub rig: &'a LocomotionRig,
-    pub input: &'a ControlInput, pub ground: &'a dyn GroundQuery, pub model: &'a mut ModelPose,
-}
-// Concrete layers (static dispatch, fixed order):
-pub struct GaitLayer;     pub struct FootIkLayer;  pub struct BodyBalanceLayer;
-pub struct SpringLayer;   pub struct LookAtLayer;  pub struct BreathLayer;   pub struct ActionLayer;
-
-pub struct Animator { pub rig: Arc<LocomotionRig>, pub actions: Arc<ActionLibrary> }
-pub struct AnimState { gait: GaitState, feet: FootIkState, balance: BalanceState, springs: SpringState,
-                       look: LookState, breath: BreathState, action: ActionState }
-impl Animator { pub fn update(&self, st: &mut AnimState, cx: &mut AnimCx, pose: &mut Pose); }
-```
-- **T-19** The layers are a **fixed, statically dispatched stack**, with the trait used for code organization. The state is one struct, so there are no per-creature heap allocations. The extension point is a later `extra: Vec<Box<dyn DynPoseLayer>>` if needed.
-- **T-20** `GroundQuery` is `&dyn` because it's called a handful of times per creature per frame, not per bone, so virtual dispatch costs nothing that matters here.
-
-### 5.6 Actions: retargetable procedural motions
-Attacks and emotes can't be authored per skeleton, since every creature is different. Instead they're authored on **effectors in normalized body space**:
-```rust
-pub struct ActionDef {
-    pub name: Name, pub duration: f32, pub requires: SmallVec<[SocketKind; 2]>,   // "needs a Grip"
-    pub tracks: SmallVec<[ActionTrack; 4]>,
-}
-pub struct ActionTrack {
-    pub effector: EffectorRef,     // e.g. Grip.r, Head, Pelvis
-    pub space: ActionSpace,        // relative to shoulder/chest/root, scaled by limb length
-    pub path: Curve3, pub rotation: Option<CurveQuat>, pub weight: Curve1,
-}
-pub enum EffectorRef { Socket(SocketKind, Side), Head, Pelvis, Chest, Leg(Side, u8) }
-pub enum ActionSpace { LimbRoot, Chest, Root }
-pub struct ActionLibrary { pub actions: Vec<ActionDef> }
-```
-
-### 5.7 Baking clips
-```rust
-pub struct ClipSetDesc { pub clips: Vec<ClipSpec>, pub fps: f32 }
-pub struct ClipSpec { pub name: Name, pub kind: ClipKind, pub cycles: u8 }
-pub enum ClipKind { Idle, Locomotion { speed: f32 }, Turn { rate_deg_s: f32 }, Action(ActionId), Hold(SocketKind) }
-
-pub struct BakedClip { pub name: Name, pub first_frame: u32, pub frames: u32, pub fps: f32, pub looping: bool,
-                       pub root_motion: Vec<Xform> }
-/// Local-space TRS per bone per frame (NOT skinning matrices). See T-21.
-pub struct BoneAnimTexture { pub bones: u16, pub frames: u32, pub texels: Vec<[f32; 4]> /* 2 texels/bone: quat, translation+uniform scale */ }
-pub struct ClipBank { pub clips: Vec<BakedClip>, pub texture: BoneAnimTexture }
-pub fn bake_clips(plan: &BodyPlan, animator: &Animator, set: &ClipSetDesc) -> ClipBank;
-```
-- **T-21 (changes plan D-13/D-15):** the BAT stores **local** bone poses, and the crowd pipeline runs a small **compute pass** per frame. It does FK, applies per-individual bone scale, multiplies by the inverse bind, and writes skinning matrices to a storage buffer.
-  - Cost: 4000 × 64 bones × 48 B ≈ 12 MB of buffer and about 256k bone ops on the GPU, which is trivial.
-  - Gain: per-individual proportions are *correct* through the hierarchy, not approximated, and clip blending happens on local TRS, which blends properly.
+- **T-8** The hero mesh uses `ExtendedMaterial<StandardMaterial, MobMaterialExt>`. The crowd pipeline reuses the same WGSL coat functions as a shared shader module.
+- **T-9** Fur uses **shell rendering**: N extruded copies of the skinned surface, alpha-tested by a noise texture and masked by `fur_mask`. The shell count comes from tier and `QualityProfile`, for example 16 for hero, 6 near, 0 far. At 0 shells a fur-tinted base is drawn instead.
 
 ---
 
-## 6. `ornisculpt_gen`: pipeline and assets
+## 6. Motion
 
-### 6.1 Identity
+### 6.1 Gait (independent of any specific body plan)
 ```rust
-pub const GENERATOR_VERSION: u32 = 1;   // bump when output for the same input changes
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CreatureKey(pub u128);       // xxh3-128 of (GENERATOR_VERSION, template hash, genome-if-mesh-affecting, outfit, quality)
-pub struct Individual { pub species: SpeciesId, pub seed: u64, pub overrides: SmallVec<[(Name, f32); 8]>, pub outfit: Option<Outfit> }
-pub fn resolve_genome(t: &SpeciesTemplate, ind: &Individual) -> Genome;
-```
-
-### 6.2 Settings
-```rust
-pub enum Quality { Preview, Crowd, Hero, Bake }
-pub struct GenSettings {
-    pub quality: Quality,
-    pub mesh: MeshSettings,
-    pub lods: SmallVec<[LodSpec; 4]>,
-    pub normal_map: Option<u32>,        // resolution; None at runtime by default
-    pub bake_clips: bool,
+#[derive(Asset, Reflect, Serialize, Deserialize, Clone)]
+pub struct Gait { pub modes: Vec<GaitMode>, pub idle: IdleParams, pub turn_rate_deg: f32 }
+pub struct GaitMode {
+    pub name: String, pub speed: (f32, f32), pub pattern: PhasePattern,
+    pub duty: f32, pub stride: f32 /* × leg length */, pub lift: f32,
+    pub bob: f32, pub spine_flex: f32, pub lean: f32,
 }
-pub struct LodSpec { pub ratio: f32, pub error: f32, pub screen_coverage: f32, pub fold_no_crowd: bool }
-```
-
-### 6.3 Assets: species vs individual
-Instancing only works when individuals share a mesh, so the two levels are explicit:
-```rust
-/// Shared by every member of a species. Required for crowds.
-pub struct SpeciesAsset {
-    pub template: Arc<SpeciesTemplate>,
-    pub variants: SmallVec<[VariantMesh; 8]>,   // meshes at a few mesh-affecting gene points (lean, bulky, young, old)
-    pub clips: ClipBank,                         // shared by all variants (same skeleton topology)
-    pub rig: Arc<LocomotionRig>,
+pub enum PhasePattern {
+    Alternate,                // bipeds
+    LateralSequence,          // walk
+    Diagonal,                 // trot
+    Bound, Gallop { lead: Side },
+    Tripod,                   // hexapods
+    Wave { lag: f32 },        // many legs
+    Undulate { waves: f32 },  // legless: spine wave
+    Custom(Vec<f32>),         // explicit per-leg phases (by LegInfo order)
 }
-pub struct VariantMesh { pub genes: Vec<f32>, pub plan: Arc<BodyPlan>, pub lods: LodChain, pub normal_map: Option<Image2D> }
-
-/// Only for heroes or near creatures whose mesh-affecting genes are far from every variant.
-pub struct IndividualAsset { pub key: CreatureKey, pub plan: Arc<BodyPlan>, pub lods: LodChain, pub normal_map: Option<Image2D> }
-
-/// What a spawned creature needs at runtime regardless of tier.
-pub struct CreatureInstanceDesc {
-    pub species: SpeciesId, pub variant: u8,
-    pub bone_scale: Vec<f32>,                    // per-bone, derived from genome vs variant genes
-    pub palette: Palette,
-    pub unique: Option<CreatureKey>,             // Some ⇒ uses IndividualAsset at hero tier
-}
+pub struct LegInfo { pub chain: SmallVec<[BoneId; 4]>, pub foot: BoneId, pub pair: u8 /* front→back */, pub side: Side,
+                     pub stance: Stance, pub rest_foot: Vec3, pub pole: Vec3, pub length: f32 }
 ```
-- **T-22** Crowd individuals = nearest **variant mesh** + per-bone scale + palette. Body shape, color and proportions all vary while instancing is kept.
-- **T-23 (required by T-22):** all variants in a species must share **skeleton topology**: the same bones in the same order. Gene-gated parts (`ChildPart.enabled`) therefore always emit their bones and only toggle primitives and hard parts. Bones that end up unused get zero weight.
-- **TQ-5** How many variants per species: fixed (e.g. 8), or authored per species?
+- **T-10** A gait assigns phase from `(pair, side)`, so one "trot" gait works on any quadruped and "tripod" works on any hexapod. `GaitCompatible` (§2.9) flags mismatches.
 
-### 6.4 Entry points
+### 6.2 Control (gameplay-facing)
 ```rust
-pub fn generate_species(t: &SpeciesTemplate, s: &GenSettings, actions: &ActionLibrary) -> Result<SpeciesAsset, GenError>;
-pub fn generate_individual(t: &SpeciesTemplate, ind: &Individual, s: &GenSettings) -> Result<IndividualAsset, GenError>;
-pub fn instance_desc(sp: &SpeciesAsset, ind: &Individual) -> CreatureInstanceDesc;   // cheap: no meshing
-pub enum GenError { Plan(PlanError), Mesh(MeshError), BoneBudget { got: usize, max: usize }, .. }
+#[derive(Component, Reflect, Default, Clone)]
+pub struct MobIntent {
+    pub velocity: Vec3,                 // desired, world space
+    pub facing: Option<Dir3>,
+    pub look_at: Option<Vec3>,
+    pub reach: SmallVec<[Reach; 2]>,    // "put grip.r here" (hold-only tools still want this)
+}
+pub struct Reach { pub socket: SocketKind, pub side: Side, pub target: Vec3, pub weight: f32 }
 ```
 
-### 6.5 Storage
+### 6.3 Hero tier: pose layers as ECS systems
+The pose lives in a **per-mob buffer component**. Layer systems run in parallel across mobs with `par_iter_mut`, then one sync system writes bone entity `Transform`s.
 ```rust
-pub trait CreatureStore: Send + Sync {
-    fn load_species(&self, id: SpeciesId, version: u32) -> Option<SpeciesAsset>;
-    fn store_species(&self, a: &SpeciesAsset) -> io::Result<()>;
-    fn load_individual(&self, k: CreatureKey) -> Option<IndividualAsset>;
-    fn store_individual(&self, a: &IndividualAsset) -> io::Result<()>;
-}
-pub struct DiskStore { root: PathBuf }    // postcard + zstd, files named by key
-pub struct MemoryStore { .. }             // LRU, sized in bytes
-pub struct LayeredStore<A, B>(A, B);      // memory → disk
+#[derive(Component)] pub struct PoseBuffer { pub local: Vec<Transform>, pub model: Vec<Affine3A> }
+#[derive(Component)] pub struct MobAnatomy(pub Arc<Anatomy>);      // shared, immutable
+#[derive(Component, Default)] pub struct GaitState { pub phase: f32, pub mode: u8, pub blend: f32, pub speed: f32 }
+#[derive(Component, Default)] pub struct FeetState { pub feet: SmallVec<[FootState; 8]> }
+#[derive(Component, Default)] pub struct SpringState { pub chains: SmallVec<[SpringChainState; 4]> }
+#[derive(Component, Default)] pub struct LookState { pub current: Quat }
+
+// Ground is decoupled through components (TQ-2: physics is the user's choice). The game adds a
+// system in MobSet::Ground that reads FootProbes and writes FootHits using whatever physics it uses.
+// The plugin ships NO physics dependency. Examples use a tiny flat-ground system.
+// If no provider writes FootHits, feet fall back to the mob's root height plane.
+#[derive(Component, Default)] pub struct FootProbes(pub SmallVec<[FootProbe; 8]>);   // written by plan_feet
+#[derive(Component, Default)] pub struct FootHits(pub SmallVec<[Option<GroundHit>; 8]>); // written by ground provider
+pub struct FootProbe { pub origin: Vec3, pub max_drop: f32 }
+pub struct GroundHit { pub point: Vec3, pub normal: Dir3 }
+
+// Bone entities (hero tier only):
+#[derive(Component)] pub struct MobBone { pub id: BoneId }
+// Systems, in MobSet::HeroMotion order:
+//   advance_gait → plan_feet → (MobSet::Ground: provider) → solve_legs → balance_body
+//   → spine_follow → springs → look_at → reach → apply_bone_scale → sync_bones
 ```
-- **TQ-6** Is `postcard` + `zstd` fine for the cache, or do you want `rkyv` zero-copy from the start? `rkyv` loads faster but its types are more invasive.
+- **T-11 (ECS vs performance):** layers are systems and state is components, which is fully ECS. The pose itself is a `Vec<Transform>` component rather than per-bone queries. IK needs random access to whole chains, and `get_many_mut` across bone entities would serialize the work and break cache locality. Bone entities still exist for rendering (Bevy `SkinnedMesh`), attachment, and gameplay reads.
+
+### 6.4 IK (math only)
+```rust
+pub fn two_bone_ik(pose: &mut PoseBuffer, sk: &Skeleton, chain: [BoneId; 3], target: Vec3, pole: Vec3);
+pub fn fabrik(pose: &mut PoseBuffer, sk: &Skeleton, chain: &[BoneId], target: Vec3, iters: u8, limits: &[JointLimit]);
+pub fn forward_kinematics(sk: &Skeleton, local: &[Transform], root: Affine3A, out: &mut [Affine3A]);
+```
+
+### 6.5 Baked motion (crowd tiers)
+```rust
+#[derive(Asset, TypePath)]
+pub struct BakedMotion {
+    pub key: MotionKey,
+    pub clips: Vec<BakedClip>,
+    pub texture: Handle<Image>,          // RGBA32F; per frame per crowd bone: [quat][translation.xyz, _]
+    pub bones: u8,
+}
+pub struct BakedClip { pub kind: ClipKind, pub first_frame: u32, pub frames: u32, pub fps: f32, pub looping: bool, pub root_speed: f32 }
+pub enum ClipKind { Idle, Mode(u8 /* GaitMode index */), TurnLeft, TurnRight }
+pub fn bake_motion(a: &Anatomy, gait: &Gait, fps: f32) -> (Vec<BakedClip>, Image);   // runs the hero layers headless on flat ground
+```
+- **T-12** Clips are derived **automatically from the gait**: idle, one per mode, and turns. Nothing is authored per mob.
+- **T-13** Motion is shared by **`MotionKey = hash(BodyPlan at base form, Gait)`**. Every mob with that body plan and gait shares one texture, whatever its individual form.
+
+### 6.6 Runtime body levers (the game drives these)
+```rust
+#[derive(Component, Reflect, Default)]
+pub struct BoneScales(pub SmallVec<[BoneScale; 32]>);   // empty = identity
+pub struct BoneScale { pub bone: BoneId, pub length: f32, pub girth: Vec2 }
+#[derive(Component, Reflect, Default)] pub struct HiddenRegions(pub RegionMask);
+```
+- **T-14** `BoneScale` is **non-inherited**. Length moves children along the bone, and girth scales only that bone's own skin, so there's no shear. Both tiers apply it: the hero in `apply_bone_scale`, the crowd in the GPU skinning pass. This is also how a crowd mob's individual `Form` is approximated on the shared base mesh (§7.2).
+- Part-level changes go through the Part entities (§8.2): editing a `Part` component or despawning one triggers regeneration.
 
 ---
 
-## 7. Equipment (shared types; behaviour comes later)
+## 7. Generation
+
+### 7.1 Keys (content hashes, xxh3-128, include `GENERATOR_VERSION`)
 ```rust
-pub struct ToolDef {
-    pub id: ToolId, pub name: Name, pub mesh: AssetRef, pub nominal_size: f32,
-    pub accepts: SocketKind,
-    pub grips: SmallVec<[Grip; 2]>,           // two-handed tools have 2
-    pub actions: SmallVec<[ActionId; 4]>,     // what you can do with it
+pub struct BaseKey(pub u128);      // BodyPlan + default Form       → shared base mesh (crowd)
+pub struct BodyKey(pub u128);      // BodyPlan + Form + seed + parts → unique mesh (hero)
+pub struct MotionKey(pub u128);    // BodyPlan base + Gait           → BakedMotion
+pub const GENERATOR_VERSION: u32 = 1;
+```
+
+### 7.2 Generated assets
+```rust
+#[derive(Asset, TypePath)]
+pub struct GeneratedBody {
+    pub key: u128,
+    pub anatomy: Arc<Anatomy>,
+    pub lods: Vec<Handle<Mesh>>,                    // LOD0 full skeleton; LOD1+ crowd skeleton
+    pub inverse_bindposes: Handle<SkinnedMeshInverseBindposes>,
+    pub hard_parts: Vec<Handle<Mesh>>,
+    pub normal_map: Option<Handle<Image>>,          // baked mobs only
 }
-pub struct Grip { pub local: Xform, pub hand: Side, pub curl: f32 }
-pub struct Equipped { pub slots: SmallVec<[(SocketId, ToolId); 4]> }
 ```
+- **T-15** Crowd mobs render the **base body** (`BaseKey`) with `BoneScales` derived from their `Form`, using `form_to_bone_scales(base: &Anatomy, mine: &Anatomy) -> BoneScales`. Hero mobs get their own `BodyKey` mesh. When a mob is promoted to hero, its unique mesh is requested, and the base mesh is shown until it arrives.
 
----
-
-## 8. `ornisculpt_bevy`: ECS surface
-
-### 8.1 Assets and loaders
+### 7.3 Generation components, resources and flow
 ```rust
-impl Asset for SpeciesTemplateAsset /* wraps SpeciesTemplate, RON loader, hot-reload */;
-impl Asset for SpeciesAssetHandle    /* .species  binary loader */;
-impl Asset for IndividualAssetHandle /* .creature binary loader */;
-impl Asset for ActionLibraryAsset, ToolDefAsset;
-```
-
-### 8.2 Components
-```rust
-#[derive(Component)] pub struct Creature { pub species: SpeciesId, pub desc: Arc<CreatureInstanceDesc> }   // required components ↓
-#[derive(Component, Default)] pub struct CreatureControl(pub ControlInput);
-#[derive(Component)] pub enum AnimTier { Hero, Near, Far, Impostor }
-#[derive(Component)] pub struct TierHysteresis { pub since: f32, pub pending: Option<AnimTier> }
-
-// Tier A only:
-#[derive(Component)] pub struct HeroRig { pub animator: Animator, pub state: AnimState, pub pose: Pose, pub joints: Vec<Entity> }
-// Tiers B/C:
-#[derive(Component)] pub struct CrowdAnim { pub clip: [ClipId; 2], pub time: [f32; 2], pub blend: f32, pub update_bucket: u8 }
-
-#[derive(Component)] pub struct GenerationPending { pub task: Task<Result<IndividualAsset, GenError>> }
+#[derive(Component)] pub struct GenRequest { pub what: GenWhat, pub priority: f32 }
+pub enum GenWhat { Base, Unique, Motion }
+#[derive(Component)] pub struct GenTask(pub Task<GenResult>);
 #[derive(Component)] pub struct Placeholder;
-#[derive(Component)] pub struct EquippedTools(pub Equipped);
-```
-- **T-24** `Creature` uses Bevy **required components** to pull in `CreatureControl`, `AnimTier` and `Transform`. Spawning is `commands.spawn((Creature::new(..), Transform::..))`.
 
-### 8.3 Resources
-```rust
-#[derive(Resource)] pub struct CreatureLibrary { species: HashMap<SpeciesId, Handle<..>>, tools: .., actions: .. }
-#[derive(Resource)] pub struct LodConfig { pub tiers: [TierRule; 4], pub max_hero: u32, pub promotions_per_frame: u32 }
-#[derive(Resource)] pub struct GenBudget { pub max_in_flight: u32, pub max_completions_per_frame: u32 }
-#[derive(Resource)] pub struct Store(pub Arc<dyn CreatureStore>);
-pub struct AvianGround<'w, 's> /* SystemParam implementing GroundQuery */;
-```
-
-### 8.4 Render-world types (crowd pipeline)
-```rust
-#[repr(C)] #[derive(Pod, Zeroable)]
-pub struct CrowdInstanceGpu {
-    pub transform: [[f32; 4]; 3],          // affine 3×4
-    pub clip_frame: [u32; 2], pub clip_t: [f32; 2], pub blend: f32,
-    pub bone_scale_offset: u32,            // into per-instance bone-scale storage buffer
-    pub skin_offset: u32,                  // into skinning-matrix output buffer
-    pub palette: [u32; 3],                 // packed rgb8 ×3
-    pub pattern: PatternGpu,
+#[derive(Resource, Default)] pub struct GenCache {
+    pub bodies: HashMap<u128, Handle<GeneratedBody>>,
+    pub motions: HashMap<MotionKey, Handle<BakedMotion>>,
+    pub in_flight: HashMap<u128, Vec<Entity>>,      // dedupe: many mobs, one task
 }
-pub struct CrowdBatches;    // (species, variant, lod) → instance range; one draw each, plus one shadow draw each
-pub struct CrowdSkinningPipeline;   // compute: BAT + bone scale → skin matrices (T-21)
-pub struct CrowdDrawPipeline;       // vertex: skin from storage buffer; fragment: creature material
-```
+#[derive(Resource)] pub struct GenStore { pub root: PathBuf }   // postcard + zstd on disk (confirmed)
+#[derive(Event)] pub struct BodyReady { pub mob: Entity }          // observer trigger
 
-### 8.5 Plugin and system sets
-```rust
-pub struct OrnisculptPlugin { pub store_root: PathBuf, pub lod: LodConfig, pub gen: GenBudget }
-#[derive(SystemSet)] pub enum OrnisculptSet { Generation, Control, Tiering, HeroAnimate, CrowdAnimate, SyncJoints }
-// Order: Generation → Control (user systems write CreatureControl) → Tiering → {HeroAnimate, CrowdAnimate} → SyncJoints → TransformPropagate
+// Flow:
+//   observer On<Add, Mob> → insert GenRequest(Base, Motion) + Placeholder
+//   system schedule_gen (MobSet::Generation): cache hit? attach handle : spawn AsyncCompute task (budgeted)
+//   system poll_gen: completed → insert asset handles, trigger BodyReady, remove Placeholder
+//   system detect_body_edits: Changed<Part>/RemovedComponents<Part>/Changed<Form> → GenRequest(Unique)
 ```
 
 ---
 
-## 9. Open questions (summary)
-| Tag | Question |
+## 8. The mob in the ECS
+
+### 8.1 Mob root
+```rust
+#[derive(Component, Reflect)]
+#[require(Transform, Visibility, MobIntent, MobTier, BoneScales, HiddenRegions)]
+pub struct Mob { pub desc: Handle<MobDesc> }
+
+#[derive(Component, Reflect, Default)] pub enum MobTier { #[default] Pending, Hero, Near, Far }
+#[derive(Component)] pub struct MobBody(pub Handle<GeneratedBody>);
+#[derive(Component)] pub struct MobMotion(pub Handle<BakedMotion>);
+#[derive(Component)] pub struct MobSeed(pub u64);
+```
+
+### 8.2 Part entities (hybrid part tree)
+```rust
+/// The mob's own copy of its anatomy after spawn (BodyPlan with Form applied). Source of truth for regen and saving.
+#[derive(Component, Reflect, Clone)] pub struct LiveBody(pub BodyPlan);
+
+#[derive(Component, Reflect)] pub struct Part { pub path: PartPath, pub kind: PartKind }   // editable view of one LiveBody node
+#[derive(Component)] pub struct PartLod(pub LodLevel);
+#[derive(Component)] #[relationship(relationship_target = MobParts)] pub struct PartOf(pub Entity);
+#[derive(Component)] #[relationship_target(relationship = PartOf)] pub struct MobParts(Vec<Entity>);
+
+/// Deliberate anatomy changes go through events, never through despawning (despawn = LOD cull).
+#[derive(Event)] pub struct SeverPart { pub mob: Entity, pub path: PartPath }   // removes from LiveBody → regen
+#[derive(Event)] pub struct GraftPart { pub mob: Entity, pub parent: PartPath, pub node: PartNode }
+```
+- **T-16** Part entities are spawned per **part LOD** (§2.10). Core parts exist at every tier, and fine parts only at the tiers where they're meshed. Gameplay edits a `Part` component, and a sync system writes the change into `LiveBody` and requests a regen. Removing or adding anatomy uses `SeverPart`/`GraftPart`, so LOD despawns can never be mistaken for dismemberment. `HiddenRegions` hides a severed part immediately while regen runs.
+
+### 8.3 Sockets and tools
+```rust
+#[derive(Component)] pub struct Socket { pub kind: SocketKind, pub side: Side, pub bone: BoneId, pub size: f32 }
+// Socket entities are children of the bone entity (hero) or of the mob root (crowd).
+#[derive(Component)] pub struct SocketTracking;   // opt-in: keep Transform updated in crowd tiers (CPU sample of baked clip)
+
+#[derive(Asset, Reflect, Serialize, Deserialize, Clone)]
+pub struct ToolDef { pub mesh: Handle<Mesh>, pub material: Handle<StandardMaterial>, pub grip: Transform,
+                     pub fits: SocketKind, pub nominal_size: f32 }
+#[derive(Component)] #[relationship(relationship_target = Holding)] pub struct HeldBy(pub Entity);   // tool → socket
+#[derive(Component)] #[relationship_target(relationship = HeldBy)] pub struct Holding(Vec<Entity>);
+#[derive(Component)] pub struct Tool(pub Handle<ToolDef>);
+```
+- **T-17** Hero tier: the tool is a normal mesh entity following the socket. Crowd tiers: the tool is drawn **in the crowd pipeline** using the socket bone's skinning matrix (one instanced draw per tool mesh), and the tool entity's `Transform` isn't updated unless `SocketTracking` is set.
+
+---
+
+## 9. Tiering and quality
+
+```rust
+#[derive(Resource, Reflect)]
+pub struct QualityProfile {
+    pub max_hero: u32, pub tier_px: [f32; 3] /* screen-height thresholds hero/near/far */,
+    pub hysteresis: f32, pub promotions_per_frame: u32,
+    pub lod_bias: f32, pub voxel_scale: f32, pub fur_shells: [u8; 3],
+    pub crowd_update_divisor: [u8; 2] /* near, far */, pub gen_max_in_flight: u32,
+}
+impl QualityProfile { pub const LOW: Self; pub const MEDIUM: Self; pub const HIGH: Self; pub const ULTRA: Self; }
+#[derive(Component)] pub struct TierCamera;   // cameras considered for tiering (top-down + first-person)
+```
+- **T-18** Tier = the mob's projected screen height across all `TierCamera`s (the largest wins), plus hysteresis. A forced-hero override component handles story mobs and first-person targets:
+  ```rust
+  #[derive(Component)] pub struct ForceTier(pub MobTier);
+  ```
+
+---
+
+## 10. Crowd rendering (render world)
+
+```rust
+#[derive(Component, Clone, Default)] pub struct CrowdMotion { pub clip: [u16; 2], pub time: [f32; 2], pub blend: f32, pub bucket: u8 }
+
+#[repr(C)] #[derive(ShaderType, Clone, Copy)]
+pub struct CrowdInstanceGpu {
+    pub world: Mat3x4, pub frames: UVec2, pub frame_t: Vec2, pub blend: f32,
+    pub bone_scale_offset: u32, pub skin_offset: u32, pub hidden: UVec2, pub coat: u32 /* index into coat buffer */,
+}
+pub struct CrowdBatchKey { pub body: AssetId<GeneratedBody>, pub lod: u8 }   // one draw (+shadow, +fur shells) per key
+pub struct CrowdSkinningNode;   // compute: BAT local poses + BoneScales → skin matrices (storage buffer)
+pub struct CrowdDrawPipeline;   // vertex skin from storage buffer; coat fragment; shadow + fur-shell variants
+```
+- **T-19** Crowd mobs are **one entity each**, with no bone or part-update systems. `CrowdMotion` advances in staggered buckets according to `crowd_update_divisor`. Extraction uses `ExtractComponent`.
+
+---
+
+## 11. Plugin and system sets
+
+```rust
+pub struct OrnisculptPlugin { pub quality: QualityProfile, pub store_root: PathBuf }
+#[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug)]
+pub enum MobSet { Generation, Intent /* game writes MobIntent */, Tiering, HeroMotion, Ground, CrowdMotion, Sync }
+// Update: Generation → Intent → Tiering → HeroMotion(⊃ Ground) ∥ CrowdMotion → Sync → (TransformSystems::Propagate)
+```
+
+---
+
+## 12. Examples and benchmarks (from TQ-5)
+
+There is no editor. Examples double as visual tests, and benches guard performance.
+
+| Example | Shows / tests |
 |---|---|
-| TQ-1 | Fixed `Region` enum, or designer-defined regions? |
-| TQ-2 | Explicit gene correlation construct? |
-| TQ-3 | Wings: visual/folding only, or flight locomotion? |
-| TQ-4 | Is `ControlInput` the right gameplay-facing granularity? |
-| TQ-5 | Variants per species: fixed count or authored? |
-| TQ-6 | Cache serialization: postcard+zstd or rkyv? |
-| — | Plan questions still open: Q-2 (runtime normal maps), Q-3 (hardware/latency), Q-6 (fur/feathers), Q-7 (camera), Q-8 (growth/aging, which would make `bone_scale` animated, not static) |
+| `anatomy` | BodyPlan → skeleton gizmos, regions coloured, sockets drawn; reload RON live |
+| `surface` | SDF mesh with weight heatmap and region overlay; toggle part LODs |
+| `rig` | Manually rotate bones (keys/sliders via gizmo) to check skinning |
+| `walk` | Biped, quadruped, hexapod and serpent walking on flat ground; switch gaits |
+| `coat` | Patterns + fur shells on several body plans; quality profile switch |
+| `levers` | BoneScales growth, HiddenRegions, SeverPart/GraftPart regen |
+| `hold` | Tools held in grip sockets, hero ↔ crowd tier |
+| `crowd` | N mobs (CLI arg, default 4000), mixed body plans, top-down + first-person cameras, Tracy spans |
+
+| Bench (`criterion`) | Measures |
+|---|---|
+| `build_anatomy` | BodyPlan + Form → Anatomy |
+| `sdf_eval` | `distance_batch` throughput (samples/sec) |
+| `mesh_lod` | Re-mesh per LodLevel, plus skinning and attrs |
+| `bake_motion` | Baked motion per gait |
+| `hero_motion` | One frame of hero layer systems for 64 mobs (headless `App`) |
+| `crowd_update` | One frame of crowd CPU systems for 4000 mobs (headless `App`) |
+
+- **T-21** Benches and examples use the same `assets/mobs/` set, so a performance number always matches something you can look at.
+
+---
+
+## 13. Open questions
+
+None blocking. Next step: I'll write these types as compiling Rust stubs (`todo!()` bodies), module by module, starting with `anatomy`, and review each with you before moving to the next.

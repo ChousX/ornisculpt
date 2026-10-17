@@ -1,0 +1,10 @@
+// Scales everywhere: green with darker, varied scales.
+(
+    base: (0.36, 0.5, 0.24),
+    secondary: (0.18, 0.3, 0.14),
+    accent: (0.85, 0.8, 0.45),
+    roughness: 0.55,
+    coverings: [
+        (regions: All, kind: Scales((size: 0.014, relief: 0.8, contrast: 0.6))),
+    ],
+)
