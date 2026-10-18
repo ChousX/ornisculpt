@@ -16,6 +16,7 @@ mod hard;
 mod lod;
 mod mesh_data;
 mod mesher;
+mod octree;
 mod process;
 pub mod sdf;
 
@@ -30,6 +31,7 @@ pub use mesh_data::{
     NOT_CLOTH, Submesh,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
+pub use octree::AdaptiveContour;
 pub use process::{merge, remap_to_crowd, simplify, skin_and_attrs, smooth, weld};
 
 use bevy::prelude::*;

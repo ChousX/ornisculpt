@@ -489,3 +489,14 @@ impl BodyField {
         &self.bone_model
     }
 }
+
+
+impl<'a> ChunkView<'a> {
+    /// This view restricted to a sub-region.
+    pub(crate) fn narrow(&self, region: Aabb3d) -> ChunkView<'a> {
+        let field = self.field;
+        let prims = self.prims.iter().copied().filter(|&i| field.prims[i as usize].aabb.intersects(&region)).collect();
+        let joints = self.joints.clone();
+        ChunkView { field, prims, joints, bounds: region }
+    }
+}

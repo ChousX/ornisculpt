@@ -297,7 +297,7 @@ impl VoxelBinding {
 #[cfg(test)]
 mod tests {
     use crate::anatomy::{BodyPlan, Form, LimbRole, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{ProceduralHardParts, SurfaceNets, SurfaceSettings, mesh_lod};
+    use crate::surface::{ProceduralHardParts, SurfaceSettings, mesh_lod};
 
     /// On the human mesh: no hand vertex leans on a leg, no finger on its neighbour, weights sum to 1.
     #[test]
@@ -306,7 +306,7 @@ mod tests {
         let live = apply_form(&plan, &Form::default()).unwrap();
         let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
         let settings = SurfaceSettings::default();
-        let m = mesh_lod(&SurfaceNets, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+        let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let bones = &a.skeleton.bones;
         let legs: Vec<u16> = a.legs.iter().flat_map(|l| l.chain.iter().map(|b| b.0 as u16)).collect();
         let arm_parts: Vec<usize> = a.parts.iter().enumerate().filter(|(_, p)| p.role == Some(LimbRole::Manipulator)).map(|(i, _)| i).collect();

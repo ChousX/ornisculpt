@@ -24,11 +24,15 @@ pub struct MeshSettings {
     pub chunk_voxels: u32,
     /// Hard cap; exceeding it is an error rather than a hitch.
     pub max_triangles: u32,
+    /// Adaptive meshers: how many times cells may halve below `voxel_size` where the body is thin.
+    pub detail_levels: u8,
+    /// Adaptive meshers: cells across the radius of the thinnest nearby part.
+    pub cells_per_radius: f32,
 }
 
 impl Default for MeshSettings {
     fn default() -> Self {
-        Self { voxel_size: 0.01, chunk_voxels: 30, max_triangles: 200_000 }
+        Self { voxel_size: 0.01, chunk_voxels: 30, max_triangles: 200_000, detail_levels: 0, cells_per_radius: 2.0 }
     }
 }
 

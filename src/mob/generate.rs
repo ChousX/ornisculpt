@@ -16,7 +16,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{MobOutfit, Outfit, fit_outfit, garment_lods};
-use crate::surface::{BodyMeshData, MaterialSlot, ProceduralHardParts, SurfaceNets, SurfaceSettings, merge, mesh_all_lods};
+use crate::surface::{AdaptiveContour, BodyMeshData, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -371,7 +371,7 @@ pub(super) fn start_generation(
             let task = AsyncComputeTaskPool::get().spawn(async move {
                 let anatomy = build_anatomy(&live, &rules, &assets).map_err(|e| e.to_string())?;
                 let (anatomy, cloth) = if outfit.garments.is_empty() { (anatomy, None) } else { fit_outfit(anatomy, &outfit, &assets) };
-                let mut lods = mesh_all_lods(&SurfaceNets, &ProceduralHardParts, &anatomy, &settings, seed)
+                let mut lods = mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &settings, seed)
                     .map_err(|e| e.to_string())?;
                 if let Some(cloth) = &cloth {
                     for (lod, garments) in lods.iter_mut().zip(garment_lods(cloth, &anatomy, &settings)) {

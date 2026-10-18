@@ -30,8 +30,8 @@ pub struct SurfaceSettings {
 
 impl Default for SurfaceSettings {
     fn default() -> Self {
-        let spec = |voxel_size, simplify_ratio, geometric_folds, hard_parts| LodSpec {
-            mesh: MeshSettings { voxel_size, ..default() },
+        let spec = |voxel_size, detail_levels, simplify_ratio, geometric_folds, hard_parts| LodSpec {
+            mesh: MeshSettings { voxel_size, detail_levels, ..default() },
             simplify_ratio,
             max_error: 0.01,
             geometric_folds,
@@ -41,9 +41,11 @@ impl Default for SurfaceSettings {
             levels: [
                 // Geometric creases are off: at this voxel size they mesh as scratches. Fine
                 // wrinkles belong in shading; keep geometry for large folds only.
-                spec(0.008, 0.5, false, true),  // Hero
-                spec(0.02, 0.22, false, true),  // Near
-                spec(0.05, 0.35, false, false), // Far
+                // Detail levels: cells halve (to 2 mm close up) where the body is thin, so fingers and
+                // ears keep their shape without meshing the whole body finer.
+                spec(0.008, 2, 0.5, false, true),  // Hero
+                spec(0.02, 1, 0.22, false, true),  // Near
+                spec(0.05, 0, 0.35, false, false), // Far
             ],
         }
     }
@@ -180,7 +182,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 mod hero_timing {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{ProceduralHardParts, SurfaceNets};
+    use crate::surface::ProceduralHardParts;
 
     #[test]
     #[ignore = "timing probe"]
@@ -192,7 +194,7 @@ mod hero_timing {
             let mut spec = SurfaceSettings::default().levels[0].clone();
             spec.mesh.voxel_size = v;
             let t = std::time::Instant::now();
-            let m = mesh_lod(&SurfaceNets, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
+            let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
             println!("voxel {v}: {:.2}s, {} tris", t.elapsed().as_secs_f32(), m.indices.len() / 3);
         }
     }
