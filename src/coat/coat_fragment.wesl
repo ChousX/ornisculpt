@@ -13,7 +13,7 @@
 // shimmers.
 
 import bevy_pbr::render::{
-    mesh_view_bindings::view,
+    mesh_view_bindings::{view, lights},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
@@ -185,6 +185,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 }
     let B = cross(pbr.N, T);
     var roughness = pbr.material.perceptual_roughness;
+    var glow = vec3<f32>(0.0);
     var reflectance = pbr.material.reflectance;
 
     let pixel = pixel_size(in.world_position.xyz);
@@ -329,11 +330,118 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     reflectance = vec3<f32>(0.2);
 }
 
+@if(COAT_WING) {
+    // Wing sheets; the kind rides in vertex colour w. uv = sheet coordinates, tangent = rib /
+    // shaft / wing direction with thickness in w (0 = thinnest).
+    let kind = u32(scale_w + 0.5);
+    var uv = vec2<f32>(0.5);
+@if(VERTEX_UVS_A) {
+    uv = in.uv;
+}
+    var thickness = 0.5;
+@if(VERTEX_TANGENTS) {
+    thickness = clamp(in.world_tangent.w, 0.0, 1.0);
+}
+    let ndv = clamp(abs(dot(pbr.N, pbr.V)), 0.0, 1.0);
+    var transmit = 0.0;
+    var glow_tint = vec3<f32>(0.0);
+    if kind == 0u {
+        // Membrane (bat, dragon): leathery, veined, glowing warm when backlit. Veins branch out
+        // from the finger ribs; fibres run along the panel; thick ribs stay dark.
+        let fine = detail(0.01, pixel);
+        let warp = value3(vec3<f32>(uv * vec2<f32>(3.0, 7.0), 0.0));
+        let vein_line = abs(sin(3.14159 * (uv.x * 6.0 + warp * 1.6)));
+        let vein = (1.0 - smoothstep(0.0, 0.08, vein_line)) * (0.4 + 0.6 * uv.y) * fine;
+        let fibre = 0.5 + 0.5 * sin(uv.y * 90.0 + uv.x * 12.0 + warp * 4.0);
+        let pebble = cellular_fast(rest / 0.006);
+        let leather = mix(1.0, smoothstep(0.0, 0.3, pebble.y - pebble.x) * 0.25 + 0.75, fine);
+        let skin = mix(coat.secondary.rgb, coat.base.rgb, 0.35);
+        color = skin * leather * mix(1.0, 0.92 + 0.08 * fibre, fine);
+        color = mix(color, skin * 0.45, max(vein * 0.7, thickness * 0.55));
+        transmit = mix(0.7, 0.05, max(thickness, vein * 0.6));
+        glow_tint = mix(coat.base.rgb, vec3<f32>(1.0, 0.45, 0.3), 0.5) * (1.0 - thickness) * (1.0 - vein * 0.6);
+        roughness = 0.55;
+        reflectance = vec3<f32>(0.3);
+    } else if kind == 1u {
+        // Flight feather: asymmetric vane (narrow leading side), pale shaft, angled barbs, tip
+        // band; anisotropic sheen along the shaft below.
+        let a = uv.x - 0.5;
+        let lead = select(0.5, 0.36, a < 0.0);
+        let tip = 1.0 - smoothstep(0.88, 1.0, uv.y);
+        let half_width = lead * mix(0.2, 1.0, sqrt(max(tip, 0.0)));
+        if abs(a) > half_width || uv.y < 0.02 {
+            discard;
+        }
+        let shaft = 1.0 - smoothstep(0.015, 0.03, abs(a));
+        let barbs = 0.9 + 0.1 * sin(uv.y * 70.0 - abs(a) * 40.0) * detail(0.004, pixel);
+        var vane = mix(coat.secondary.rgb, coat.base.rgb, smoothstep(0.0, 0.5, uv.y));
+        vane = mix(vane, coat.accent.rgb, smoothstep(0.78, 0.97, uv.y) * coat.feathers.z);
+        vane *= 0.85 + 0.15 * smoothstep(0.0, 0.25, half_width - abs(a));
+        color = mix(vane * barbs, mix(coat.accent.rgb, vec3<f32>(0.9), 0.5), shaft * 0.6);
+        transmit = 0.3;
+        glow_tint = vane * 0.6;
+        roughness = 0.65;
+    } else if kind == 2u {
+        // Insect wing: longitudinal veins from the hinge, cross-vein cells, dark costa and
+        // pterostigma, thin-film iridescence; mostly see-through (dithered).
+        let long_veins = smoothstep(0.86, 0.96, abs(fract(uv.y * 6.0 + 0.12 * sin(uv.x * 4.0)) - 0.5) * 2.0);
+        let cells = cellular_fast(vec3<f32>(uv.x * 22.0, uv.y * 9.0, 0.5));
+        let cross_veins = 1.0 - smoothstep(0.0, 0.08, cells.y - cells.x);
+        let costa = 1.0 - smoothstep(0.04, 0.08, uv.y);
+        let stigma = smoothstep(0.78, 0.8, uv.x) * (1.0 - smoothstep(0.88, 0.9, uv.x)) * (1.0 - smoothstep(0.12, 0.16, uv.y));
+        let fine = detail(0.003, pixel);
+        let vein = clamp(max(max(long_veins, cross_veins) * fine, max(costa, stigma)), 0.0, 1.0);
+        // Thin film: phase from film thickness (varying per cell) and viewing angle.
+        let film = 0.35 + 0.4 * cells.z + 0.25 * thickness;
+        let phase = film * (1.0 + 0.6 * (1.0 - ndv));
+        let irid = 0.5 + 0.5 * cos(6.28318 * (phase * vec3<f32>(1.0, 0.85, 0.7) + vec3<f32>(0.0, 0.33, 0.67)));
+        let membrane = mix(coat.accent.rgb * 0.6, irid, 0.55 * (0.4 + 0.6 * (1.0 - ndv)));
+        color = mix(membrane, coat.secondary.rgb * 0.25, vein);
+        var alpha = mix(0.22, 1.0, vein);
+@if(COAT_CROWD) {
+        alpha = 1.0;
+}
+        // Ordered 4×4 dither: transparency without sorting.
+        let px = vec2<u32>(in.position.xy) % vec2<u32>(4u);
+        let bayer = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+        if alpha < (bayer[px.y * 4u + px.x] + 0.5) / 16.0 {
+            discard;
+        }
+        transmit = 0.6;
+        glow_tint = membrane * 0.4;
+        roughness = 0.2;
+        reflectance = vec3<f32>(0.5);
+    } else {
+        // Elytron: a hard, glossy, finely punctured shell.
+        let dots = cellular_fast(rest / 0.004);
+        let pits = 1.0 - (1.0 - smoothstep(0.0, 0.12, dots.x)) * 0.25 * detail(0.004, pixel);
+        color = coat.base.rgb * pits;
+        roughness = 0.22;
+        reflectance = vec3<f32>(0.6);
+    }
+    pbr.material.diffuse_transmission = transmit;
+    // Fast translucency (Barré-Brisebois & Bouchard, GDC 2011): light through a thin surface,
+    // brightest looking toward the light, scaled by thinness.
+    if lights.n_directional_lights > 0u {
+        let light = lights.directional_lights[0];
+        let h = normalize(light.direction_to_light + pbr.N * 0.3);
+        let through = pow(clamp(dot(pbr.V, -h), 0.0, 1.0), 4.0) * 1.2;
+        glow = glow_tint * through * light.color.rgb * view.exposure;
+        if kind == 1u {
+            // Anisotropic sheen along the shaft (Kajiya–Kay style).
+            let hv = normalize(light.direction_to_light + pbr.V);
+            let th = dot(T, hv);
+            glow += coat.accent.rgb * pow(sqrt(max(0.0, 1.0 - th * th)), 80.0) * 0.06 * light.color.rgb * view.exposure;
+        }
+    }
+}
+
     pbr.material.base_color = vec4<f32>(color, 1.0);
     pbr.material.perceptual_roughness = roughness;
     pbr.material.reflectance = reflectance;
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr);
+    out.color = vec4<f32>(out.color.rgb + glow, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr, out.color);
     return out;
 }

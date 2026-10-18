@@ -191,6 +191,7 @@ pub struct SlotMaterials {
     pub shell: Handle<MobMaterial>,
     pub feather: Handle<MobMaterial>,
     pub cloth: Handle<MobMaterial>,
+    pub wing: Handle<MobMaterial>,
 }
 
 impl SlotMaterials {
@@ -200,6 +201,7 @@ impl SlotMaterials {
             MaterialSlot::Hard => self.hard.clone(),
             MaterialSlot::Eye => self.eye.clone(),
             MaterialSlot::Cloth => self.cloth.clone(),
+            MaterialSlot::Wing => self.wing.clone(),
         }
     }
 }
@@ -224,8 +226,16 @@ fn body_materials(
     let eye = Coat::plain([0.05, 0.04, 0.03], 0.1);
     [false, true].map(|crowd| {
         let mut mat = |uniform: CoatUniform, roughness: f32, layer: CoatLayer| {
+            // Thin wing surfaces let light through (a flipped diffuse lobe; the shader varies it).
+            let diffuse_transmission = if layer == CoatLayer::Wing && !crowd { 0.5 } else { 0.0 };
             materials.add(ExtendedMaterial {
-                base: StandardMaterial { perceptual_roughness: roughness, cull_mode: None, double_sided: true, ..default() },
+                base: StandardMaterial {
+                    perceptual_roughness: roughness,
+                    cull_mode: None,
+                    double_sided: true,
+                    diffuse_transmission,
+                    ..default()
+                },
                 extension: CoatExt { bones: bones.clone(), coat: uniform, crowd, layer },
             })
         };
@@ -236,6 +246,7 @@ fn body_materials(
             shell: mat(skin_uniform, 0.9, CoatLayer::Shell),
             feather: mat(skin_uniform, 0.6, CoatLayer::Feather),
             cloth: mat(skin_uniform, 0.85, CoatLayer::Cloth),
+            wing: mat(skin_uniform, 0.6, CoatLayer::Wing),
         }
     })
 }

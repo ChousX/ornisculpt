@@ -1,0 +1,752 @@
+//! The procedural pose, one stage per function, over the motion components. The systems in
+//! `pose` run each stage on every mob in parallel; [`Sim`] chains the same stages on plain data
+//! for the crowd baker and the tests.
+//!
+//! Order: choose step → advance clock → rest pose → wings → feet → bob → torso → springs →
+//! cycles → leg IK → look-at.
+
+use std::f32::consts::TAU;
+
+use bevy::math::{Affine3A, Vec3A};
+use bevy::prelude::*;
+use smallvec::SmallVec;
+
+use super::eval::LayerPose;
+use super::gait::BodyMotion;
+use super::heft::{Heft, HeftResponse};
+use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
+use super::{Gait, fabrik, two_bone};
+use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
+
+pub(crate) fn leg_length(a: &Anatomy) -> f32 {
+    if a.legs.is_empty() {
+        0.5
+    } else {
+        a.legs.iter().map(|l| l.length).sum::<f32>() / a.legs.len() as f32
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn forward_kinematics(bones: &[BoneDef], local: &[Transform], root: Affine3A) -> Vec<Affine3A> {
+    let mut world: Vec<Affine3A> = Vec::with_capacity(bones.len());
+    forward_kinematics_into(bones, local, root, &mut world);
+    world
+}
+
+fn forward_kinematics_into(bones: &[BoneDef], local: &[Transform], root: Affine3A, world: &mut Vec<Affine3A>) {
+    world.clear();
+    for (i, b) in bones.iter().enumerate() {
+        let parent = b.parent.map_or(root, |p| world[p.index()]);
+        world.push(parent * local[i].compute_affine());
+    }
+}
+
+fn rotation(a: &Affine3A) -> Quat {
+    a.to_scale_rotation_translation().1
+}
+
+/// What every stage needs to know about the mob this frame.
+pub(crate) struct Frame<'a> {
+    pub a: &'a Anatomy,
+    pub gait: &'a Gait,
+    /// The mob's root transform.
+    pub root: Affine3A,
+    pub dt: f32,
+    pub time: f32,
+    pub leg: f32,
+}
+
+impl Frame<'_> {
+    /// Speed in leg lengths per second.
+    fn speed(&self, loco: &Locomotion) -> f32 {
+        loco.velocity.length() / self.leg
+    }
+
+    /// Each foot's rest spot, world space.
+    fn homes(&self) -> SmallVec<[Vec3; 8]> {
+        self.a.legs.iter().map(|l| self.root.transform_point3(l.rest_foot)).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Binding
+// ---------------------------------------------------------------------------------------------
+
+/// Fresh state for a (new) body: feet on their rest spots, springs still.
+pub(crate) fn bind(a: &Anatomy, root: Affine3A, feet: &mut Feet, springs: &mut SpringState, look: &mut LookState, torso: &mut TorsoState, clock: &mut GaitClock) {
+    feet.0 = a
+        .legs
+        .iter()
+        .map(|l| {
+            let h = root.transform_point3(l.rest_foot);
+            Foot { position: h, planted: true, swing_from: h, swing_to: h }
+        })
+        .collect();
+    springs.0 = vec![SpringBone::default(); a.springs.iter().map(|c| c.bones.len()).sum()];
+    *look = LookState::default();
+    *torso = TorsoState::default();
+    clock.phase = 0.0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step and clock (every tier)
+// ---------------------------------------------------------------------------------------------
+
+/// Picks the gait mode for the speed and settles the step: the mode's settings (or a playing
+/// gait cycle's foot plan) with the weight response applied.
+pub(crate) fn choose_step(f: &Frame, loco: &Locomotion, heft: &Heft, cycle: &GaitOverride, clock: &mut GaitClock, step: &mut ActiveStep) {
+    let gait = f.gait;
+    clock.mode = gait.mode_for(f.speed(loco)).min(gait.modes.len().saturating_sub(1));
+    let m = &gait.modes[clock.mode];
+    let (pattern, duty, lift, bob, stride, body, shape) = match &cycle.0 {
+        Some((p, stride)) => (&p.pattern, p.duty, p.lift, p.bob, *stride, p.body, &p.shape),
+        None => (&m.pattern, m.duty, m.lift, m.bob, m.stride, m.body, &m.shape),
+    };
+    let r = &gait.heft;
+    let h = heft.heaviness;
+    if step.pattern != *pattern {
+        step.pattern = pattern.clone();
+    }
+    if step.shape != *shape {
+        step.shape = shape.clone();
+    }
+    step.base_duty = duty;
+    step.duty = (duty + r.duty.sample(h)).clamp(0.2, 0.9);
+    step.lift = lift * r.lift.sample(h);
+    step.bob = bob;
+    step.stride = stride;
+    step.body = body;
+}
+
+fn cycles_per_second(speed: f32, stride: f32, stepping: bool) -> f32 {
+    if speed > 0.05 { (speed / stride).max(0.6) } else if stepping { 1.2 } else { 0.0 }
+}
+
+/// Advances the gait phase. `feet` (hero tier) lets the feet keep stepping until they've caught
+/// up with the body.
+pub(crate) fn advance_clock(f: &Frame, loco: &Locomotion, heft: &Heft, step: &ActiveStep, feet: Option<&Feet>, clock: &mut GaitClock) {
+    let speed = f.speed(loco);
+    let lagging = feet.is_some_and(|feet| {
+        let homes = f.homes();
+        let error = feet.0.iter().zip(&homes).map(|(p, h)| Vec2::new(p.position.x - h.x, p.position.z - h.z).length()).fold(0.0, f32::max) / f.leg;
+        error > 0.15 || feet.0.iter().any(|p| !p.planted)
+    });
+    clock.stepping = speed > 0.05 || lagging;
+    let cadence = f.gait.heft.cadence.sample(heft.heaviness);
+    // The same stance distance over a longer stance.
+    clock.rate = cycles_per_second(speed, step.stride, clock.stepping) * cadence * step.duty / step.base_duty.max(1e-3);
+    clock.phase = (clock.phase + clock.rate * f.dt).rem_euclid(1.0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pose (hero tier)
+// ---------------------------------------------------------------------------------------------
+
+/// Starts the frame's pose from the rest pose with the joints' current scales.
+pub(crate) fn rest_pose(a: &Anatomy, scales: impl Iterator<Item = Vec3>, pose: &mut MobPose) {
+    pose.local.clear();
+    pose.local.extend(a.skeleton.bones.iter().zip(scales).map(|(b, s)| Transform { scale: s, ..b.rest }));
+    let n = pose.local.len();
+    pose.local.extend(a.skeleton.bones[n..].iter().map(|b| b.rest));
+}
+
+/// Wings blend from spread (bind) toward folded by each wing's fold (a cycle may override it).
+pub(crate) fn fold_wings(a: &Anatomy, cycles: Option<&LayerPose>, pose: &mut MobPose) {
+    for (k, w) in a.wings.iter().enumerate() {
+        let (target, weight) = cycles.and_then(|l| l.fold.get(k).copied()).unwrap_or((0.0, 0.0));
+        let fold = w.fold + (target - w.fold) * weight;
+        for (bone, folded) in &w.bones {
+            let r = &mut pose.local[bone.index()].rotation;
+            *r = r.slerp(*folded, fold);
+        }
+    }
+}
+
+/// Plants feet in their stance and arcs them through the swing. Returns the legs that touched
+/// down this frame.
+pub(crate) fn plant_feet(f: &Frame, loco: &Locomotion, clock: &GaitClock, step: &ActiveStep, hits: &[Option<Vec3>], feet: &mut Feet) -> SmallVec<[usize; 8]> {
+    let a = f.a;
+    let homes = f.homes();
+    let ground_y = f.root.translation.y;
+    let mut landed = SmallVec::new();
+    for (i, l) in a.legs.iter().enumerate() {
+        let floor = hits.get(i).copied().flatten().map_or(ground_y + l.rest_foot.y, |h| h.y);
+        let p = step.leg_phase(clock.phase, &a.legs, i);
+        let foot = &mut feet.0[i];
+        if clock.stepping && p >= step.duty && clock.rate > 0.0 {
+            if foot.planted {
+                foot.planted = false;
+                foot.swing_from = foot.position;
+            }
+            let s = (p - step.duty) / (1.0 - step.duty);
+            let mut to = homes[i] + loco.velocity * (step.duty / clock.rate) * 0.5;
+            to.y = floor;
+            foot.swing_to = to;
+            let e = step.shape.travel.sample(s);
+            foot.position = foot.swing_from.lerp(to, e) + Vec3::Y * step.lift * f.leg * step.shape.arc.sample(s);
+        } else if !foot.planted {
+            foot.planted = true;
+            foot.position = foot.swing_to;
+            landed.push(i);
+        }
+    }
+    landed
+}
+
+/// The body bobs with the steps and bends into turns.
+pub(crate) fn bob_and_bend(f: &Frame, loco: &Locomotion, clock: &GaitClock, step: &ActiveStep, pose: &mut MobPose) {
+    let a = f.a;
+    let bob = step.bob * f.leg * (0.5 - 0.5 * (clock.phase * 2.0 * TAU).cos()) * f.speed(loco).min(1.0);
+    for (i, b) in a.skeleton.bones.iter().enumerate() {
+        if b.parent.is_none() {
+            pose.local[i].translation.y -= bob;
+        }
+    }
+    if !a.spine.is_empty() {
+        let bend = (-loco.turn_rate * 0.12 / a.spine.len() as f32).clamp(-0.15, 0.15);
+        for b in &a.spine {
+            pose.local[b.index()].rotation *= Quat::from_rotation_z(bend);
+        }
+    }
+}
+
+/// The torso rides the feet: girdles turn, roll and sway over them, the spine bends between,
+/// the head steadies, tails swing against the hips.
+pub(crate) fn ride_torso(f: &Frame, loco: &Locomotion, clock: &GaitClock, step: &ActiveStep, heft: &Heft, state: &mut TorsoState, pose: &mut MobPose) {
+    let (a, dt) = (f.a, f.dt);
+    let speed = f.speed(loco);
+    let level = if speed > 0.05 { step.shape.lively.sample(speed) } else if clock.stepping { 0.3 } else { 0.0 };
+    let ease = 1.0 - (-4.0 * dt).exp();
+    state.level += (level - state.level) * ease;
+    let body = state.motion.get_or_insert(step.body);
+    body.approach(&step.body, ease);
+    let body = *body;
+    let Some(torso) = Torso::new(a, step, &body, &f.gait.heft, *heft, f.leg, state.level) else { return };
+    let phase = clock.phase;
+    let g = torso.at(phase);
+    let model = a.skeleton.rest_model();
+    let model_rot = |b: BoneId| Quat::from_mat3a(&model[b.index()].matrix3).normalize();
+    // A model-space rotation applied to a bone in its own frame.
+    let turn = |local: &mut [Transform], b: BoneId, q: Quat| {
+        let m = model_rot(b);
+        local[b.index()].rotation *= m.inverse() * q * m;
+    };
+    let local = &mut pose.local;
+    let n = a.spine.len();
+    // The first spine bone is the root: the hips' turn moves the whole body; the rest of the
+    // spine carries the difference to the shoulders.
+    turn(local, a.spine[0], g.hips());
+    if n > 1 {
+        let share = 1.0 / (n - 1) as f32;
+        let bend = Quat::from_rotation_y((g.chest_yaw - g.hip_yaw) * share) * Quat::from_rotation_z((g.chest_roll - g.hip_roll) * share);
+        for b in &a.spine[1..] {
+            turn(local, *b, bend);
+        }
+    }
+    local[a.spine[0].index()].translation += Vec3::new(g.sway, -g.lift, 0.0);
+    // The head holds steadier than the shoulders, and nods with the fore feet.
+    if let Some(neck) = a.skeleton.find("neck.0").or_else(|| a.skeleton.find("skull")) {
+        let steady = Quat::IDENTITY.slerp(g.chest().inverse(), body.steady);
+        turn(local, neck, steady * Quat::from_axis_angle(Vec3::NEG_X, g.nod));
+    }
+    // Tails swing against the hips, the tip trailing.
+    let (lag, swing) = torso.tail();
+    for chain in &a.springs {
+        let Some(first) = chain.bones.first() else { continue };
+        if !a.skeleton.bones[first.index()].name.starts_with("tail") {
+            continue;
+        }
+        let n = chain.bones.len() as f32;
+        for (j, b) in chain.bones.iter().enumerate() {
+            let late = torso.at(phase - lag * (j + 1) as f32);
+            turn(local, *b, Quat::from_rotation_y(-late.hip_yaw * swing * 2.0 / n));
+        }
+    }
+}
+
+/// Spring chains (tails, ears) lag behind acceleration and turns.
+pub(crate) fn swing_springs(f: &Frame, loco: &Locomotion, springs: &mut SpringState, pose: &mut MobPose) {
+    let dt = f.dt;
+    let accel = f.root.matrix3.inverse() * Vec3A::from((loco.velocity - loco.prev_velocity) / dt);
+    let mut k = 0;
+    for chain in &f.a.springs {
+        let n = chain.bones.len() as f32;
+        for (j, bone) in chain.bones.iter().enumerate() {
+            let reach = (j + 1) as f32 / n;
+            let target = Vec2::new(
+                (-accel.z * 0.03).clamp(-0.4, 0.4) + (f.time * 1.7 + j as f32).sin() * 0.04 * reach,
+                (loco.turn_rate * 0.08 + accel.x * 0.02).clamp(-0.5, 0.5) * reach,
+            );
+            let Some(s) = springs.0.get_mut(k) else { return };
+            let acc = (target - s.angle) * 60.0 * chain.stiffness - s.velocity * 12.0 * chain.damping;
+            s.velocity += acc * dt;
+            s.angle += s.velocity * dt;
+            pose.local[bone.index()].rotation *= Quat::from_rotation_x(s.angle.x) * Quat::from_rotation_z(s.angle.y);
+            k += 1;
+        }
+    }
+}
+
+/// Playing cycles' rotations and root offset.
+pub(crate) fn apply_cycles(a: &Anatomy, cycles: &LayerPose, pose: &mut MobPose) {
+    let local = &mut pose.local;
+    for (i, q) in cycles.rot.iter().enumerate() {
+        if cycles.touched[i] > 0.0 {
+            local[i].rotation *= *q;
+        }
+    }
+    for (i, b) in a.skeleton.bones.iter().enumerate() {
+        if b.parent.is_none() {
+            local[i].translation += cycles.root_offset;
+            local[i].rotation = cycles.root_rot * local[i].rotation;
+        }
+    }
+}
+
+/// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
+/// loose cloth swings with the thighs. Leaves the pre-IK world transforms in `pose.world`.
+pub(crate) fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut MobPose) {
+    let (a, root) = (f.a, f.root);
+    let bones = &a.skeleton.bones;
+    forward_kinematics_into(bones, &pose.local, root, &mut pose.world);
+    let (local, world) = (&mut pose.local, &pose.world);
+    for (i, l) in a.legs.iter().enumerate() {
+        let chain = &l.chain;
+        let last = *chain.last().expect("leg chain");
+        let mut points: SmallVec<[Vec3; 6]> = chain.iter().map(|b| world[b.index()].translation.into()).collect();
+        points.push(world[last.index()].transform_point3(Vec3::Y * bones[last.index()].length).into());
+        // Knees bend toward the leg's pole, never whichever side the solve happens to find.
+        // Some "up" keeps the hint well defined when the leg reaches along the pole (a foot
+        // swinging forward); it projects away on a vertical leg.
+        let pole = rotation(&root) * (l.pole.normalize_or(Vec3::Z) + Vec3::Y * 0.5);
+        let target = feet.0[i].position + cycles.map_or(Vec3::ZERO, |c| rotation(&root) * c.feet[i]);
+        if points.len() >= 3 {
+            // Upper two bones solve exactly; any lower segments (a dog's metatarsus, a horse's
+            // cannon and pastern) keep their rest offsets and hang from the second joint, so the
+            // upper bones aim for the point above the foot.
+            let lower: SmallVec<[Vec3; 6]> = points[2..].iter().map(|p| *p - points[2]).collect();
+            let reach = target - *lower.last().expect("non-empty");
+            let mut three = [points[0], points[1], points[2]];
+            two_bone(&mut three, reach, pole);
+            points[0] = three[0];
+            points[1] = three[1];
+            for (k, offset) in lower.iter().enumerate() {
+                points[2 + k] = three[2] + *offset;
+            }
+        } else {
+            fabrik(&mut points, target, 32, 1e-3);
+        }
+        let mut parent = bones[chain[0].index()].parent.map_or(rotation(&root), |p| rotation(&world[p.index()]));
+        for (j, b) in chain.iter().enumerate() {
+            let current = parent * local[b.index()].rotation;
+            let want = (points[j + 1] - points[j]).normalize_or(current * Vec3::Y);
+            let new = Quat::from_rotation_arc(current * Vec3::Y, want) * current;
+            local[b.index()].rotation = parent.inverse() * new;
+            parent = new;
+        }
+        // Flex after IK (fetlocks, hocks, toes curling in the swing).
+        if let Some(c) = cycles {
+            for b in chain {
+                if c.touched[b.index()] > 0.0 {
+                    local[b.index()].rotation *= c.post[b.index()];
+                }
+            }
+        }
+    }
+    // Loose cloth swings with the legs. (`world` predates leg IK, but IK only turns leg bones, so
+    // the parents' frames still hold.)
+    for c in &a.cloth_follow {
+        let Some(leg) = a.legs.get(c.leg as usize) else { continue };
+        let hip = leg.chain[0];
+        let swing = local[hip.index()].rotation * bones[hip.index()].rest.rotation.inverse();
+        let frame = |b: BoneId| bones[b.index()].parent.map_or(rotation(&root), |p| rotation(&world[p.index()]));
+        let (leg_parent, cloth_parent) = (frame(hip), frame(c.root));
+        let swing = cloth_parent.inverse() * leg_parent * swing * leg_parent.inverse() * cloth_parent;
+        let r = &mut local[c.root.index()].rotation;
+        *r = Quat::IDENTITY.slerp(swing, c.weight) * *r;
+    }
+}
+
+/// The head turns toward `target` (eased, within the body's limit). Needs [`solve_legs`]'s
+/// world transforms.
+pub(crate) fn look_at(f: &Frame, target: Option<Vec3>, look: &mut LookState, pose: &mut MobPose) {
+    let (a, root) = (f.a, f.root);
+    let Some(def) = &a.look else { return };
+    let bones = &a.skeleton.bones;
+    let world = &pose.world;
+    let head = def.bones.last().map(|(b, _)| *b).unwrap_or(BoneId(0));
+    let Some(hw) = world.get(head.index()) else { return };
+    let goal = target.map_or(Quat::IDENTITY, |target| {
+        let fwd = rotation(hw) * Vec3::Y;
+        let want = (target - Vec3::from(hw.translation)).normalize_or(fwd);
+        let full = Quat::from_rotation_arc(fwd, want);
+        let (_, angle) = full.to_axis_angle();
+        let limit = def.limit_deg.to_radians();
+        if angle > limit { Quat::IDENTITY.slerp(full, limit / angle) } else { full }
+    });
+    look.0 = look.0.slerp(goal, 1.0 - (-8.0 * f.dt).exp());
+    let first = def.bones[0].0;
+    let mut parent = bones[first.index()].parent.map_or(rotation(&root), |p| rotation(&world[p.index()]));
+    for (b, share) in &def.bones {
+        let current = parent * pose.local[b.index()].rotation;
+        let new = Quat::IDENTITY.slerp(look.0, *share) * current;
+        pose.local[b.index()].rotation = parent.inverse() * new;
+        parent = new;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Torso motion
+// ---------------------------------------------------------------------------------------------
+
+/// The torso's motion over the feet at one gait phase (radians, leg-length offsets already
+/// scaled to world units).
+#[derive(Clone, Copy, Debug, Default)]
+struct Girdles {
+    hip_yaw: f32,
+    hip_roll: f32,
+    chest_yaw: f32,
+    chest_roll: f32,
+    /// Front up.
+    pitch: f32,
+    /// Hips toward the planted foot (+X = left).
+    sway: f32,
+    /// Drop of the root that keeps the rocking centred.
+    lift: f32,
+    nod: f32,
+}
+
+impl Girdles {
+    fn hips(&self) -> Quat {
+        Quat::from_rotation_y(self.hip_yaw) * Quat::from_rotation_z(self.hip_roll) * Quat::from_axis_angle(Vec3::NEG_X, self.pitch)
+    }
+
+    fn chest(&self) -> Quat {
+        Quat::from_rotation_y(self.chest_yaw) * Quat::from_rotation_z(self.chest_roll) * Quat::from_axis_angle(Vec3::NEG_X, self.pitch)
+    }
+}
+
+/// Derives girdle motion from where each foot is in its step.
+struct Torso<'a> {
+    a: &'a Anatomy,
+    step: &'a ActiveStep,
+    body: BodyMotion,
+    response: &'a HeftResponse,
+    heft: Heft,
+    fore: u8,
+    hind: u8,
+    upright: bool,
+    /// Hip to shoulder distance.
+    length: f32,
+    leg: f32,
+    level: f32,
+}
+
+impl<'a> Torso<'a> {
+    fn new(a: &'a Anatomy, step: &'a ActiveStep, body: &BodyMotion, response: &'a HeftResponse, heft: Heft, leg: f32, level: f32) -> Option<Self> {
+        if a.spine.is_empty() || a.legs.is_empty() || level <= 1e-3 {
+            return None;
+        }
+        let model = a.skeleton.rest_model();
+        let upright = (model[a.spine[0].index()].matrix3 * Vec3A::Y).y > 0.7;
+        let fore = a.legs.iter().map(|l| l.pair).min().unwrap_or(0);
+        let hind = a.legs.iter().map(|l| l.pair).max().unwrap_or(0);
+        let hip = |pair: u8| {
+            let (sum, n) = a.legs.iter().filter(|l| l.pair == pair).fold((Vec3::ZERO, 0.0), |(s, n), l| (s + Vec3::from(model[l.chain[0].index()].translation), n + 1.0));
+            sum / f32::max(n, 1.0)
+        };
+        let length = (hip(fore) - hip(hind)).length().max(leg * 0.5);
+        Some(Self { a, step, body: *body, response, heft, fore, hind, upright, length, leg, level })
+    }
+
+    /// Mean over one pair of (side·reach, side·raise, side·load, load, landing); see
+    /// [`StepShape`](super::StepShape) and [`HeftResponse::landing`].
+    fn pair(&self, phase: f32, pair: u8) -> [f32; 5] {
+        let (mut sum, mut n) = ([0.0; 5], 0.0);
+        let shape = &self.step.shape;
+        for (i, l) in self.a.legs.iter().enumerate().filter(|(_, l)| l.pair == pair) {
+            let p = self.step.leg_phase(phase, &self.a.legs, i);
+            let t = self.step.shape_time(p);
+            let side = match l.side {
+                Side::Left => 1.0,
+                Side::Right => -1.0,
+                _ => 0.0,
+            };
+            let load = shape.load.sample(t);
+            sum[0] += side * shape.reach.sample(t);
+            sum[1] += side * shape.raise.sample(t);
+            sum[2] += side * load;
+            sum[3] += load;
+            sum[4] += if p < self.step.duty { self.response.landing.sample(p / self.step.duty) } else { 0.0 };
+            n += 1.0;
+        }
+        sum.map(|s| s / f32::max(n, 1.0))
+    }
+
+    fn at(&self, phase: f32) -> Girdles {
+        let b = &self.body;
+        let k = self.level;
+        let h = self.heft.heaviness;
+        let waddle = self.response.waddle.sample(h);
+        let settle = self.response.settle.sample(h) * self.leg * k;
+        let nod = b.nod.to_radians() * (self.heft.head / 0.1).clamp(0.5, 2.0) * k;
+        let hind = self.pair(phase, self.hind);
+        let mut g = Girdles {
+            hip_yaw: -b.yaw.to_radians() * hind[0] * k,
+            hip_roll: -b.roll.to_radians() * hind[1] * k * waddle,
+            sway: b.sway * self.leg * hind[2] * k * waddle,
+            ..default()
+        };
+        if self.fore != self.hind {
+            let fore = self.pair(phase, self.fore);
+            g.chest_yaw = -b.yaw.to_radians() * fore[0] * k;
+            g.chest_roll = -b.roll.to_radians() * fore[1] * k * waddle;
+            // Walks vault over a stiff leg (highest mid-stance); runs compress (lowest).
+            let vault = if self.step.duty >= 0.5 { 1.0 } else { -1.0 };
+            let rise = b.rock * self.leg * (fore[3] - hind[3]) * vault * k;
+            // Each girdle sinks as its feet take its share of the weight.
+            let (sink_hind, sink_fore) = (settle * hind[4] * 2.0 * (1.0 - self.heft.fore), settle * fore[4] * 2.0 * self.heft.fore);
+            g.pitch = ((rise + sink_hind - sink_fore) / self.length).atan();
+            g.lift = rise * 0.5 + sink_hind;
+            g.nod = -nod * (2.0 * fore[3] - 1.0);
+        } else {
+            g.lift = settle * hind[4];
+            if self.upright {
+                // The chest turns against the hips; arms swing with it.
+                g.chest_yaw = -b.counter * g.hip_yaw;
+                g.chest_roll = -0.5 * b.counter * g.hip_roll;
+            } else {
+                // One pair under a level body (birds): it moves as one, the head bobs.
+                g.chest_yaw = g.hip_yaw;
+                g.chest_roll = g.hip_roll;
+                g.nod = -nod * (2.0 * hind[3] - 1.0);
+            }
+        }
+        g
+    }
+
+    /// Tails: how far each bone trails the hips (cycles), and how much they swing. A heavy tail
+    /// lags more and swings less.
+    fn tail(&self) -> (f32, f32) {
+        let t = self.heft.tail;
+        ((0.06 * (1.0 + 4.0 * t)).min(0.12), self.body.tail / (1.0 + 5.0 * t))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Offline
+// ---------------------------------------------------------------------------------------------
+
+/// Every stage chained on plain data, for the crowd baker and tests (the ECS runs the same
+/// stages as separate systems).
+#[derive(Default)]
+pub(crate) struct Sim {
+    pub loco: Locomotion,
+    pub clock: GaitClock,
+    pub step: ActiveStep,
+    pub feet: Feet,
+    pub springs: SpringState,
+    pub look: LookState,
+    pub torso: TorsoState,
+    pub heft: Heft,
+    pub pose: MobPose,
+}
+
+impl Sim {
+    pub fn new(a: &Anatomy, root: Affine3A) -> Self {
+        let mut s = Self { heft: Heft::of(a), ..default() };
+        bind(a, root, &mut s.feet, &mut s.springs, &mut s.look, &mut s.torso, &mut s.clock);
+        s
+    }
+
+    /// One frame at constant velocity; returns the local pose.
+    pub fn frame(&mut self, f: &Frame, target: Option<Vec3>) -> &[Transform] {
+        let a = f.a;
+        choose_step(f, &self.loco, &self.heft, &GaitOverride(None), &mut self.clock, &mut self.step);
+        advance_clock(f, &self.loco, &self.heft, &self.step, Some(&self.feet), &mut self.clock);
+        rest_pose(a, std::iter::repeat(Vec3::ONE), &mut self.pose);
+        fold_wings(a, None, &mut self.pose);
+        plant_feet(f, &self.loco, &self.clock, &self.step, &[], &mut self.feet);
+        bob_and_bend(f, &self.loco, &self.clock, &self.step, &mut self.pose);
+        ride_torso(f, &self.loco, &self.clock, &self.step, &self.heft, &mut self.torso, &mut self.pose);
+        swing_springs(f, &self.loco, &mut self.springs, &mut self.pose);
+        solve_legs(f, &self.feet, None, &mut self.pose);
+        look_at(f, target, &mut self.look, &mut self.pose);
+        &self.pose.local
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::Gait;
+
+    fn biped() -> Anatomy {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+    }
+
+    /// Walks a biped and reports the largest frame-to-frame knee jump, relative to the typical
+    /// one. A snapping knee (bend flipping or a straightened leg popping back) shows as a spike.
+    #[test]
+    fn knees_move_smoothly() {
+        let a = biped();
+        let gait = Gait::for_legs(a.legs.len());
+        let leg = leg_length(&a);
+        let mut root = Affine3A::IDENTITY;
+        let mut sim = Sim::new(&a, root);
+        let dt = 1.0 / 60.0;
+        let mut knees: Vec<(f32, Vec3, f32, bool)> = Vec::new();
+        let mut extra: Vec<(Vec3, Vec3)> = Vec::new();
+        for speed in [0.6, 1.2] {
+            sim.loco.velocity = Vec3::Z * speed * leg;
+            sim.loco.prev_velocity = sim.loco.velocity;
+            for i in 0..240 {
+                root.translation += Vec3A::from(sim.loco.velocity * dt);
+                let f = Frame { a: &a, gait: &gait, root, dt, time: i as f32 * dt, leg };
+                let local = sim.frame(&f, None).to_vec();
+                let world = forward_kinematics(&a.skeleton.bones, &local, root);
+                let l = &a.legs[0];
+                let knee = Vec3::from(world[l.chain[1].index()].translation) - Vec3::from(root.translation);
+                let hip = Vec3::from(world[l.chain[0].index()].translation);
+                let chain: f32 = l.chain.iter().map(|b| a.skeleton.get(*b).length).sum();
+                let reach = hip.distance(sim.feet.0[0].position) / chain;
+                knees.push((sim.clock.phase, knee, reach, sim.feet.0[0].planted));
+                extra.push((hip - Vec3::from(root.translation), sim.feet.0[0].position - Vec3::from(root.translation)));
+            }
+        }
+        let steps: Vec<f32> = knees.windows(2).map(|w| w[0].1.distance(w[1].1)).collect();
+        let mut sorted = steps.clone();
+        sorted.sort_by(f32::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        let (worst, at) = steps.iter().enumerate().map(|(i, s)| (*s, i)).fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
+        for k in at.saturating_sub(3)..(at + 4).min(knees.len()) {
+            println!("{k}: phase {:.3} knee {:.3} reach {:.3} planted {} hip {:.3} foot {:.3}", knees[k].0, knees[k].1, knees[k].2, knees[k].3, extra[k].0, extra[k].1);
+        }
+        println!("chain {:?}", a.legs[0].chain.iter().map(|b| (a.skeleton.get(*b).name.clone(), a.skeleton.get(*b).length)).collect::<Vec<_>>());
+        println!("worst knee step {worst:.4} at {at}, median {median:.4}, ratio {:.1}", worst / median);
+        assert!(worst < median * 6.0, "knee snaps: {worst} vs median {median}");
+    }
+}
+
+#[cfg(test)]
+mod all_plans {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::Gait;
+
+    /// Largest frame-to-frame step of any leg's first joint, over its median, while walking at
+    /// two speeds. A snapping joint shows as a spike far above the median.
+    fn worst_joint_step(a: &Anatomy) -> (f32, f32) {
+        let gait = Gait::for_legs(a.legs.len());
+        let leg = leg_length(a);
+        let mut root = Affine3A::IDENTITY;
+        let mut sim = Sim::new(a, root);
+        let dt = 1.0 / 60.0;
+        let mut prev: Option<Vec<Vec3>> = None;
+        let mut steps = Vec::new();
+        for speed in [0.5, 1.0] {
+            sim.loco.velocity = Vec3::Z * speed * leg;
+            sim.loco.prev_velocity = sim.loco.velocity;
+            for i in 0..240 {
+                root.translation += Vec3A::from(sim.loco.velocity * dt);
+                let f = Frame { a, gait: &gait, root, dt, time: i as f32 * dt, leg };
+                let local = sim.frame(&f, None).to_vec();
+                let world = forward_kinematics(&a.skeleton.bones, &local, root);
+                let joints: Vec<Vec3> = a
+                    .legs
+                    .iter()
+                    .map(|l| Vec3::from(world[l.chain[1.min(l.chain.len() - 1)].index()].translation) - Vec3::from(root.translation))
+                    .collect();
+                if let Some(p) = &prev {
+                    steps.extend(p.iter().zip(&joints).map(|(a, b)| a.distance(*b)));
+                }
+                prev = Some(joints);
+            }
+        }
+        let mut sorted = steps.clone();
+        sorted.sort_by(f32::total_cmp);
+        (sorted[sorted.len() - 1], sorted[sorted.len() / 2])
+    }
+
+    #[test]
+    fn sample_plans_walk_without_snaps() {
+        for (name, src) in [
+            ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+        ] {
+            let plan: BodyPlan = ron::from_str(src).unwrap();
+            let live = apply_form(&plan, &Form::default()).unwrap();
+            let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let (worst, median) = worst_joint_step(&a);
+            println!("{name}: worst {worst:.4} median {median:.4} ratio {:.1}", worst / median);
+            assert!(worst < median * 8.0 + 0.01, "{name}: a leg joint snaps ({worst} vs median {median})");
+        }
+    }
+}
+
+#[cfg(test)]
+mod torso {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::Gait;
+
+    /// World yaw and roll (degrees) of a bone, relative to its rest.
+    fn yaw_roll(world: &Affine3A, rest: &Affine3A) -> (f32, f32) {
+        let q = Quat::from_mat3a(&world.matrix3).normalize() * Quat::from_mat3a(&rest.matrix3).normalize().inverse();
+        let (fwd, up) = (q * Vec3::Z, q * Vec3::Y);
+        (fwd.x.atan2(fwd.z).to_degrees(), (-up.x).atan2(up.y).to_degrees())
+    }
+
+    /// Walks a body and returns the yaw/roll ranges (peak to peak) of hips, chest and head, and
+    /// how the hips' yaw follows the hind left foot (negative = turns away from a forward foot).
+    fn walk(src: &str) -> [(f32, f32); 3] {
+        let plan: BodyPlan = ron::from_str(src).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let gait = Gait::for_legs(a.legs.len());
+        let leg = leg_length(&a);
+        let rest = a.skeleton.rest_model();
+        let mut root = Affine3A::IDENTITY;
+        let mut sim = Sim::new(&a, root);
+        let dt = 1.0 / 60.0;
+        sim.loco.velocity = Vec3::Z * leg;
+        sim.loco.prev_velocity = sim.loco.velocity;
+        let head = a.skeleton.find("skull").unwrap_or(*a.spine.last().unwrap());
+        let watch = [a.spine[0], *a.spine.last().unwrap(), head];
+        let mut ranges = [(f32::MAX, f32::MIN, f32::MAX, f32::MIN); 3];
+        for i in 0..360 {
+            root.translation += Vec3A::from(sim.loco.velocity * dt);
+            let f = Frame { a: &a, gait: &gait, root, dt, time: i as f32 * dt, leg };
+            let local = sim.frame(&f, None).to_vec();
+            if i < 120 {
+                continue;
+            }
+            let world = forward_kinematics(&a.skeleton.bones, &local, root);
+            for (r, b) in ranges.iter_mut().zip(watch) {
+                let (y, ro) = yaw_roll(&world[b.index()], &rest[b.index()]);
+                *r = (r.0.min(y), r.1.max(y), r.2.min(ro), r.3.max(ro));
+            }
+        }
+        ranges.map(|r| (r.1 - r.0, r.3 - r.2))
+    }
+
+    #[test]
+    fn torso_moves_and_head_steadies() {
+        for (name, src) in [
+            ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+            ("bird", include_str!("../../assets/mobs/bird.body.ron")),
+        ] {
+            let [hips, chest, head] = walk(src);
+            println!("{name}: hips yaw {:.1}° roll {:.1}° | chest yaw {:.1}° roll {:.1}° | head yaw {:.1}° roll {:.1}°", hips.0, hips.1, chest.0, chest.1, head.0, head.1);
+            assert!(hips.0 > 2.0 && hips.1 > 1.5, "{name}: the hips barely move");
+            assert!(head.0 < chest.0.max(hips.0), "{name}: the head swings more than the body");
+        }
+    }
+}

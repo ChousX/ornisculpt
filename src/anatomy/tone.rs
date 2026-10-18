@@ -300,6 +300,6 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
                 mirror: true,
             }, // nostril
         ],
-        PartKind::Digits(_) | PartKind::Mass(_) | PartKind::Hard(_) | PartKind::Sculpt(_) => vec![],
+        PartKind::Digits(_) | PartKind::Mass(_) | PartKind::Hard(_) | PartKind::Sculpt(_) | PartKind::Wing(_) => vec![],
     }
 }

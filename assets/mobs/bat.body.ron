@@ -1,0 +1,53 @@
+// A flying fox: four long fingers (digits II–V) carrying a thin scalloped membrane back to the
+// small hind legs, a free clawed thumb, big ears. See docs/design/wings.md.
+(
+    root: (
+        name: "torso",
+        kind: Torso((
+            chain: (segments: 3, length: 0.34, radius: (curve: [(0.0, 0.7), (0.5, 1.0), (1.0, 0.85)], scale: 0.075, cross: Ellipse(aspect: 0.95))),
+            belly: 0.2,
+        )),
+        detail: Always,
+        children: [
+            (
+                name: "neck",
+                kind: Chain((role: Neck, chain: (segments: 1, length: 0.05, radius: (scale: 0.05)))),
+                attach: End,
+                detail: Always,
+                children: [
+                    (
+                        name: "head",
+                        kind: Head((skull: (shape: Ellipsoid, size: (0.05, 0.05, 0.055)), snout: 0.05, jaw: Some((segments: 1, length: 0.06)), eye_spacing: 0.6, eye_lateral: 0.4)),
+                        detail: Always,
+                        children: [
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.012)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.07, radius: (curve: [(0.0, 0.7), (0.5, 1.0), (1.0, 0.3)], scale: 0.025, cross: Flat(aspect: 3.0)), blend: 0.008))), attach: Ear, mirror: true),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                name: "wing",
+                kind: Wing((
+                    kind: Membrane((fingers: 4, trailing: HindLeg, scallop: 0.32, thumb: true)),
+                    span: 0.75,
+                    chord: 0.35,
+                    fold: 1.0,
+                    sweep_deg: 8.0,
+                    radius: 0.028,
+                )),
+                attach: Surface(t: 0.85, around_deg: 75.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg",
+                kind: Limb((chain: (segments: 2, length: 0.16, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.022)), role: Locomotor, stance: Plantigrade, end: Pad, splay_deg: 25.0)),
+                attach: Surface(t: 0.08, around_deg: 120.0),
+                mirror: true,
+                detail: Always,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.4, fat: 0.3),
+)

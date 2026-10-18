@@ -12,6 +12,7 @@ mod form;
 mod lever;
 mod loader;
 mod lod;
+mod mass;
 mod part;
 mod parts;
 mod path;
@@ -22,6 +23,7 @@ mod rig;
 mod skeleton;
 mod tone;
 mod viability;
+mod wing;
 
 pub use build::{Anatomy, BuiltPart, build_anatomy, referenced_assets};
 pub use builder::{
@@ -33,6 +35,7 @@ pub use form::{Form, FormError, FormPatch, apply_form, path_matches};
 pub use lever::{Lever, LeverError, LeverKind};
 pub use loader::{BodyPlanLoader, BodyPlanLoaderError};
 pub use lod::{LodLevel, PartDetail, PartLodRules};
+pub use mass::{BodyMass, WATER, measure as measure_mass};
 pub use part::*;
 pub use path::PartPath;
 pub use plan::{AttachSlot, BodyPlan, PartNode, PartOffset, PartTone, Repeat, Tone};
@@ -44,6 +47,9 @@ pub use skeleton::{
     SocketKind,
 };
 pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps};
+pub use wing::{
+    BladeWing, FeatheredWing, MembraneWing, Planform, Sheet, SheetKind, Trailing, WingKind, WingParams, WingRig, WingShape,
+};
 pub use viability::{
     BoneBudget, FeetReachGround, RestSelfIntersection, StaticBalance, Viability, ViabilityCheck,
     ViabilityChecks, ViabilityReport,
@@ -102,10 +108,14 @@ mod tests {
         assert_eq!(
             plan.root.children[1].attach,
             AttachSlot::Surface {
-                t: 0.9,
-                around_deg: 120.0
+                t: 0.88,
+                around_deg: 135.0
             }
         );
+        // Real limb proportions: unequal segments, elbow bending back.
+        let PartKind::Limb(front) = &plan.root.children[1].kind else { panic!("front leg is a limb") };
+        assert_eq!(front.chain.ratios, vec![1.0, 1.05, 0.4]);
+        assert!(front.bends[0].0 < 0.0);
         assert!(
             matches!(&plan.root.children[0].kind, PartKind::Chain(c) if c.role == ChainRole::Neck)
         );

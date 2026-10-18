@@ -2,10 +2,11 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BodyField, BodyFieldOptions, BodyMeshData, HardPartGen, MeshSettings, Mesher, SurfaceError, merge,
+    BodyField, BodyFieldOptions, BodyMeshData, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
+    Submesh, SurfaceError, merge,
     remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
 };
-use crate::anatomy::{Anatomy, LodLevel};
+use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, Sheet};
 
 /// How one LOD level is produced: re-meshed from the field (without parts culled at this level),
 /// then trimmed by simplification.
@@ -54,6 +55,9 @@ impl SurfaceSettings {
     }
 }
 
+/// Body extent (largest bounding-box side, metres) the [`LodSpec`] voxel sizes are tuned for.
+pub const REFERENCE_EXTENT: f32 = 1.8;
+
 /// Full pipeline for one level: field → mesh → weld → smooth → skin → simplify → hard parts →
 /// (crowd remap for `Near`/`Far`).
 pub fn mesh_lod<M: Mesher, H: HardPartGen>(
@@ -69,8 +73,13 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
     if field.primitive_count() == 0 {
         return Err(SurfaceError::NoPartsAtLevel);
     }
-    let mut raw = mesher.mesh(&field, &spec.mesh)?;
-    weld(&mut raw, spec.mesh.voxel_size * 1e-3);
+    // Voxel sizes are tuned for human-sized bodies; larger bodies scale them up so detail (and
+    // triangle count) stays proportional to the body rather than to the metre.
+    let extent = Vec3::from(field.bounds().max - field.bounds().min).max_element();
+    let mut mesh_settings = spec.mesh;
+    mesh_settings.voxel_size *= (extent / REFERENCE_EXTENT).max(1.0);
+    let mut raw = mesher.mesh(&field, &mesh_settings)?;
+    weld(&mut raw, mesh_settings.voxel_size * 1e-3);
     smooth(&mut raw, 2);
     let mut data = skin_and_attrs(raw, &field, anatomy);
     if spec.simplify_ratio < 1.0 {
@@ -86,6 +95,9 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
                 merge(&mut data, &m);
             }
         }
+    }
+    for sheet in anatomy.sheets.iter().filter(|s| s.lod >= level && anatomy.parts[s.part as usize].lod >= level) {
+        merge(&mut data, &sheet_mesh(sheet));
     }
     if level != LodLevel::Hero {
         remap_to_crowd(&mut data, anatomy);
@@ -114,4 +126,48 @@ pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
     let [a, b, c] = LodLevel::ALL.map(|l| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed));
     Ok([a?, b?, c?])
+}
+
+/// A wing sheet as mesh data: double-sided in the shader, so one layer of triangles.
+/// Vertex colour w (via `cloth`) carries the sheet kind; UV0 the sheet coordinates; the tangent
+/// the shading direction (xyz) and thickness (w).
+fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
+    let n = sheet.positions.len();
+    let mut normals = vec![Vec3::ZERO; n];
+    for t in sheet.indices.chunks_exact(3) {
+        let [a, b, c] = [t[0], t[1], t[2]].map(|i| i as usize);
+        let nrm = (sheet.positions[b] - sheet.positions[a]).cross(sheet.positions[c] - sheet.positions[a]);
+        for v in [a, b, c] {
+            normals[v] += nrm;
+        }
+    }
+    let normals = normals.into_iter().map(|v| v.normalize_or(Vec3::Y)).collect();
+    let mob_data = sheet
+        .joints
+        .iter()
+        .map(|j| {
+            MobVertexData {
+                region: sheet.region,
+                cavity: 0,
+                curvature: 128,
+                limb_t: 0,
+                primary_bone: BoneId(j[0] as u8),
+                layer: PrimLayer::Base,
+            }
+            .pack()
+        })
+        .collect();
+    BodyMeshData {
+        positions: sheet.positions.clone(),
+        normals,
+        joints: sheet.joints.clone(),
+        weights: sheet.weights.clone(),
+        mob_data,
+        uvs: sheet.uvs.clone(),
+        coverage: Vec::new(),
+        flow: sheet.dirs.iter().zip(&sheet.thickness).map(|(d, t)| d.extend(*t).to_array()).collect(),
+        cloth: vec![sheet.kind as u8; n],
+        indices: sheet.indices.clone(),
+        submeshes: vec![Submesh { indices: 0..sheet.indices.len() as u32, slot: MaterialSlot::Wing }],
+    }
 }

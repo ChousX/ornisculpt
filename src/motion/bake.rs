@@ -4,8 +4,8 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::pose::{PoseInput, gait_rate, leg_length, reset_state, solve_pose};
-use super::{Gait, MotionState};
+use super::Gait;
+use super::stages::{Frame, Sim, leg_length};
 use crate::anatomy::{Anatomy, MAX_CROWD_BONES};
 
 /// Frames recorded per gait cycle.
@@ -92,46 +92,43 @@ fn skin_frame(anatomy: &Anatomy, local: &[Transform]) -> SkinFrame {
 /// after a warm-up, one cycle is recorded.
 pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
     debug_assert!(anatomy.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
-    let rest: Vec<Transform> = anatomy.skeleton.bones.iter().map(|b| b.rest).collect();
+    // Idle: the rest pose with wings folded by their rest fold.
+    let mut rest: Vec<Transform> = anatomy.skeleton.bones.iter().map(|b| b.rest).collect();
+    for w in &anatomy.wings {
+        for (bone, folded) in &w.bones {
+            let r = &mut rest[bone.index()].rotation;
+            *r = r.slerp(*folded, w.fold);
+        }
+    }
     let idle = skin_frame(anatomy, &rest);
     let leg = leg_length(anatomy);
-    let scales = vec![Vec3::ONE; anatomy.skeleton.len()];
 
     let clips = (0..gait.modes.len())
         .map(|m| {
             let lo = gait.modes[m].min_speed;
             let speed = gait.modes.get(m + 1).map_or(lo + 1.0, |next| (lo + next.min_speed) * 0.5).max(0.3);
-            let mut state = MotionState::default();
             let mut root = Affine3A::IDENTITY;
-            reset_state(&mut state, anatomy, root);
-            state.velocity = Vec3::Z * speed * leg;
-            state.prev_velocity = state.velocity;
-            let (_, cycles) = gait_rate(&state, gait, leg, true);
-            let dt = 1.0 / (cycles * BAKE_FRAMES as f32);
-            let step = |state: &mut MotionState, root: &mut Affine3A, i: usize| {
-                root.translation += bevy::math::Vec3A::from(state.velocity * dt);
-                let input = PoseInput {
-                    anatomy,
-                    gait,
-                    root: *root,
-                    ground_y: 0.0,
-                    hits: &[],
-                    look_at: None,
-                    scales: &scales,
-                    dt,
-                    time: i as f32 * dt,
-                };
-                solve_pose(&input, state)
+            let mut sim = Sim::new(anatomy, root);
+            sim.loco.velocity = Vec3::Z * speed * leg;
+            sim.loco.prev_velocity = sim.loco.velocity;
+            // One frame to settle the step and its rate, then a cycle per BAKE_FRAMES frames.
+            let settle = Frame { a: anatomy, gait, root, dt: 1e-4, time: 0.0, leg };
+            sim.frame(&settle, None);
+            let dt = 1.0 / (sim.clock.rate.max(1e-3) * BAKE_FRAMES as f32);
+            let step = |sim: &mut Sim, root: &mut Affine3A, i: usize| {
+                root.translation += bevy::math::Vec3A::from(sim.loco.velocity * dt);
+                let f = Frame { a: anatomy, gait, root: *root, dt, time: i as f32 * dt, leg };
+                sim.frame(&f, None).to_vec()
             };
             for i in 0..BAKE_FRAMES * 3 {
-                step(&mut state, &mut root, i);
+                step(&mut sim, &mut root, i);
             }
             let mut start_phase = 0.0;
             let frames = (0..BAKE_FRAMES)
                 .map(|i| {
-                    let local = step(&mut state, &mut root, i);
+                    let local = step(&mut sim, &mut root, i);
                     if i == 0 {
-                        start_phase = state.phase;
+                        start_phase = sim.clock.phase;
                     }
                     skin_frame(anatomy, &local)
                 })

@@ -25,6 +25,8 @@ pub struct Skeleton {
     pub bones: Vec<BoneDef>,
     /// Model-space rest pose → bone space, one per bone.
     pub inverse_bind: Vec<Mat4>,
+    /// Model-space rest transform of every bone, cached by [`Anatomy::finish_skeleton`](super::Anatomy::finish_skeleton).
+    pub rest_model: Vec<Affine3A>,
     pub crowd: CrowdSkeleton,
 }
 
@@ -75,6 +77,11 @@ impl Skeleton {
             .enumerate()
             .filter(move |(_, b)| b.parent == Some(id))
             .map(|(i, _)| BoneId(i as u8))
+    }
+
+    /// The cached rest pose, or a fresh one if the bones changed since it was cached.
+    pub fn rest_model(&self) -> std::borrow::Cow<'_, [Affine3A]> {
+        if self.rest_model.len() == self.bones.len() { self.rest_model.as_slice().into() } else { self.model_rest().into() }
     }
 
     /// Model-space rest transform of every bone (forward kinematics over `rest`).

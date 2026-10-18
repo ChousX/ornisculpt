@@ -13,6 +13,8 @@ use crate::anatomy::{BoneId, LodLevel, PartKind, PartPath};
 /// A joint entity of a mob's skeleton (child of its parent joint, roots are children of the mob).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct MobJoint {
+    /// The mob this joint belongs to.
+    pub mob: Entity,
     pub bone: BoneId,
     pub rest: Transform,
 }
@@ -31,6 +33,7 @@ pub struct Placeholder;
 
 /// Joint entities of a mob, indexed by `BoneId`.
 #[derive(Component, Clone, Debug, Default)]
+#[require(crate::motion::MobPose, crate::motion::CyclePose)]
 pub struct MobSkeleton(pub Vec<Entity>);
 
 /// One anatomical part of a mob. Editing `kind` updates the mob's [`LiveBody`] and regenerates.
@@ -179,7 +182,7 @@ pub(super) fn sync_hero_visuals(
             let mut joints: Vec<Entity> = Vec::with_capacity(skeleton.len());
             for (i, bone) in skeleton.bones.iter().enumerate() {
                 let parent = bone.parent.map_or(mob, |p| joints[p.index()]);
-                let mut e = commands.spawn((bone.rest, MobJoint { bone: BoneId(i as u8), rest: bone.rest }, ChildOf(parent)));
+                let mut e = commands.spawn((bone.rest, MobJoint { mob, bone: BoneId(i as u8), rest: bone.rest }, ChildOf(parent)));
                 if bone.parent.is_none() {
                     e.insert((MobVisual, HeroVisual));
                 }

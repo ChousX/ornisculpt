@@ -1,0 +1,67 @@
+// A dragonfly: big head and eyes, compact thorax carrying six small legs and two pairs of long
+// veined wings held spread at rest (dragonflies don't fold them), and a long thin abdomen.
+// See docs/design/wings.md.
+(
+    root: (
+        name: "thorax",
+        kind: Torso((
+            chain: (segments: 2, length: 0.12, radius: (curve: [(0.0, 0.85), (0.5, 1.0), (1.0, 0.8)], scale: 0.05)),
+        )),
+        detail: Always,
+        children: [
+            (
+                name: "head",
+                kind: Head((skull: (shape: Ellipsoid, size: (0.05, 0.04, 0.035)), snout: 0.0, jaw: None, eye_spacing: 0.95, eye_lateral: 1.0)),
+                attach: End,
+                detail: Always,
+                children: [
+                    (name: "eye", kind: Hard((kind: Eye, size: 0.032)), attach: Eye, mirror: true),
+                ],
+            ),
+            (
+                name: "abdomen",
+                kind: Chain((role: Tail, chain: (segments: 4, length: 0.5, radius: (curve: [(0.0, 0.8), (0.15, 0.55), (1.0, 0.4)], scale: 0.025), blend: 0.015))),
+                attach: Start,
+                detail: Always,
+            ),
+            (
+                name: "forewing",
+                kind: Wing((kind: Blade((planform: Long)), span: 0.45, chord: 0.085, fold: 0.0, sweep_deg: -4.0)),
+                attach: Surface(t: 0.75, around_deg: 30.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "hindwing",
+                kind: Wing((kind: Blade((planform: Long)), span: 0.43, chord: 0.1, fold: 0.0, sweep_deg: 8.0)),
+                attach: Surface(t: 0.35, around_deg: 30.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.fore",
+                kind: Limb((chain: (segments: 3, length: 0.12, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                attach: Surface(t: 0.8, around_deg: 150.0),
+                offset: (rotate_deg: (40.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.mid",
+                kind: Limb((chain: (segments: 3, length: 0.14, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                attach: Surface(t: 0.5, around_deg: 150.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.hind",
+                kind: Limb((chain: (segments: 3, length: 0.16, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                attach: Surface(t: 0.2, around_deg: 150.0),
+                offset: (rotate_deg: (-40.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.2, fat: 0.05, landmarks: 0.4),
+)

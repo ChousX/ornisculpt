@@ -9,13 +9,35 @@
 
 mod bake;
 mod crowd;
+mod cycle;
+mod eval;
+mod fit;
 mod gait;
+mod graph;
+mod heft;
+pub mod library;
 mod ik;
+mod player;
 mod pose;
+mod stages;
+mod state;
 
 pub use bake::{BAKE_FRAMES, BakedClip, BakedMotion, SkinFrame, bake_motion};
-pub use gait::{Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
-pub use ik::fabrik;
+pub use cycle::{
+    Channel, Curve, Cycle, CycleError, CycleEvent, CycleKind, CycleLoader, CycleLoaderError, FootPlan, Joint, LegSel,
+    RootMotion, Sides, Target, Track,
+};
+pub use eval::{EvalInput, LayerPose, MotionRig, evaluate};
+pub use fit::{BodyFamily, BodyTraits, Feature, Fit, Misfit};
+pub use graph::{
+    BodyMask, Cmp, ComposedGraph, CycleSource, Condition, GraphError, GraphLoader, GraphLoaderError, Layer, LayerMode, MotionGraph,
+    Param, ParamValue, Play, State, Switch, Transition, compose,
+};
+pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
+pub use heft::{Heft, HeftResponse, StepShape};
+pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState};
+pub use ik::{fabrik, orient_to_pole, two_bone};
+pub use player::{Footstep, MobMotion, MotionCache, MotionParams, MotionRuntime, PlayCycle, RootMotionDelta, TRIGGER_LIFETIME};
 
 use bevy::prelude::*;
 use smallvec::SmallVec;
@@ -64,51 +86,92 @@ pub struct FootProbes(pub SmallVec<[Vec3; 8]>);
 #[derive(Component, Clone, Debug, Default)]
 pub struct FootGround(pub SmallVec<[Option<Vec3>; 8]>);
 
-/// Runtime motion state, created when a body is attached and reset when it changes.
-#[derive(Component, Clone, Debug, Default)]
-pub struct MotionState {
-    /// Current (smoothed) world velocity.
-    pub velocity: Vec3,
-    /// Yaw rate, radians per second (positive = turning left).
-    pub turn_rate: f32,
-    /// Gait cycle phase, 0..1.
-    pub phase: f32,
-    pub mode: usize,
-    /// Feet in world space, in `Anatomy::legs` order.
-    pub feet: SmallVec<[Foot; 8]>,
-    springs: Vec<SpringBone>,
-    look: Quat,
-    last_root: Option<(Vec3, Quat)>,
-    prev_velocity: Vec3,
-    body: Option<AssetId<crate::mob::GeneratedBody>>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Foot {
-    /// Where the foot is now (world).
-    pub position: Vec3,
-    pub planted: bool,
-    swing_from: Vec3,
-    swing_to: Vec3,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct SpringBone {
-    angle: Vec2,
-    velocity: Vec2,
+/// The motion systems, in order, inside [`MobSet::Motion`](crate::mob::MobSet::Motion).
+#[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug)]
+pub enum MotionSystems {
+    /// Roots move toward their intent.
+    Root,
+    /// Graphs and direct cycles advance; transitions, events, root motion.
+    Player,
+    /// Every tier: gait mode, step and phase.
+    Clock,
+    /// Hero tier: the pose, stage by stage, then the joints. Crowd tier: baked frame choice.
+    Pose,
 }
 
 pub struct MotionPlugin;
 
 impl Plugin for MotionPlugin {
     fn build(&self, app: &mut App) {
+        use MotionSystems::*;
         app.init_asset::<Gait>()
             .init_resource::<DefaultGaits>()
             .init_asset_loader::<GaitLoader>()
+            .init_asset::<Cycle>()
+            .init_asset_loader::<CycleLoader>()
+            .init_asset::<MotionGraph>()
+            .init_asset_loader::<GraphLoader>()
+            .init_resource::<player::MotionCache>()
+            .init_resource::<player::MotionWarnings>()
             .register_type::<MobIntent>()
+            .add_observer(pose::bind_body)
+            .configure_sets(Update, (Root, Player, Clock, Pose).chain().in_set(crate::mob::MobSet::Motion))
             .add_systems(
                 Update,
-                (pose::move_roots, (pose::animate, crowd::crowd_animate)).chain().in_set(crate::mob::MobSet::Motion),
+                (
+                    pose::move_roots.in_set(Root),
+                    (player::prepare_motion, player::update_motion).chain().in_set(Player),
+                    (pose::choose_steps, pose::advance_clocks).chain().in_set(Clock),
+                    (
+                        (
+                            pose::write_probes,
+                            player::evaluate_cycles,
+                            pose::rest_poses,
+                            pose::fold_wings,
+                            pose::plant_feet,
+                            pose::bob_and_bend,
+                            pose::ride_torso,
+                            pose::swing_springs,
+                            pose::apply_cycles,
+                            pose::solve_legs,
+                            pose::look_at,
+                            pose::write_joints,
+                        )
+                            .chain(),
+                        crowd::crowd_animate,
+                    )
+                        .in_set(Pose),
+                ),
             );
+    }
+}
+
+/// A cycle's named event fired on this mob (observe with `On<MotionEvent>`).
+#[derive(EntityEvent, Clone, Debug)]
+pub struct MotionEvent {
+    pub entity: Entity,
+    /// The event's name from the cycle.
+    pub name: String,
+    /// The cycle that fired it.
+    pub cycle: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds the schedule once: Bevy rejects systems whose queries conflict (B0001) there, which
+    /// no unit test of the stages would catch.
+    #[test]
+    fn motion_systems_schedule_without_conflicts() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<crate::mob::GeneratedBody>()
+            .init_asset::<bevy::render::storage::ShaderBuffer>()
+            .init_resource::<crate::mob::CrowdSkin>()
+            .init_resource::<crate::mob::CrowdUploads>()
+            .add_plugins(MotionPlugin);
+        app.update();
+        app.update();
     }
 }

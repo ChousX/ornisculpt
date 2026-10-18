@@ -2,7 +2,7 @@
 (
     garments: [
         (name: "skirt", on: "torso", span: (0.0, 0.12), mesh: "garments/garments.gltf#Mesh3/Primitive0", color: (0.45, 0.12, 0.1), ease: 0.01,
-            hang: Some((length: 0.38, chains: 6, segments: 2, droop: 1.0, flare: 0.18, stiffness: 0.5, damping: 0.4, follow_legs: 0.8))),
+            hang: Some((length: 0.38, chains: 6, segments: 2, droop: 1.0, flare: 0.32, stiffness: 0.5, damping: 0.4, follow_legs: 0.8))),
         (name: "belt", on: "torso", span: (0.1, 0.18), mesh: "garments/garments.gltf#Mesh2/Primitive0", color: (0.25, 0.16, 0.08), roughness: 0.55, ease: 0.016),
         (name: "cape", on: "torso", span: (0.2, 0.97), mesh: "garments/garments.gltf#Mesh4/Primitive0", color: (0.16, 0.2, 0.38), ease: 0.02,
             hang: Some((length: 0.55, chains: 3, segments: 2, droop: 1.0, flare: 0.05, stiffness: 0.35, damping: 0.35))),

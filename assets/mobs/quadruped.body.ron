@@ -1,71 +1,96 @@
-// A generic four-legged mammal. Lengths in metres.
+// A four-legged carnivore on dog proportions (withers ~0.6 m; see
+// docs/design/anatomy-reference.md): a deep, narrow chest reaching the elbows, a tucked-up loin,
+// elbows pointing back and stifles (knees) forward, standing on its toes.
 (
     root: (
         name: "torso",
         kind: Torso((
-            chain: (segments: 4, length: 0.9, radius: (curve: [(0.0, 0.8), (0.5, 1.0), (1.0, 0.9)], scale: 0.18)),
-            arch: [(0.0, 0.0), (0.5, 0.05), (1.0, 0.0)],
-            belly: 0.4,
+            // Rump → loin → ribcage → chest. Taller than wide (aspect < 1); the axis dips under the
+            // ribcage so the topline stays level while the chest hangs deep.
+            chain: (segments: 4, length: 0.72, radius: (curve: [(0.0, 0.78), (0.3, 0.68), (0.55, 0.92), (0.8, 1.0), (1.0, 0.82)], scale: 0.125, cross: Ellipse(aspect: 0.7))),
+            arch: [(0.0, 0.0), (0.3, 0.02), (0.65, -0.015), (1.0, -0.01)],
+            belly: 0.1,
         )),
         detail: Always,
         children: [
             (
+                // ≈ 0.4 of withers height, carried ~40° up.
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 3, length: 0.35, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.1)))),
+                kind: Chain((role: Neck, chain: (segments: 3, length: 0.26, radius: (curve: [(0.0, 1.0), (1.0, 0.68)], scale: 0.075)))),
                 attach: End,
-                offset: (rotate_deg: (-30.0, 0.0, 0.0)),
+                offset: (rotate_deg: (-58.0, 0.0, 0.0), translate: (0.0, 0.0, 0.03)),
                 detail: Always,
                 children: [
                     (
+                        // Head ≈ 0.4 of withers height, half of it muzzle.
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.1, 0.09, 0.14)),
-                            snout: 0.12,
-                            jaw: Some((segments: 1, length: 0.15)),
+                            skull: (shape: Ellipsoid, size: (0.065, 0.06, 0.075)),
+                            snout: 0.1,
+                            jaw: Some((segments: 1, length: 0.13)),
                             eye_spacing: 0.6,
+                            eye_lateral: 0.3,
                         )),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.02)), attach: Eye, mirror: true),
-                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.09, radius: (curve: [(0.0, 0.6), (0.5, 1.0), (1.0, 0.3)], scale: 0.035, cross: Flat(aspect: 3.0)), blend: 0.01))), attach: Ear, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.016)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.08, radius: (curve: [(0.0, 0.6), (0.5, 1.0), (1.0, 0.3)], scale: 0.03, cross: Flat(aspect: 3.0)), blend: 0.01))), attach: Ear, mirror: true),
                         ],
                     ),
                 ],
             ),
             (
+                // Humerus back-and-down (elbow points back), radius vertical, short pastern
+                // angled slightly forward.
                 name: "limb.front",
-                kind: Limb((chain: (segments: 3, length: 0.55), role: Locomotor, stance: Digitigrade, end: Pad)),
-                attach: Surface(t: 0.9, around_deg: 120.0),
+                kind: Limb((
+                    chain: (segments: 3, length: 0.42, ratios: [1.0, 1.05, 0.4], radius: (curve: [(0.0, 1.0), (0.4, 0.62), (0.75, 0.5), (1.0, 0.45)], scale: 0.055)),
+                    role: Locomotor,
+                    stance: Digitigrade,
+                    end: Pad,
+                    bends: [(-30.0, 0.0), (36.0, 0.0), (14.0, 0.0)],
+                )),
+                attach: Surface(t: 0.88, around_deg: 135.0),
                 mirror: true,
                 detail: Always,
                 children: [
                     (
                         name: "toes",
-                        kind: Digits((count: 4, chain: (segments: 1, length: 0.04, radius: (scale: 0.012), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.02)))),
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.035, radius: (scale: 0.011), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.016)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),
                 ],
             ),
             (
+                // Femur forward-and-down (stifle forward), long tibia back, hock to paw near
+                // vertical.
                 name: "limb.hind",
-                kind: Limb((chain: (segments: 3, length: 0.6), role: Locomotor, stance: Digitigrade, end: Pad)),
+                kind: Limb((
+                    chain: (segments: 3, length: 0.55, ratios: [1.0, 1.1, 0.55], radius: (curve: [(0.0, 1.25), (0.35, 0.75), (0.7, 0.5), (1.0, 0.42)], scale: 0.055)),
+                    role: Locomotor,
+                    stance: Digitigrade,
+                    end: Pad,
+                    bends: [(32.0, 0.0), (-72.0, 0.0), (46.0, 0.0)],
+                )),
                 attach: Surface(t: 0.1, around_deg: 120.0),
                 mirror: true,
                 detail: Always,
                 children: [
                     (
                         name: "toes",
-                        kind: Digits((count: 4, chain: (segments: 1, length: 0.04, radius: (scale: 0.012), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.02)))),
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.035, radius: (scale: 0.011), curl: 300.0), spread_deg: 30.0, tip: Some((kind: Claw, size: 0.016)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),
                 ],
             ),
             (
+                // ≈ 0.6 of withers height, carried low with a gentle curve.
                 name: "tail",
-                kind: Chain((role: Tail, chain: (segments: 6, length: 0.7, radius: (curve: [(0.0, 1.0), (1.0, 0.2)], scale: 0.05), curl: 20.0))),
+                kind: Chain((role: Tail, chain: (segments: 5, length: 0.38, radius: (curve: [(0.0, 1.0), (1.0, 0.3)], scale: 0.03), curl: 40.0))),
                 attach: Start,
+                offset: (rotate_deg: (25.0, 0.0, 0.0)),
             ),
         ],
     ),

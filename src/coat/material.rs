@@ -29,6 +29,8 @@ pub enum CoatLayer {
     Hard,
     /// Garments: outfit palette colour (index in vertex colour w).
     Cloth,
+    /// Wing sheets: membranes, flight feathers, insect wings (sheet kind in vertex colour w).
+    Wing,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -82,6 +84,7 @@ impl MaterialExtension for CoatExt {
             CoatLayer::Feather => defs.push("COAT_FEATHER".into()),
             CoatLayer::Hard => defs.push("COAT_HARD".into()),
             CoatLayer::Cloth => defs.push("COAT_CLOTH".into()),
+            CoatLayer::Wing => defs.push("COAT_WING".into()),
         }
         descriptor.vertex.shader_defs.extend(defs.iter().cloned());
         if let Some(fragment) = descriptor.fragment.as_mut() {

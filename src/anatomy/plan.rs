@@ -44,6 +44,10 @@ pub struct PartNode {
     /// Muscle/fat/landmark stamps on top of the base shape.
     #[serde(default)]
     pub stamps: StampSet,
+    /// Relative to water (`1.0`): hollow bird bones ~`0.6`, armour plating `2.0`. Scales the
+    /// part's weight, which the gait feels (see `motion::Heft`).
+    #[serde(default = "unit")]
+    pub density: f32,
     #[serde(default)]
     pub children: Vec<PartNode>,
 }
@@ -282,6 +286,7 @@ mod tests {
             detail: default(),
             tone: default(),
             stamps: default(),
+            density: 1.0,
             children: vec![],
         }
     }
@@ -304,4 +309,8 @@ mod tests {
         assert_eq!(e.root.children[0].children.len(), 2);
         assert!(e.node(&PartPath("torso/leg.2.r/spur.l".into())).is_some());
     }
+}
+
+fn unit() -> f32 {
+    1.0
 }

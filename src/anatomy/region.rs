@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::{Anatomy, LimbRole, PartPath};
 
 /// Index into a mob's [`RegionTable`]. At most 64 per mob so a mask fits in a `u64`.
-#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegionId(pub u8);
 
 impl RegionId {
@@ -41,6 +41,10 @@ pub enum RegionKind {
     Appendage,
     Mass,
     Hard,
+    /// Wing arm and finger bones (and insect wing hinges).
+    Wing,
+    /// Wing membranes, flight feathers and insect wing blades.
+    WingMembrane,
 }
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

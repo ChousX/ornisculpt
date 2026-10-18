@@ -83,6 +83,8 @@ pub enum MaterialSlot {
     Eye,
     /// Garments: colour from the outfit palette (index in vertex colour w).
     Cloth,
+    /// Wing sheets: membranes, flight feathers, insect wings (sheet kind in vertex colour w).
+    Wing,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +164,9 @@ impl BodyMeshData {
             .with_inserted_attribute(weights, self.weights.clone())
             .with_inserted_attribute(ATTRIBUTE_MOB_DATA, VertexAttributeValues::Uint32x2(self.mob_data.clone()))
             .with_inserted_indices(Indices::U32(self.indices.clone()));
-        if self.uvs.len() == n {
+        // Skin carries coat weights in UV0; other layers their own coordinates.
+        let skin = self.submeshes.iter().all(|s| s.slot == MaterialSlot::Skin);
+        if self.uvs.len() == n && !(skin && self.coverage.len() == n) {
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs.clone());
         } else if self.coverage.len() == n {
             let weights: Vec<[f32; 2]> = self.coverage.iter().map(|c| [c[1], c[2]]).collect();

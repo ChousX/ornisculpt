@@ -1,0 +1,201 @@
+//! The motion API: every body runs the same standard graph (`motion::library::standard`) and
+//! plays only the cycles that fit it.
+//!
+//! ```text
+//! cargo run --release --example motion
+//! ```
+//!
+//! Controls: left-drag orbit · scroll zoom · Space cycle speed (stand / walk / trot / gallop) ·
+//! 1 attack · 2 shake · 3 rear · 4 wave · 5 flare · H happy (tail wag) · Y flying (flap).
+//! `ORNISCULPT_SPEED=n` starts at speed step n, `ORNISCULPT_ACTION=name` triggers an action
+//! repeatedly, `ORNISCULPT_PARAMS=happy,flying` sets bools,
+//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits,
+//! `ORNISCULPT_SHOT_FRAME=n` picks the frame, `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets
+//! the camera.
+
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use ornisculpt::OrnisculptPlugin;
+use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
+use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
+
+const BODIES: [&str; 6] = [
+    "mobs/biped.body.ron",
+    "mobs/quadruped.body.ron",
+    "mobs/horse.body.ron",
+    "mobs/dragon.body.ron",
+    "mobs/bird.body.ron",
+    "mobs/hexapod.body.ron",
+];
+/// Leg lengths per second.
+const SPEEDS: [(&str, f32); 4] = [("stand", 0.0), ("walk", 1.0), ("trot", 2.5), ("gallop", 4.5)];
+const ACTIONS: [(KeyCode, &str); 5] =
+    [(KeyCode::Digit1, "attack"), (KeyCode::Digit2, "shake"), (KeyCode::Digit3, "rear"), (KeyCode::Digit4, "wave"), (KeyCode::Digit5, "flare")];
+
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, OrnisculptPlugin))
+        .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+        .init_resource::<Orbit>()
+        .init_resource::<Demo>()
+        .add_systems(Startup, setup)
+        .add_systems(Update, (controls, drive, orbit_camera, screenshot))
+        .add_observer(|e: On<MotionEvent>| info!("{:?}: {} ({})", e.entity, e.name, e.cycle))
+        .add_observer(|_: On<Footstep>, mut steps: ResMut<Demo>| steps.footsteps += 1)
+        .run();
+}
+
+#[derive(Resource)]
+struct Demo {
+    speed: usize,
+    happy: bool,
+    flying: bool,
+    footsteps: u32,
+}
+
+impl Default for Demo {
+    fn default() -> Self {
+        let params = std::env::var("ORNISCULPT_PARAMS").unwrap_or_default();
+        Self {
+            speed: std::env::var("ORNISCULPT_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1).min(SPEEDS.len() - 1),
+            happy: params.contains("happy"),
+            flying: params.contains("flying"),
+            footsteps: 0,
+        }
+    }
+}
+
+#[derive(Component)]
+struct Walker {
+    index: usize,
+    centre: Vec3,
+}
+
+#[derive(Resource)]
+struct Orbit {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    target: Vec3,
+}
+
+impl Default for Orbit {
+    fn default() -> Self {
+        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        match v[..] {
+            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
+            _ => Self { yaw: 0.3, pitch: 0.35, distance: 13.0, target: Vec3::new(0.0, 0.6, 0.0) },
+        }
+    }
+}
+
+fn setup(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut graphs: ResMut<Assets<MotionGraph>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.spawn((Camera3d::default(), TierCamera));
+    commands.spawn((
+        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
+        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
+    ));
+    // One graph for every body.
+    let graph = graphs.add(library::standard());
+    for (i, path) in BODIES.iter().enumerate() {
+        let centre = Vec3::new(i as f32 * 4.5 - 11.25, 0.0, 0.0);
+        commands.spawn((
+            Mob::new(assets.load(*path)),
+            MobMotion::new(graph.clone()),
+            Walker { index: i, centre },
+            Transform::from_translation(centre + Vec3::X * 1.6),
+        ));
+    }
+    info!("Space speed, 1-5 actions (attack shake rear wave flare), H happy, Y flying");
+}
+
+fn controls(keys: Res<ButtonInput<KeyCode>>, mut demo: ResMut<Demo>, mut mobs: Query<&mut MotionParams>, mut frame: Local<u32>) {
+    *frame += 1;
+    if keys.just_pressed(KeyCode::Space) {
+        demo.speed = (demo.speed + 1) % SPEEDS.len();
+        info!("speed: {}", SPEEDS[demo.speed].0);
+    }
+    demo.happy ^= keys.just_pressed(KeyCode::KeyH);
+    demo.flying ^= keys.just_pressed(KeyCode::KeyY);
+    let scripted = std::env::var("ORNISCULPT_ACTION").ok().filter(|_| *frame % 150 == 60);
+    for mut p in &mut mobs {
+        p.set_bool("happy", demo.happy).set_bool("flying", demo.flying);
+        for (key, action) in ACTIONS {
+            if keys.just_pressed(key) {
+                p.trigger(action);
+            }
+        }
+        if let Some(a) = &scripted {
+            p.trigger(a);
+        }
+    }
+}
+
+fn drive(
+    time: Res<Time>,
+    demo: Res<Demo>,
+    bodies: Res<Assets<GeneratedBody>>,
+    mut walkers: Query<(&Walker, &Transform, &MobBody, &mut MobIntent)>,
+) {
+    let t = time.elapsed_secs();
+    for (w, tf, body, mut intent) in &mut walkers {
+        let Some(b) = bodies.get(&body.0) else { continue };
+        let legs = &b.anatomy.legs;
+        let leg = if legs.is_empty() { 0.5 } else { legs.iter().map(|l| l.length).sum::<f32>() / legs.len() as f32 };
+        // Around a circle, pulled back onto it.
+        let to_centre = w.centre - tf.translation;
+        let tangent = Vec3::new(-to_centre.z, 0.0, to_centre.x).normalize_or_zero();
+        let pull = to_centre.normalize_or_zero() * (to_centre.length() - 1.6);
+        let speed = SPEEDS[demo.speed].1 * leg;
+        intent.velocity = (tangent + pull * 0.5).normalize_or_zero() * speed;
+        if speed == 0.0 {
+            intent.facing = Some(Dir3::new(Vec3::new((t * 0.1 + w.index as f32).sin(), 0.0, 1.0)).unwrap_or(Dir3::Z));
+        } else {
+            intent.facing = None;
+        }
+    }
+}
+
+fn orbit_camera(
+    mut orbit: ResMut<Orbit>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut camera: Query<&mut Transform, With<Camera3d>>,
+) {
+    if buttons.pressed(MouseButton::Left) {
+        orbit.yaw -= motion.delta.x * 0.008;
+        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+    }
+    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 100.0);
+    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
+    for mut t in &mut camera {
+        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
+    }
+}
+
+fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
+    let at = std::env::var("ORNISCULPT_SHOT_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(360);
+    *frame += 1;
+    if *frame == at {
+        info!("footsteps so far: {}", demo.footsteps);
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    }
+    if *frame == at + 20 {
+        exit.write(AppExit::Success);
+    }
+}

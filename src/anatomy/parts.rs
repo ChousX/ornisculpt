@@ -76,12 +76,13 @@ fn suffixed(base: &str, cx: &BuildCx) -> String {
 
 /// `n + 1` frames along a chain: `frames[i]` starts segment `i`, the last is the tip.
 /// Segment `i` is rotated by `bend(i)` (local) relative to the previous segment.
-fn chain_frames(start: Transform, n: usize, seg_len: f32, bend: impl Fn(usize) -> Quat) -> Vec<Transform> {
+fn chain_frames(start: Transform, lens: &[f32], bend: impl Fn(usize) -> Quat) -> Vec<Transform> {
+    let n = lens.len();
     let mut frames = Vec::with_capacity(n + 1);
     let mut f = Transform { rotation: start.rotation * bend(0), ..start };
     for i in 0..n {
         frames.push(f);
-        let tip = f.translation + f.rotation * Vec3::Y * seg_len;
+        let tip = f.translation + f.rotation * Vec3::Y * lens[i];
         let rot = if i + 1 < n { f.rotation * bend(i + 1) } else { f.rotation };
         f = Transform::from_translation(tip).with_rotation(rot);
     }
@@ -103,8 +104,14 @@ fn emit_chain(
     let mut axis = SmallVec::new();
     let scale = cross_scale(chain.radius.cross);
     let mut prev = parent;
+    // `t` runs along the chain's length (segments may differ), so radius profiles stay put.
+    let mut along = vec![0.0f32; n + 1];
     for i in 0..n {
-        let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+        along[i + 1] = along[i] + frames[i].translation.distance(frames[i + 1].translation);
+    }
+    let total = along[n].max(1e-6);
+    for i in 0..n {
+        let (t0, t1) = (along[i] / total, along[i + 1] / total);
         let len = frames[i].translation.distance(frames[i + 1].translation).max(1e-3);
         let bone = b.bone(prev, &format!("{name}.{i}"), frames[i], len, region(t0))?;
         let (r0, r1) = (radius_at(&chain.radius, t0), radius_at(&chain.radius, t1));
@@ -224,9 +231,11 @@ impl PartBuild for ChainPart {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let c = &self.chain;
         let n = c.segments.max(1) as usize;
-        let seg = c.length.max(0.005) / n as f32;
-        let curl = Quat::from_rotation_x((c.curl * seg).to_radians());
-        let frames = chain_frames(with_offset(&at, cx), n, seg, |i| if i == 0 { Quat::IDENTITY } else { curl });
+        let lens = c.segment_lengths();
+        // Curl is per metre: each joint bends by the curl over the segment before it.
+        let frames = chain_frames(with_offset(&at, cx), &lens, |i| {
+            if i == 0 { Quat::IDENTITY } else { Quat::from_rotation_x((c.curl * lens[i - 1]).to_radians()) }
+        });
 
         let (r0, r1) = match self.role {
             ChainRole::Neck => (b.region(RegionKind::Neck, cx.side)?, None),
@@ -283,7 +292,7 @@ fn limb_bends(role: LimbRole, stance: Stance, i: usize) -> (f32, f32) {
 impl PartBuild for LimbParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let n = self.chain.segments.max(1) as usize;
-        let seg = self.chain.length.max(0.01) / n as f32;
+        let lens = self.chain.segment_lengths();
         let pos = with_offset(&at, cx).translation;
         let outward = at.model.rotation * Vec3::Y;
 
@@ -298,8 +307,8 @@ impl PartBuild for LimbParams {
             .with_rotation(frame_y_z(dir0, Vec3::Z) * cx.offset.rotation);
 
         let (role, stance) = (self.role, self.stance);
-        let frames = chain_frames(base, n, seg, |i| {
-            let (x, z) = limb_bends(role, stance, i);
+        let frames = chain_frames(base, &lens, |i| {
+            let (x, z) = self.bends.get(i).copied().unwrap_or_else(|| limb_bends(role, stance, i));
             Quat::from_rotation_x(x.to_radians()) * Quat::from_rotation_z(z.to_radians())
         });
         let upper = b.region(RegionKind::LimbUpper, cx.side)?;
@@ -367,7 +376,13 @@ impl PartBuild for LimbParams {
             b.socket(&suffixed("grip", cx), SocketKind::Grip, cx.side, last, grip, size);
         }
         if matches!(self.role, LimbRole::Locomotor | LimbRole::Both) {
-            b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, Vec3::Z);
+            // The IK pole is the rest pose's own first joint direction: knees forward, a
+            // quadruped's elbows back, a spider's knees up.
+            let (hip, foot) = (frames[0].translation, frames[n].translation);
+            let axis = (foot - hip).normalize_or(Vec3::NEG_Y);
+            let knee = frames[1.min(n)].translation - hip;
+            let pole = (knee - axis * knee.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
+            b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
         }
 
         let mut slots = chain_slots(&bones, &frames, axis_samples);
@@ -481,9 +496,9 @@ impl PartBuild for DigitParams {
         let base = with_offset(&at, cx);
         let n = self.count.max(1) as usize;
         let segs = self.chain.segments.max(1) as usize;
-        let seg = self.chain.length.max(0.005) / segs as f32;
+        let lens = self.chain.segment_lengths();
         let spacing = self.chain.radius.scale * 2.4;
-        let curl = Quat::from_rotation_x((self.chain.curl * seg).to_radians());
+        let curl = |s: usize| Quat::from_rotation_x((self.chain.curl * lens[s - 1]).to_radians());
         let region = b.region(RegionKind::Digit, cx.side)?;
         let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
@@ -495,7 +510,7 @@ impl PartBuild for DigitParams {
             }
             let start = base * Transform::from_translation(Vec3::X * spacing * k * (n - 1) as f32)
                 .with_rotation(Quat::from_rotation_z((-yaw).to_radians()));
-            let frames = chain_frames(start, segs, seg, |s| if s == 0 { Quat::IDENTITY } else { curl });
+            let frames = chain_frames(start, &lens, |s| if s == 0 { Quat::IDENTITY } else { curl(s) });
             let name = suffixed(&format!("digit{i}"), cx);
             let (bones, _) = emit_chain(b, at.bone, &name, &frames, &self.chain, |_| region)?;
             let last = bones[segs - 1];

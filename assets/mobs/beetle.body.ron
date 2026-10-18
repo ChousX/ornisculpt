@@ -1,0 +1,70 @@
+// A beetle: the hexapod body with hardened, domed forewings (elytra) closed over the abdomen
+// and veined membranous hindwings folded beneath them. See docs/design/wings.md.
+(
+    root: (
+        name: "thorax",
+        kind: Torso((
+            chain: (segments: 3, length: 0.17, radius: (curve: [(0.0, 0.9), (0.6, 1.0), (1.0, 0.8)], scale: 0.065, cross: Ellipse(aspect: 1.4))),
+        )),
+        detail: Always,
+        children: [
+            (
+                name: "head",
+                kind: Head((skull: (shape: Ellipsoid, size: (0.05, 0.035, 0.045)), snout: 0.01, jaw: None, eye_spacing: 0.9, eye_lateral: 0.9)),
+                attach: End,
+                offset: (rotate_deg: (20.0, 0.0, 0.0)),
+                detail: Always,
+                children: [
+                    (name: "eye", kind: Hard((kind: Eye, size: 0.016)), attach: Eye, mirror: true),
+                    (name: "antenna", kind: Chain((role: Antenna, chain: (segments: 3, length: 0.15, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.006), curl: 60.0, blend: 0.004))), attach: Horn, mirror: true),
+                ],
+            ),
+            (
+                name: "abdomen",
+                kind: Chain((role: Tail, chain: (segments: 3, length: 0.3, radius: (curve: [(0.0, 0.9), (0.35, 1.0), (1.0, 0.5)], scale: 0.085, cross: Ellipse(aspect: 1.5)), curl: -10.0, blend: 0.03))),
+                attach: Start,
+                detail: Always,
+            ),
+            (
+                // Hindwings first, so the elytra sit over them.
+                name: "hindwing",
+                kind: Wing((kind: Blade((planform: Long)), span: 0.29, chord: 0.12, fold: 1.0, sweep_deg: 10.0)),
+                attach: Surface(t: 0.1, around_deg: 35.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "elytron",
+                kind: Wing((kind: Blade((planform: Round, elytron: true)), span: 0.31, chord: 0.11, fold: 1.0, sweep_deg: 0.0)),
+                attach: Surface(t: 0.15, around_deg: 25.0),
+                offset: (translate: (0.0, 0.012, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.fore",
+                kind: Limb((chain: (segments: 3, length: 0.26, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.02)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                attach: Surface(t: 0.85, around_deg: 95.0),
+                offset: (rotate_deg: (40.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.mid",
+                kind: Limb((chain: (segments: 3, length: 0.3, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.022)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                attach: Surface(t: 0.5, around_deg: 95.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.hind",
+                kind: Limb((chain: (segments: 3, length: 0.36, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.024)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                attach: Surface(t: 0.15, around_deg: 95.0),
+                offset: (rotate_deg: (-40.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.2, fat: 0.1, landmarks: 0.6),
+)

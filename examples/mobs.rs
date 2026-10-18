@@ -150,6 +150,7 @@ fn controls(
             detail: default(),
             tone: default(),
             stamps: default(),
+            density: 1.0,
             children: vec![],
         };
         for (e, i, ..) in &mobs {

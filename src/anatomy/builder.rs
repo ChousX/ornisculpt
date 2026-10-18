@@ -6,7 +6,8 @@ use super::{
     Anatomy, AnatomyError, AttachSlot, BoneDef, BoneId, BuiltPart, HardParams,
     HardPart, JointLimit, LegInfo, LimbRole, LodLevel, LookDef, MAX_BONES, PartKind,
     PartLodRules, PartNode, PartPath, PrimLayer, PrimOp, PrimShape, Primitive, RegionDef,
-    PartAssets, RegionId, RegionKind, Side, SocketDef, SocketKind, SpringChainDef, Stance, Tone,
+    PartAssets, RegionId, RegionKind, Sheet, Side, SocketDef, SocketKind, SpringChainDef, Stance, Tone,
+    WingRig,
 };
 
 /// Implemented by every part kind's params. Emits bones, primitives, sockets and rig info into the
@@ -244,6 +245,7 @@ impl AnatomyBuilder {
             regions: regions..regions,
             axis: SmallVec::new(),
             mirrored,
+            density: node.density,
         });
         self.stack.push(PartFrame { index, mirrored, side });
         Ok(BuildCx { path, side, tone, offset: node.offset.to_transform() })
@@ -415,6 +417,47 @@ impl AnatomyBuilder {
         });
     }
 
+    /// Adds a thin generated surface (logical model space; mirrored copies are reflected and
+    /// rewound).
+    pub fn sheet(&mut self, mut sheet: Sheet) {
+        if self.mirrored() {
+            for p in &mut sheet.positions {
+                *p = mirror_point(*p);
+            }
+            for d in &mut sheet.dirs {
+                *d = mirror_point(*d);
+            }
+            for t in sheet.indices.chunks_exact_mut(3) {
+                t.swap(1, 2);
+            }
+        }
+        sheet.part = self.current();
+        self.anatomy.sheets.push(sheet);
+    }
+
+    /// Records a wing's folded pose: `folded` gives each wing bone's folded logical model
+    /// transform (parents before children). Stored as local rotations, relative to the folded
+    /// parent where the parent is a wing bone too.
+    pub fn wing_rig(&mut self, fold: f32, folded: &[(BoneId, Transform)]) {
+        let mut stored: Vec<(BoneId, Transform)> = Vec::with_capacity(folded.len());
+        let mut bones = Vec::with_capacity(folded.len());
+        for (bone, model) in folded {
+            let model = self.to_stored(Transform { scale: Vec3::ONE, ..*model });
+            let parent = self.anatomy.skeleton.bones[bone.index()].parent;
+            let parent_model = parent.map(|p| stored.iter().find(|(b, _)| *b == p).map_or(self.model[p.index()], |(_, m)| *m));
+            let local = parent_model.map_or(model, |pm| relative(&pm, &model));
+            bones.push((*bone, local.rotation));
+            stored.push((*bone, model));
+        }
+        self.anatomy.wings.push(WingRig { part: self.current(), fold: fold.clamp(0.0, 1.0), bones });
+    }
+
+    /// Axis samples of the part the current part grows from (logical model space).
+    pub fn parent_axis(&self) -> SmallVec<[AxisSample; 9]> {
+        let current = &self.anatomy.parts[self.current() as usize];
+        current.parent.map(|p| self.anatomy.parts[p as usize].axis.clone()).unwrap_or_default()
+    }
+
     pub fn spine(&mut self, bones: &[BoneId]) {
         self.anatomy.spine.extend_from_slice(bones);
     }
@@ -464,6 +507,7 @@ impl AnatomyBuilder {
                 a.legs[i].pair = rank as u8;
             }
         }
+        a.mass = super::mass::measure(a);
         Ok(self.anatomy)
     }
 
@@ -488,6 +532,11 @@ impl AnatomyBuilder {
         for part in &mut self.anatomy.parts {
             for s in &mut part.axis {
                 s.model.translation.y -= min_y;
+            }
+        }
+        for sheet in &mut self.anatomy.sheets {
+            for p in &mut sheet.positions {
+                p.y -= min_y;
             }
         }
         for leg in &mut self.anatomy.legs {
@@ -592,6 +641,7 @@ impl PartBuild for PartKind {
             PartKind::Mass(p) => p.build(b, at, cx),
             PartKind::Hard(p) => p.build(b, at, cx),
             PartKind::Sculpt(p) => p.build(b, at, cx),
+            PartKind::Wing(p) => p.build(b, at, cx),
         }
     }
 }

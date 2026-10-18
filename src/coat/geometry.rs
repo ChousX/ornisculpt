@@ -101,8 +101,10 @@ const ANNOTATE_SMOOTHING: usize = 3;
 pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: LodLevel) {
     let n = body.positions.len();
     body.coverage.clear();
-    body.flow.clear();
+    // Non-skin layers (wing sheets) bring their own flow; keep it.
+    let prior_flow = std::mem::take(&mut body.flow);
     if coat.coverings.is_empty() {
+        body.flow = prior_flow;
         return;
     }
     let masks = coat.coverage(anatomy);
@@ -174,7 +176,12 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
             }
         }
     }
-    body.flow = flow.iter().zip(along).map(|(f, u)| f.extend(u).to_array()).collect();
+    body.flow = flow
+        .iter()
+        .zip(along)
+        .enumerate()
+        .map(|(i, (f, u))| if skin[i] { f.extend(u).to_array() } else { prior_flow.get(i).copied().unwrap_or(f.extend(u).to_array()) })
+        .collect();
 }
 
 /// Gauss-Seidel sweeps integrating the flow into the along-flow coordinate.

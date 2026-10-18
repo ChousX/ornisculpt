@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{Orient, RegionKind};
+use super::{Orient, RegionKind, WingParams};
 
 /// Closed set of anatomical part kinds. Each variant's logic lives in its own
 /// [`PartBuild`](super::PartBuild) impl; supported levers are listed by
@@ -34,6 +34,8 @@ pub enum PartKind {
     /// An authored mesh blended into the body as an SDF (feet, snouts, mouths, ears).
     /// Slots: `Start`, `End`, `Along`, `Surface` (along the part's local +Y).
     Sculpt(SculptParams),
+    /// Bat, dragon and pterosaur membranes, bird wings, insect wings. Slots: `End` (wing tip).
+    Wing(WingParams),
 }
 
 /// An authored soft part. The mesh must be watertight. See [`Orient`] for the authoring convention.
@@ -84,6 +86,9 @@ pub struct ChainParams {
     pub curl: f32,
     /// Smooth-min blend radius where the chain meets its parent.
     pub blend: f32,
+    /// Relative segment lengths, root first (`[1.0, 1.0, 0.35]` = a short third segment). Empty
+    /// or mismatched = equal segments. Scaled so the segments sum to `length`.
+    pub ratios: Vec<f32>,
 }
 
 impl Default for ChainParams {
@@ -94,7 +99,23 @@ impl Default for ChainParams {
             radius: Profile::default(),
             curl: 0.0,
             blend: 0.05,
+            ratios: Vec::new(),
         }
+    }
+}
+
+impl ChainParams {
+    /// Length of each segment, root first; they sum to `length`.
+    pub fn segment_lengths(&self) -> Vec<f32> {
+        let n = self.segments.max(1) as usize;
+        let total = self.length.max(0.005);
+        let ratios: Vec<f32> = if self.ratios.len() == n && self.ratios.iter().all(|r| *r > 0.0) {
+            self.ratios.clone()
+        } else {
+            vec![1.0; n]
+        };
+        let sum: f32 = ratios.iter().sum();
+        ratios.iter().map(|r| total * r / sum).collect()
     }
 }
 
@@ -209,6 +230,10 @@ pub struct LimbParams {
     pub end: LimbEnd,
     /// Outward angle from the body in degrees (0 = straight down).
     pub splay_deg: f32,
+    /// Rest bend at each joint, root first: `(forward, up)` degrees. Positive forward swings the
+    /// next segment toward the front. Empty = the stance's default. Front and hind legs of real
+    /// quadrupeds bend oppositely (elbow back, knee forward), so set these per limb.
+    pub bends: Vec<(f32, f32)>,
 }
 
 /// What a limb is used for. `Locomotor`/`Both` limbs become [`LegInfo`](super::LegInfo)s;

@@ -153,6 +153,7 @@ impl PartKind {
                 _ => &[&[Size, Curve, Twist]],
             },
             PartKind::Sculpt(_) => &[&[Blend]],
+            PartKind::Wing(_) => &[&[Size]],
         };
         own.iter().flat_map(|s| s.iter().copied()).collect()
     }
@@ -314,6 +315,11 @@ fn scale_kind(kind: &mut PartKind, f: f32) {
             _ => h.size *= f,
         },
         PartKind::Sculpt(s) => s.scale *= f,
+        PartKind::Wing(w) => {
+            w.span *= f;
+            w.chord *= f;
+            w.radius *= f;
+        }
         PartKind::Chain(_) | PartKind::Digits(_) => {}
     }
 }

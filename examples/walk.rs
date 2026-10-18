@@ -1,4 +1,5 @@
-//! Procedural locomotion: a quadruped, the authored-part beast, a biped and a hexapod walking.
+//! Procedural locomotion: a dog-like quadruped, the authored-part bear, a biped, an insect and a
+//! horse walking.
 //!
 //! ```text
 //! cargo run --release --example walk
@@ -15,9 +16,9 @@ use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::mob::{Mob, TierCamera};
-use ornisculpt::motion::{MobIntent, MotionState};
+use ornisculpt::motion::{Feet, MobIntent};
 
-const BODIES: [&str; 4] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
+const BODIES: [&str; 5] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron", "mobs/horse.body.ron"];
 
 fn main() {
     App::new()
@@ -79,7 +80,7 @@ fn setup(
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
     ));
     for (i, path) in BODIES.iter().enumerate() {
-        let centre = Vec3::new(i as f32 * 4.0 - 6.0, 0.0, 0.0);
+        let centre = Vec3::new(i as f32 * 4.0 - 8.0, 0.0, 0.0);
         commands.spawn((
             Mob::new(assets.load(*path)),
             Walker { index: i, centre },
@@ -134,12 +135,12 @@ fn drive(
     }
 }
 
-fn draw_feet(demo: Res<Demo>, states: Query<&MotionState>, mut gizmos: Gizmos) {
+fn draw_feet(demo: Res<Demo>, feet: Query<&Feet>, mut gizmos: Gizmos) {
     if !demo.gizmos {
         return;
     }
-    for s in &states {
-        for f in &s.feet {
+    for s in &feet {
+        for f in &s.0 {
             let c = if f.planted { Color::srgb(0.2, 1.0, 0.3) } else { Color::srgb(1.0, 0.5, 0.1) };
             gizmos.sphere(Isometry3d::from_translation(f.position), 0.025, c);
         }

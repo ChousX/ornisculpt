@@ -36,7 +36,15 @@ use crate::anatomy::{BodyPlan, Form};
     MobSeed,
     BoneScales,
     crate::motion::MobIntent,
-    crate::motion::MotionState,
+    crate::motion::Locomotion,
+    crate::motion::GaitClock,
+    crate::motion::ActiveStep,
+    crate::motion::GaitOverride,
+    crate::motion::Feet,
+    crate::motion::SpringState,
+    crate::motion::LookState,
+    crate::motion::TorsoState,
+    crate::motion::Heft,
     crate::motion::FootProbes
 )]
 pub struct Mob {

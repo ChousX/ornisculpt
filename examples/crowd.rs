@@ -9,6 +9,7 @@
 //! Controls: left-drag orbit · scroll zoom · Q cycle quality profile.
 //! `ORNISCULPT_COATS=1` dresses a quarter each plain, scaly, furry and feathered
 //! (`=lizard|furry|bird` dresses every mob in one coat);
+//! `ORNISCULPT_OUTFITS=1` dresses bipeds (peasant/warrior) and quadrupeds (harness);
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
@@ -19,6 +20,7 @@ use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{Form, FormPatch, Lever, PartPath};
+use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::MobCoat;
 use ornisculpt::mob::{CrowdUploads, GenCache, Mob, MobSeed, MobTier, QualityProfile, TierCamera};
 use ornisculpt::motion::MobIntent;
@@ -26,6 +28,8 @@ use ornisculpt::motion::MobIntent;
 const COATS: [Option<&str>; 4] = [None, Some("coats/lizard.coat.ron"), Some("coats/furry.coat.ron"), Some("coats/bird.coat.ron")];
 
 const BODIES: [&str; 4] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
+/// Each body's root part (the trunk the girth patch widens), in `BODIES` order.
+const ROOTS: [&str; 4] = ["torso", "torso", "torso", "thorax"];
 
 fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(4000);
@@ -115,7 +119,7 @@ fn setup(
         let build = (i / BODIES.len()) % 3;
         let form = Form {
             overall_scale: 0.85 + 0.15 * build as f32,
-            patches: vec![FormPatch { part: PartPath("torso".into()), lever: Lever::Girth, value: 0.9 + 0.15 * build as f32 }],
+            patches: vec![FormPatch { part: PartPath(ROOTS[body].into()), lever: Lever::Girth, value: 0.9 + 0.15 * build as f32 }],
         };
         let (x, z) = ((i % side) as f32, (i / side) as f32);
         let centre = Vec3::new((x - side as f32 * 0.5) * spacing, 0.0, (z - side as f32 * 0.5) * spacing);
@@ -138,6 +142,17 @@ fn setup(
                 mob.insert(MobCoat(assets.load(format!("coats/{name}.coat.ron"))));
             }
             Err(_) => {}
+        }
+        // `ORNISCULPT_OUTFITS=1`: bipeds wear peasant or warrior clothes, quadrupeds a harness.
+        if std::env::var("ORNISCULPT_OUTFITS").is_ok() {
+            let outfit = match BODIES[body] {
+                "mobs/biped.body.ron" => Some(if (i / BODIES.len()) % 2 == 0 { "outfits/peasant.outfit.ron" } else { "outfits/warrior.outfit.ron" }),
+                "mobs/quadruped.body.ron" => Some("outfits/harness.outfit.ron"),
+                _ => None,
+            };
+            if let Some(o) = outfit {
+                mob.insert(MobOutfit(assets.load(o)));
+            }
         }
     }
     info!("spawned {} mobs; controls: left-drag orbit, scroll zoom, Q quality", count.0);

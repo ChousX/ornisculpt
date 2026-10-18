@@ -213,6 +213,10 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
     base.joints.extend_from_slice(&other.joints);
     base.weights.extend_from_slice(&other.weights);
     base.mob_data.extend_from_slice(&other.mob_data);
+    // Optional per-vertex channels: pad whichever side lacks them.
+    pad_extend(&mut base.uvs, &other.uvs, vbase as usize, other.positions.len(), [0.0; 2]);
+    pad_extend(&mut base.coverage, &other.coverage, vbase as usize, other.positions.len(), [0.0; 3]);
+    pad_extend(&mut base.flow, &other.flow, vbase as usize, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
     if !base.cloth.is_empty() || !other.cloth.is_empty() {
         base.cloth.resize(vbase as usize, NOT_CLOTH);
         if other.cloth.is_empty() {
@@ -228,5 +232,19 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
             Some(last) if last.slot == s.slot && last.indices.end == range.start => last.indices.end = range.end,
             _ => base.submeshes.push(Submesh { indices: range, slot: s.slot }),
         }
+    }
+}
+
+/// Appends `other` (for `other_len` vertices) to `base` (holding `base_len`), padding either side
+/// with `fill` when it lacks the channel; leaves both empty if neither has it.
+fn pad_extend<T: Copy>(base: &mut Vec<T>, other: &[T], base_len: usize, other_len: usize, fill: T) {
+    if base.is_empty() && other.is_empty() {
+        return;
+    }
+    base.resize(base_len, fill);
+    if other.len() == other_len {
+        base.extend_from_slice(other);
+    } else {
+        base.resize(base_len + other_len, fill);
     }
 }

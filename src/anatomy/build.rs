@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use smallvec::SmallVec;
 
 use super::{
-    AxisSample, ClothFollow, CrowdSkeleton, MAX_CROWD_BONES, AnatomyError, BodyPlan, BoneId, HardPart, JointLimit, LegInfo, LimbRole, LodLevel,
+    AxisSample, ClothFollow, CrowdSkeleton, Sheet, WingRig, MAX_CROWD_BONES, AnatomyError, BodyPlan, BoneId, HardPart, JointLimit, LegInfo, LimbRole, LodLevel,
     LookDef, PartDetail, PartLodRules, PartPath, Primitive, RegionTable, Skeleton, SocketDef,
     SpringChainDef, Tone,
 };
@@ -26,8 +26,14 @@ pub struct Anatomy {
     pub springs: Vec<SpringChainDef>,
     /// Loose-cloth chains that swing with the legs (added by clothing).
     pub cloth_follow: Vec<ClothFollow>,
+    /// Thin generated surfaces: wing membranes, flight feathers, insect wings.
+    pub sheets: Vec<Sheet>,
+    /// Wing fold rigs: folded local rotations blended in by the pose.
+    pub wings: Vec<WingRig>,
     pub look: Option<LookDef>,
     pub joint_limits: Vec<(BoneId, JointLimit)>,
+    /// Weight per bone and centre of mass (rest pose).
+    pub mass: super::BodyMass,
     /// Depth-first order; a parent precedes its children.
     pub parts: Vec<BuiltPart>,
 }
@@ -51,6 +57,8 @@ pub struct BuiltPart {
     pub axis: SmallVec<[AxisSample; 9]>,
     /// Built mirrored: stored transforms are the logical ones reflected across x = 0.
     pub mirrored: bool,
+    /// Relative to water; see [`PartNode::density`](super::PartNode::density).
+    pub density: f32,
 }
 
 impl Anatomy {
@@ -64,12 +72,15 @@ impl Anatomy {
     pub fn finish_skeleton(&mut self, extra_crowd: &[BoneId]) {
         let model = self.skeleton.model_rest();
         self.skeleton.inverse_bind = model.iter().map(|m| Mat4::from(*m).inverse()).collect();
+        self.skeleton.rest_model = model;
         let mut crowd = CrowdSkeleton { map: Vec::with_capacity(self.skeleton.len()), bones: Vec::new() };
         for (i, bone) in self.skeleton.bones.iter().enumerate() {
             let id = BoneId(i as u8);
+            // The crowd bone buffer holds MAX_CROWD_BONES per mob: past that, bones fold too.
+            let room = crowd.bones.len() < MAX_CROWD_BONES;
             let kept = bone.parent.is_none()
-                || (self.parts[bone.part as usize].lod >= LodLevel::Near && !extra_crowd.contains(&id))
-                || (extra_crowd.contains(&id) && crowd.bones.len() < MAX_CROWD_BONES);
+                || (room && self.parts[bone.part as usize].lod >= LodLevel::Near && !extra_crowd.contains(&id))
+                || (room && extra_crowd.contains(&id));
             let mapped = if kept {
                 crowd.bones.push(id);
                 crowd.bones.len() as u8 - 1
