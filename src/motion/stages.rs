@@ -314,7 +314,7 @@ pub(crate) fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pos
         let chain = &l.chain;
         let last = *chain.last().expect("leg chain");
         let mut points: SmallVec<[Vec3; 6]> = chain.iter().map(|b| world[b.index()].translation.into()).collect();
-        points.push(world[last.index()].transform_point3(Vec3::Y * bones[last.index()].length).into());
+        points.push(world[last.index()].transform_point3(Vec3::Y * bones[last.index()].length));
         // Knees bend toward the leg's pole, never whichever side the solve happens to find.
         // Some "up" keeps the hint well defined when the leg reaches along the pole (a foot
         // swinging forward); it projects away on a vertical leg.

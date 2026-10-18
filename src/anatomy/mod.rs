@@ -21,6 +21,7 @@ mod primitive;
 mod region;
 mod rig;
 mod skeleton;
+mod spread;
 mod tone;
 mod viability;
 mod wing;
@@ -42,6 +43,7 @@ pub use plan::{AttachSlot, BodyPlan, PartNode, PartOffset, PartTone, Repeat, Ton
 pub use primitive::{HardPart, PrimLayer, PrimOp, PrimShape, Primitive};
 pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, RegionTable, Side};
 pub use rig::{ClothFollow, LegInfo, LookDef, SpringChainDef};
+pub use spread::{Spread, spread_pose};
 pub use skeleton::{
     BoneDef, BoneId, CrowdSkeleton, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
     SocketKind,

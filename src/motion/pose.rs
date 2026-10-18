@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use super::heft::Heft;
 use super::stages::{self, Frame, leg_length};
-use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState};
+use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState, MotionTime};
 use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, MobGait, MobIntent};
 use crate::anatomy::Anatomy;
 use crate::mob::{BodyReady, GeneratedBody, MobBody, MobJoint, MobSkeleton};
@@ -20,7 +20,7 @@ pub(crate) fn gait_for<'a>(handle: Option<&MobGait>, gaits: &'a Assets<Gait>, de
 /// The assets and clock every motion system reads.
 #[derive(SystemParam)]
 pub(super) struct MotionAssets<'w> {
-    time: Res<'w, Time>,
+    time: Res<'w, MotionTime>,
     bodies: Res<'w, Assets<GeneratedBody>>,
     gaits: Res<'w, Assets<Gait>>,
     defaults: Res<'w, DefaultGaits>,
@@ -34,8 +34,8 @@ impl MotionAssets<'_> {
             a,
             gait: gait_for(gait, &self.gaits, &self.defaults, a),
             root: tf.compute_affine(),
-            dt: self.time.delta_secs().clamp(1e-4, 0.1),
-            time: self.time.elapsed_secs(),
+            dt: self.time.dt,
+            time: self.time.elapsed,
             leg: leg_length(a),
         })
     }
@@ -48,6 +48,11 @@ fn yaw_of(q: Quat) -> f32 {
 
 fn wrap(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
+}
+
+/// The turn rate the body bends and leans with, eased so it doesn't flicker frame to frame.
+fn ease_turn(loco: &mut Locomotion, rate: f32, dt: f32) {
+    loco.turn_rate += (rate - loco.turn_rate) * (1.0 - (-12.0 * dt).exp());
 }
 
 /// A (re)generated body: fresh feet, springs and torso, and its weight.
@@ -69,7 +74,7 @@ pub(super) fn move_roots(
     assets: MotionAssets,
     mut mobs: Query<(&mut Transform, &MobIntent, &mut Locomotion, &Heft, &MobBody, Option<&MobGait>, Has<ExternalRoot>)>,
 ) {
-    let dt = assets.time.delta_secs().max(1e-4);
+    let dt = assets.time.dt;
     mobs.par_iter_mut().for_each(|(mut tf, intent, mut loco, heft, body, gait, external)| {
         let Some(f) = assets.frame(body, gait, &tf) else { return };
         let (leg, gait) = (f.leg, f.gait);
@@ -78,7 +83,7 @@ pub(super) fn move_roots(
         if external {
             if let Some((pos, rot)) = loco.last_root {
                 loco.velocity = (tf.translation - pos) / dt;
-                loco.turn_rate = wrap(yaw_of(tf.rotation) - yaw_of(rot)) / dt;
+                ease_turn(&mut loco, wrap(yaw_of(tf.rotation) - yaw_of(rot)) / dt, dt);
             }
         } else {
             let want = Vec3::new(intent.velocity.x, 0.0, intent.velocity.z);
@@ -87,14 +92,15 @@ pub(super) fn move_roots(
             tf.translation += loco.velocity * dt;
 
             let facing = intent.facing.map(|d| d.as_vec3()).or_else(|| (loco.velocity.length() > 0.05 * leg).then_some(loco.velocity));
-            loco.turn_rate = 0.0;
+            let mut turned = 0.0;
             if let Some(f) = facing {
                 let delta = wrap(f.x.atan2(f.z) - yaw_of(tf.rotation));
                 let max = gait.turn_rate_deg.to_radians() * agility * dt;
                 let step = delta.clamp(-max, max);
                 tf.rotation = Quat::from_rotation_y(step) * tf.rotation;
-                loco.turn_rate = step / dt;
+                turned = step / dt;
             }
+            ease_turn(&mut loco, turned, dt);
         }
         loco.last_root = Some((tf.translation, tf.rotation));
     });

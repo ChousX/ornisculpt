@@ -67,7 +67,8 @@
                 children: [
                     (
                         name: "fingers",
-                        kind: Digits((count: 5, chain: (segments: 2, length: 0.075, radius: (scale: 0.008), curl: 200.0), spread_deg: 28.0, opposable: true)),
+                        // Three phalanges, shortening toward the tip (~0.45 / 0.3 / 0.25 of the finger).
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.085, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0085), curl: 160.0), spread_deg: 16.0, opposable: true)),
                         attach: End,
                         detail: UpTo(Hero),
                     ),

@@ -123,7 +123,7 @@ struct Chain {
 /// Wraps `outfit` onto `anatomy`: adds loose-cloth bones (springs, leg following) to the
 /// skeleton and returns the garments as one hero-detail cloth mesh in the dressed skeleton.
 pub fn fit_outfit(mut anatomy: Anatomy, outfit: &Outfit, assets: &PartAssets) -> (Anatomy, Option<BodyMeshData>) {
-    let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false });
+    let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
     let mut out = BodyMeshData::default();
     let mut cloth_bones: Vec<BoneId> = Vec::new();
     let mut new_bones: Vec<BoneDef> = Vec::new();

@@ -487,7 +487,7 @@ pub(super) struct Out {
 /// Advances every layer: parameters, transitions, time, root motion and events.
 #[allow(clippy::type_complexity)]
 pub(super) fn update_motion(
-    time: Res<Time>,
+    time: Res<super::MotionTime>,
     cycles: Res<Assets<Cycle>>,
     bodies: Res<Assets<GeneratedBody>>,
     mut mobs: Query<(
@@ -505,7 +505,7 @@ pub(super) fn update_motion(
     )>,
     commands: ParallelCommands,
 ) {
-    let dt = time.delta_secs().clamp(1e-4, 0.1);
+    let dt = time.dt;
     mobs.par_iter_mut().for_each(|(entity, mut rt, mut params, loco, clock, mut gait, body, mut tf, play, external, delta)| {
         let Some(b) = bodies.get(&body.0) else { return };
         let leg = leg_length(&b.anatomy);

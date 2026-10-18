@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BodyField, BodyFieldOptions, BodyMeshData, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
+    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
     Submesh, SurfaceError, merge,
     remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
 };
@@ -68,7 +68,7 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
     spec: &LodSpec,
     seed: u64,
 ) -> Result<BodyMeshData, SurfaceError> {
-    let opts = BodyFieldOptions { level, seed, geometric_folds: spec.geometric_folds };
+    let opts = BodyFieldOptions { level, seed, geometric_folds: spec.geometric_folds, spread: true };
     let field = BodyField::new(anatomy, &opts);
     if field.primitive_count() == 0 {
         return Err(SurfaceError::NoPartsAtLevel);
@@ -82,6 +82,10 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
     weld(&mut raw, mesh_settings.voxel_size * 1e-3);
     smooth(&mut raw, 2);
     let mut data = skin_and_attrs(raw, &field, anatomy);
+    // Weights by distance through the body (in the meshing pose, before the unbind uses them).
+    let bind = BindSettings { voxel: (mesh_settings.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
+    VoxelBinding::new(&field, anatomy, &bind).apply(&mut data);
+    field.unbind(&mut data);
     if spec.simplify_ratio < 1.0 {
         data = simplify(&data, spec.simplify_ratio, spec.max_error);
     }
@@ -169,5 +173,27 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
         cloth: vec![sheet.kind as u8; n],
         indices: sheet.indices.clone(),
         submeshes: vec![Submesh { indices: 0..sheet.indices.len() as u32, slot: MaterialSlot::Wing }],
+    }
+}
+
+#[cfg(test)]
+mod hero_timing {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{ProceduralHardParts, SurfaceNets};
+
+    #[test]
+    #[ignore = "timing probe"]
+    fn hero_mesh_cost_by_voxel() {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        for v in [0.008] {
+            let mut spec = SurfaceSettings::default().levels[0].clone();
+            spec.mesh.voxel_size = v;
+            let t = std::time::Instant::now();
+            let m = mesh_lod(&SurfaceNets, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
+            println!("voxel {v}: {:.2}s, {} tris", t.elapsed().as_secs_f32(), m.indices.len() / 3);
+        }
     }
 }

@@ -7,7 +7,9 @@
 //!
 //! Controls: left-drag orbit · scroll zoom · Space cycle speed (stand / walk / trot / gallop) ·
 //! 1 attack · 2 shake · 3 rear · 4 wave · 5 flare · H happy (tail wag) · Y flying (flap).
-//! `ORNISCULPT_SPEED=n` starts at speed step n, `ORNISCULPT_ACTION=name` triggers an action
+//! Tab follows the next mob, Escape frees the camera.
+//! `ORNISCULPT_SPEED=n` starts at speed step n, `ORNISCULPT_FOCUS=n` follows mob n,
+//! `ORNISCULPT_DIAG=1` logs frame times,, `ORNISCULPT_ACTION=name` triggers an action
 //! repeatedly, `ORNISCULPT_PARAMS=happy,flying` sets bools,
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits,
 //! `ORNISCULPT_SHOT_FRAME=n` picks the frame, `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets
@@ -40,7 +42,7 @@ fn main() {
         .init_resource::<Orbit>()
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (controls, drive, orbit_camera, screenshot))
+        .add_systems(Update, (controls, drive, orbit_camera.after(drive), screenshot, frame_stats))
         .add_observer(|e: On<MotionEvent>| info!("{:?}: {} ({})", e.entity, e.name, e.cycle))
         .add_observer(|_: On<Footstep>, mut steps: ResMut<Demo>| steps.footsteps += 1)
         .run();
@@ -49,6 +51,8 @@ fn main() {
 #[derive(Resource)]
 struct Demo {
     speed: usize,
+    /// Mob the camera follows (Tab cycles, Escape frees it).
+    focus: Option<usize>,
     happy: bool,
     flying: bool,
     footsteps: u32,
@@ -59,6 +63,7 @@ impl Default for Demo {
         let params = std::env::var("ORNISCULPT_PARAMS").unwrap_or_default();
         Self {
             speed: std::env::var("ORNISCULPT_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1).min(SPEEDS.len() - 1),
+            focus: std::env::var("ORNISCULPT_FOCUS").ok().and_then(|s| s.parse().ok()),
             happy: params.contains("happy"),
             flying: params.contains("flying"),
             footsteps: 0,
@@ -128,6 +133,13 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut demo: ResMut<Demo>, mut mobs: Q
         demo.speed = (demo.speed + 1) % SPEEDS.len();
         info!("speed: {}", SPEEDS[demo.speed].0);
     }
+    if keys.just_pressed(KeyCode::Tab) {
+        demo.focus = Some(demo.focus.map_or(0, |f| (f + 1) % BODIES.len()));
+        info!("following {}", BODIES[demo.focus.unwrap_or(0)]);
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        demo.focus = None;
+    }
     demo.happy ^= keys.just_pressed(KeyCode::KeyH);
     demo.flying ^= keys.just_pressed(KeyCode::KeyY);
     let scripted = std::env::var("ORNISCULPT_ACTION").ok().filter(|_| *frame % 150 == 60);
@@ -170,6 +182,8 @@ fn drive(
 }
 
 fn orbit_camera(
+    demo: Res<Demo>,
+    walkers: Query<(&Walker, &Transform), Without<Camera3d>>,
     mut orbit: ResMut<Orbit>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -181,6 +195,11 @@ fn orbit_camera(
         orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
     }
     orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 100.0);
+    if let Some(f) = demo.focus {
+        if let Some((_, tf)) = walkers.iter().find(|(w, _)| w.index == f) {
+            orbit.target = tf.translation + Vec3::Y * 0.6;
+        }
+    }
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
@@ -189,13 +208,37 @@ fn orbit_camera(
 
 fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    let at = std::env::var("ORNISCULPT_SHOT_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(360);
+    // `ORNISCULPT_SHOT_FRAME=360` or several, `300,302,304` (saved as `<path>.<frame>.png`).
+    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or("360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let last = frames.iter().copied().max().unwrap_or(360);
     *frame += 1;
-    if *frame == at {
+    if frames.contains(&*frame) {
         info!("footsteps so far: {}", demo.footsteps);
+        let path = if frames.len() > 1 { format!("{path}.{}.png", *frame) } else { path };
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
-    if *frame == at + 20 {
+    if *frame == last + 20 {
         exit.write(AppExit::Success);
     }
 }
+
+/// `ORNISCULPT_DIAG=1`: every two seconds, frame time percentiles and how many frames hitched
+/// (took over twice the median).
+fn frame_stats(time: Res<Time>, mut frames: Local<Vec<f32>>, mut since: Local<f32>) {
+    if std::env::var("ORNISCULPT_DIAG").is_err() {
+        return;
+    }
+    frames.push(time.delta_secs() * 1000.0);
+    *since += time.delta_secs();
+    if *since < 2.0 {
+        return;
+    }
+    *since = 0.0;
+    let mut sorted = std::mem::take(&mut *frames);
+    sorted.sort_by(f32::total_cmp);
+    let at = |q: f32| sorted[((sorted.len() - 1) as f32 * q) as usize];
+    let median = at(0.5);
+    let hitches = sorted.iter().filter(|t| **t > median * 2.0).count();
+    info!("frame ms: p50 {:.1} p95 {:.1} p99 {:.1} max {:.1}, {hitches} hitches in {} frames", median, at(0.95), at(0.99), at(1.0), sorted.len());
+}
+

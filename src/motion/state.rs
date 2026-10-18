@@ -124,3 +124,45 @@ pub struct MobPose {
 /// What the playing cycles add to this frame's pose (hero tier).
 #[derive(Component, Clone, Debug, Default)]
 pub struct CyclePose(pub(crate) Option<LayerPose>);
+
+/// Frame time for motion, evened out. Frames are shown at an even rate but their measured deltas
+/// alternate around it (about 15 and 19 ms at 60 Hz), so stepping poses by the raw delta makes
+/// everything judder at half the frame rate. This follows the average instead, and passes real
+/// hitches (well over the average) straight through so time isn't lost.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct MotionTime {
+    /// Seconds to advance motion by this frame.
+    pub dt: f32,
+    /// Motion seconds since start.
+    pub elapsed: f32,
+    average: f32,
+}
+
+impl MotionTime {
+    pub(crate) fn tick(&mut self, raw: f32) {
+        let raw = raw.clamp(1e-4, 0.1);
+        self.average = if self.average <= 0.0 { raw } else { self.average + (raw.clamp(self.average * 0.5, self.average * 2.0) - self.average) * 0.05 };
+        self.dt = if raw > self.average * 1.8 { raw } else { self.average };
+        self.elapsed += self.dt;
+    }
+}
+
+pub(super) fn tick_motion_time(time: Res<Time>, mut motion: ResMut<MotionTime>) {
+    motion.tick(time.delta_secs());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MotionTime;
+
+    #[test]
+    fn alternating_deltas_even_out_and_hitches_pass() {
+        let mut t = MotionTime::default();
+        for i in 0..240 {
+            t.tick(if i % 2 == 0 { 0.015 } else { 0.0185 });
+        }
+        assert!((t.dt - 0.01675).abs() < 0.0005, "steady dt {}", t.dt);
+        t.tick(0.05);
+        assert!((t.dt - 0.05).abs() < 1e-6, "a hitch passes through");
+    }
+}

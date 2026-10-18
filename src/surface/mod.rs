@@ -8,6 +8,7 @@
 // Stub phase: bodies are `todo!()`, so parameters are intentionally unused.
 #![allow(unused_variables, dead_code)]
 
+mod binding;
 mod body;
 mod combinators;
 mod field;
@@ -18,6 +19,7 @@ mod mesher;
 mod process;
 pub mod sdf;
 
+pub use binding::{BindSettings, VoxelBinding};
 pub use body::{BodyField, BodyFieldOptions, ChunkView};
 pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
 pub use field::{Field, Influences, SurfaceInfo};

@@ -331,7 +331,10 @@ impl PartBuild for LimbParams {
             LimbEnd::None | LimbEnd::Point => tip,
             LimbEnd::Hand { palm } => {
                 let m = moved(tip, Vec3::Y * palm * 0.5);
-                prim(b, PrimShape::Ellipsoid { radii: Vec3::new(palm * 0.5, palm * 0.6, palm * 0.18) }, m);
+                // A flat, square-edged palm the fingers line up along (not a pillow).
+                let round = palm * 0.1;
+                let half = (Vec3::new(palm * 0.42, palm * 0.5, palm * 0.14) - Vec3::splat(round)).max(Vec3::splat(palm * 0.02));
+                prim(b, PrimShape::RoundBox { half, round }, m);
                 moved(tip, Vec3::Y * palm)
             }
             LimbEnd::Foot { length } => {
@@ -502,17 +505,30 @@ impl PartBuild for DigitParams {
         let region = b.region(RegionKind::Digit, cx.side)?;
         let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
+        // An opposable first digit (a thumb) roots back toward the wrist on the palm side, shorter
+        // and thicker, turned to close across the palm; the rest line up along the end.
+        let thumb = self.opposable && n > 1;
+        let row = if thumb { n - 1 } else { n };
+        let reach: f32 = lens.iter().sum();
+        let r = self.chain.radius.scale;
+        let thumb_chain = ChainParams { radius: Profile { scale: r * 1.2, ..self.chain.radius.clone() }, ..self.chain.clone() };
+        let thumb_lens: Vec<f32> = lens.iter().map(|l| l * 0.75).collect();
         for i in 0..n {
-            let k = if n > 1 { i as f32 / (n - 1) as f32 - 0.5 } else { 0.0 };
-            let mut yaw = self.spread_deg * k;
-            if self.opposable && i == 0 {
-                yaw -= 50.0;
-            }
-            let start = base * Transform::from_translation(Vec3::X * spacing * k * (n - 1) as f32)
-                .with_rotation(Quat::from_rotation_z((-yaw).to_radians()));
-            let frames = chain_frames(start, &lens, |s| if s == 0 { Quat::IDENTITY } else { curl(s) });
+            let is_thumb = thumb && i == 0;
+            let j = if thumb { i.saturating_sub(1) } else { i };
+            let k = if row > 1 { j as f32 / (row - 1) as f32 - 0.5 } else { 0.0 };
+            let start = if is_thumb {
+                let edge = spacing * 0.5 * (row - 1) as f32 + r;
+                base * Transform::from_translation(Vec3::new(-edge, -reach * 0.6, r * 0.6))
+                    .with_rotation(Quat::from_rotation_z(40f32.to_radians()) * Quat::from_rotation_y(70f32.to_radians()))
+            } else {
+                base * Transform::from_translation(Vec3::X * spacing * k * (row - 1) as f32)
+                    .with_rotation(Quat::from_rotation_z((-self.spread_deg * k).to_radians()))
+            };
+            let (chain, seg_lens) = if is_thumb { (&thumb_chain, &thumb_lens) } else { (&self.chain, &lens) };
+            let frames = chain_frames(start, seg_lens, |s| if s == 0 { Quat::IDENTITY } else { curl(s) });
             let name = suffixed(&format!("digit{i}"), cx);
-            let (bones, _) = emit_chain(b, at.bone, &name, &frames, &self.chain, |_| region)?;
+            let (bones, _) = emit_chain(b, at.bone, &name, &frames, chain, |_| region)?;
             let last = bones[segs - 1];
             if let (Some(tip), Some(hr)) = (&self.tip, hard_region) {
                 b.hard_part(last, frames[segs], tip.clone(), hr);

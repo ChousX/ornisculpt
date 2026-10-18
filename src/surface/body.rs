@@ -14,12 +14,21 @@ pub struct BodyFieldOptions {
     pub seed: u64,
     /// Displace geometry with fold noise. Off for coarse levels, where folds only live in shading.
     pub geometric_folds: bool,
+    /// Build the surface in the spread meshing pose ([`spread_pose`](crate::anatomy::spread_pose))
+    /// instead of the rest pose; [`BodyField::unbind`] then brings the mesh back to rest.
+    pub spread: bool,
 }
 
 /// The whole-body SDF: smooth union of the anatomy's primitives present at `level`, plus
 /// fold displacement. Built once per (anatomy, level); meshers evaluate it through [`ChunkView`]s.
 pub struct BodyField {
     prims: Vec<PreparedPrim>,
+    /// Parent of every bone, for keeping skin weights on one limb.
+    bone_parent: Vec<Option<BoneId>>,
+    /// Per bone, the spread pose → rest pose transform (empty when built at rest).
+    unbind: Vec<Affine3A>,
+    /// Model transform of every bone in the pose the field was built in.
+    bone_model: Vec<Affine3A>,
     bounds: Aabb3d,
     creases: Option<Creases>,
 }
@@ -78,6 +87,9 @@ struct PreparedPrim {
     layer: PrimLayer,
     region: RegionId,
     bone: BoneId,
+    /// The limb (part index) this primitive belongs to, if it is on one: different limbs meet
+    /// with a hard union, so an arm hanging by a thigh never webs onto it.
+    limb: Option<u16>,
     /// Model-space bounds padded by `blend` (and fold amplitude) for culling.
     aabb: Aabb3d,
 }
@@ -146,7 +158,19 @@ fn transform_aabb(m: &Affine3A, (lo, hi): (Vec3, Vec3)) -> Aabb3d {
 
 impl BodyField {
     pub fn new(anatomy: &Anatomy, opts: &BodyFieldOptions) -> Self {
-        let model = anatomy.skeleton.model_rest();
+        let rest = anatomy.skeleton.model_rest();
+        let (model, unbind) = if opts.spread {
+            let pose = crate::anatomy::spread_pose(anatomy, &crate::anatomy::Spread::default());
+            let mut model: Vec<Affine3A> = Vec::with_capacity(pose.len());
+            for (i, b) in anatomy.skeleton.bones.iter().enumerate() {
+                let l = pose[i].compute_affine();
+                model.push(b.parent.map_or(l, |p| model[p.index()] * l));
+            }
+            let unbind = rest.iter().zip(&model).map(|(r, s)| *r * s.inverse()).collect();
+            (model, unbind)
+        } else {
+            (rest, Vec::new())
+        };
         let prim_part = primitive_parts(anatomy);
         let body_tone = anatomy.parts.first().map(|p| p.tone).unwrap_or_default();
         let fold_amp = body_tone.fold_noise.amplitude * body_tone.folds;
@@ -176,6 +200,14 @@ impl BodyField {
         });
         let fold_pad = if creases.is_some() { fold_amp } else { 0.0 };
 
+        // A limb part, or a part growing straight from one (hands, toes, hooves), belongs to that limb.
+        let limb_of = |part: usize| -> Option<u16> {
+            let p = &anatomy.parts[part];
+            if p.role.is_some() {
+                return Some(part as u16);
+            }
+            p.parent.filter(|q| anatomy.parts[*q as usize].role.is_some())
+        };
         let mut prims = Vec::new();
         for (i, p) in anatomy.primitives.iter().enumerate() {
             if anatomy.parts[prim_part[i] as usize].lod < opts.level || p.lod < opts.level {
@@ -202,6 +234,7 @@ impl BodyField {
                 layer: p.layer,
                 region: p.region,
                 bone: p.bone,
+                limb: limb_of(prim_part[i] as usize),
                 aabb,
             });
         }
@@ -210,7 +243,8 @@ impl BodyField {
             .map(|p| p.aabb)
             .reduce(|a, b| a.merge(&b))
             .unwrap_or(Aabb3d { min: Vec3A::ZERO, max: Vec3A::ZERO });
-        Self { prims, bounds, creases }
+        let bone_parent = anatomy.skeleton.bones.iter().map(|b| b.parent).collect();
+        Self { prims, bone_parent, unbind, bone_model: model, bounds, creases }
     }
 
     /// Distance to the smooth union of a subset of primitives (no creases). Indices are
@@ -263,8 +297,14 @@ impl BodyField {
             let (dl, blend) = prim.eval(p);
             match prim.op {
                 PrimOp::Union => {
+                    // Two different limbs only meet, never blend.
+                    let apart = nearest.is_some_and(|n: usize| {
+                        let other = self.prims[n].limb;
+                        prim.limb.is_some() && other.is_some() && prim.limb != other
+                    });
                     d = Some(match d {
                         None => dl,
+                        Some(d) if apart => d.min(dl),
                         Some(d) => sdf::smin(d, dl, blend).0,
                     });
                     if dl < best {
@@ -290,10 +330,13 @@ impl BodyField {
 
     fn info(&self, indices: impl Iterator<Item = usize> + Clone, p: Vec3A) -> SurfaceInfo {
         let (d, nearest) = self.eval(indices.clone(), std::iter::empty(), p);
+        let near_bone = nearest.map(|n| self.prims[n].bone);
         let mut influences = Influences::default();
         for i in indices {
             let prim = &self.prims[i];
-            if prim.op != PrimOp::Union {
+            // Weights only from bones in line with the nearest one (its parents and children):
+            // never a neighbouring finger, never the other leg.
+            if prim.op != PrimOp::Union || near_bone.is_some_and(|b| !self.in_line(b, prim.bone)) {
                 continue;
             }
             let (dl, blend) = prim.eval(p);
@@ -364,5 +407,85 @@ impl Field for ChunkView<'_> {
 
     fn surface_info(&self, p: Vec3A) -> SurfaceInfo {
         self.field.info(self.prims.iter().map(|&i| i as usize), p)
+    }
+}
+
+impl BodyField {
+    /// Whether `a` and `b` are the same bone or one is a near ancestor of the other.
+    pub(crate) fn in_line(&self, a: BoneId, b: BoneId) -> bool {
+        let up = |from: BoneId, to: BoneId| {
+            let mut cur = Some(from);
+            for _ in 0..=2 {
+                match cur {
+                    Some(c) if c == to => return true,
+                    Some(c) => cur = self.bone_parent.get(c.index()).copied().flatten(),
+                    None => return false,
+                }
+            }
+            false
+        };
+        up(a, b) || up(b, a)
+    }
+}
+
+impl BodyField {
+    /// Skins a mesh built in the spread pose back into the rest pose, by its own weights (the
+    /// same blend the GPU applies when animating). No-op for a field built at rest.
+    pub fn unbind(&self, data: &mut super::BodyMeshData) {
+        if self.unbind.is_empty() {
+            return;
+        }
+        for i in 0..data.positions.len() {
+            let (joints, weights) = (data.joints[i], data.weights[i]);
+            let mut m = bevy::math::Mat3A::ZERO;
+            let mut t = Vec3A::ZERO;
+            for k in 0..4 {
+                let Some(u) = self.unbind.get(joints[k] as usize) else { continue };
+                m += u.matrix3 * weights[k];
+                t += u.translation * weights[k];
+            }
+            let blended = Affine3A { matrix3: m, translation: t };
+            data.positions[i] = blended.transform_point3(data.positions[i]);
+            if let Some(n) = data.normals.get_mut(i) {
+                *n = (m * Vec3A::from(*n)).normalize_or(Vec3A::from(*n)).into();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod spread_tests {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+
+    /// A vertex fully weighted to the hand, placed where the hand is in the spread pose, lands
+    /// where the hand is at rest.
+    #[test]
+    fn unbind_returns_vertices_to_rest() {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
+        let arm = a.parts.iter().find(|p| p.role == Some(crate::anatomy::LimbRole::Manipulator)).unwrap();
+        let hand = (arm.bones.end - 1) as usize;
+        let rest = a.skeleton.model_rest()[hand].transform_point3(Vec3::Y * 0.02);
+        let spread = field.unbind[hand].inverse().transform_point3(rest);
+        assert!(spread.distance(rest) > 0.05, "the hand moved for meshing");
+        let mut data = crate::surface::BodyMeshData { positions: vec![spread], normals: vec![Vec3::X], joints: vec![[hand as u16, 0, 0, 0]], weights: vec![[1.0, 0.0, 0.0, 0.0]], ..Default::default() };
+        field.unbind(&mut data);
+        assert!(data.positions[0].distance(rest) < 1e-4, "{} vs {}", data.positions[0], rest);
+    }
+}
+
+impl BodyField {
+    /// Distance at `p` over a chunk view's primitives, and the nearest primitive's bone and limb.
+    pub(crate) fn probe(&self, view: &ChunkView, p: Vec3A) -> (f32, Option<(BoneId, Option<u16>)>) {
+        let (d, nearest) = self.eval(view.prims.iter().map(|&i| i as usize), std::iter::empty(), p);
+        (d, nearest.map(|i| (self.prims[i].bone, self.prims[i].limb)))
+    }
+
+    /// Model transform of every bone in the pose the field was built in.
+    pub(crate) fn bone_model(&self) -> &[Affine3A] {
+        &self.bone_model
     }
 }

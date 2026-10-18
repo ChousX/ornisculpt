@@ -35,7 +35,7 @@ pub use graph::{
 };
 pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
 pub use heft::{Heft, HeftResponse, StepShape};
-pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState};
+pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, SpringState, TorsoState};
 pub use ik::{fabrik, orient_to_pole, two_bone};
 pub use player::{Footstep, MobMotion, MotionCache, MotionParams, MotionRuntime, PlayCycle, RootMotionDelta, TRIGGER_LIFETIME};
 
@@ -113,13 +113,14 @@ impl Plugin for MotionPlugin {
             .init_asset_loader::<GraphLoader>()
             .init_resource::<player::MotionCache>()
             .init_resource::<player::MotionWarnings>()
+            .init_resource::<MotionTime>()
             .register_type::<MobIntent>()
             .add_observer(pose::bind_body)
             .configure_sets(Update, (Root, Player, Clock, Pose).chain().in_set(crate::mob::MobSet::Motion))
             .add_systems(
                 Update,
                 (
-                    pose::move_roots.in_set(Root),
+                    (state::tick_motion_time, pose::move_roots).chain().in_set(Root),
                     (player::prepare_motion, player::update_motion).chain().in_set(Player),
                     (pose::choose_steps, pose::advance_clocks).chain().in_set(Clock),
                     (
