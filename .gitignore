@@ -4,3 +4,6 @@
 .devenv*
 devenv.local.nix
 .direnv
+
+# Benchmark runs (bench/golden is kept)
+/bench/results

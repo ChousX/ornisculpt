@@ -72,25 +72,30 @@ impl Mesher for SurfaceNets {
         let jobs: Vec<UVec3> = (0..chunks.z)
             .flat_map(|z| (0..chunks.y).flat_map(move |y| (0..chunks.x).map(move |x| UVec3::new(x, y, z))))
             .collect();
-        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get).min(jobs.len().max(1));
-        let parts: Vec<RawMesh> = std::thread::scope(|scope| {
+        let threads = super::worker_threads().min(jobs.len().max(1));
+        // One part per chunk, joined in chunk order: the mesh doesn't depend on the thread count.
+        let per_thread: Vec<Vec<(usize, RawMesh)>> = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(threads);
             for t in 0..threads {
                 let jobs = &jobs;
                 handles.push(scope.spawn(move || {
-                    let mut out = RawMesh::default();
                     let mut chunk = ChunkScratch::new(c);
-                    for job in jobs.iter().skip(t).step_by(threads) {
-                        chunk.mesh(field, origin, v, *job * c, &mut out);
+                    let mut out = Vec::new();
+                    for (i, job) in jobs.iter().enumerate().skip(t).step_by(threads) {
+                        let mut part = RawMesh::default();
+                        chunk.mesh(field, origin, v, *job * c, &mut part);
+                        out.push((i, part));
                     }
                     out
                 }));
             }
             handles.into_iter().map(|h| h.join().map_err(|_| SurfaceError::WorkerPanicked)).collect::<Result<_, _>>()
         })?;
+        let mut parts: Vec<(usize, RawMesh)> = per_thread.into_iter().flatten().collect();
+        parts.sort_unstable_by_key(|(i, _)| *i);
 
         let mut mesh = RawMesh::default();
-        for part in parts {
+        for (_, part) in parts {
             let base = mesh.positions.len().clamp_u32();
             mesh.positions.extend(part.positions);
             mesh.normals.extend(part.normals);

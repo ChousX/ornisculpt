@@ -10,6 +10,7 @@ use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD
 
 pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
+pub const COAT_PREPASS: &str = "embedded://ornisculpt/coat/coat_prepass.wesl";
 
 /// Every mob surface: `StandardMaterial` lighting with coat shading on top.
 pub type MobMaterial = ExtendedMaterial<StandardMaterial, CoatExt>;
@@ -68,6 +69,10 @@ impl MaterialExtension for CoatExt {
         COAT_FRAGMENT.into()
     }
 
+    fn prepass_vertex_shader() -> ShaderRef {
+        COAT_PREPASS.into()
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -78,19 +83,25 @@ impl MaterialExtension for CoatExt {
         if key.bind_group_data.crowd {
             defs.push("COAT_CROWD".into());
         }
-        // The shadow and depth prepass keeps Bevy's shader and vertex layout.
-        // (`StandardMaterial` prefixes the label with `pbr_` before the extension sees it.)
-        let main_pass = !descriptor.label.as_deref().is_some_and(|l| l.ends_with("prepass_pipeline"));
+        // The main pass and the prepass/shadow pass deform alike (`deform.wesl`), so both get the
+        // same defines and vertex layout.
         // Meshes with centres of rotation skin about them (`dqs.wesl`); others with dual quaternions.
-        let cor = main_pass && layout.0.contains(ATTRIBUTE_COR);
+        let cor = layout.0.contains(ATTRIBUTE_COR);
         if cor {
             defs.push("COAT_COR".into());
         }
-        // Meshes with muscle flex bulge their muscles as they shorten (`coat_vertex.wesl`).
+        // Meshes with muscle flex bulge their muscles as they shorten (`deform.wesl`).
         // `ORNISCULPT_NO_MUSCLE`: keep muscles still (for comparing).
-        let muscle = main_pass && layout.0.contains(ATTRIBUTE_MUSCLE) && std::env::var_os("ORNISCULPT_NO_MUSCLE").is_none();
+        let muscle = layout.0.contains(ATTRIBUTE_MUSCLE) && std::env::var_os("ORNISCULPT_NO_MUSCLE").is_none();
         if muscle {
             defs.push("COAT_MUSCLE".into());
+        }
+        // Optional inputs by what the mesh has: the prepass would otherwise drop the ones it
+        // doesn't need itself (shell heights in UV0, for one).
+        for (attribute, def) in [(Mesh::ATTRIBUTE_UV_0, "COAT_UV"), (Mesh::ATTRIBUTE_TANGENT, "COAT_TANGENT"), (Mesh::ATTRIBUTE_COLOR, "COAT_COLOR")] {
+            if layout.0.contains(attribute) {
+                defs.push(def.into());
+            }
         }
         match key.bind_group_data.layer {
             CoatLayer::Skin => defs.push("COAT_SKIN".into()),
@@ -108,34 +119,34 @@ impl MaterialExtension for CoatExt {
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.extend(defs);
         }
-        if key.bind_group_data.crowd || cor || muscle {
-            // Crowd joints, centres of rotation and muscle flex are custom attributes, which Bevy doesn't lay out.
-            let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
-            if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
-                attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
-            }
-            if layout.0.contains(Mesh::ATTRIBUTE_TANGENT) {
-                attributes.push(Mesh::ATTRIBUTE_TANGENT.at_shader_location(4));
-            }
-            if layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
-                attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
-            }
-            if key.bind_group_data.crowd {
-                attributes.push(ATTRIBUTE_CROWD_JOINT_INDEX.at_shader_location(6));
-                attributes.push(ATTRIBUTE_CROWD_JOINT_WEIGHT.at_shader_location(7));
-            } else if layout.0.contains(Mesh::ATTRIBUTE_JOINT_INDEX) {
-                attributes.push(Mesh::ATTRIBUTE_JOINT_INDEX.at_shader_location(6));
-                attributes.push(Mesh::ATTRIBUTE_JOINT_WEIGHT.at_shader_location(7));
-            }
-            if cor {
-                attributes.push(ATTRIBUTE_COR.at_shader_location(8));
-            }
-            if muscle {
-                attributes.push(ATTRIBUTE_MUSCLE.at_shader_location(9));
-                attributes.push(ATTRIBUTE_MUSCLE_JOINT.at_shader_location(10));
-            }
-            descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
+        // Always our own layout (`deform.wesl` locations): crowd joints, centres of rotation and
+        // muscle flex are custom attributes Bevy doesn't lay out, and the prepass would use its own
+        // locations otherwise.
+        let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
+        if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
+            attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
         }
+        if layout.0.contains(Mesh::ATTRIBUTE_TANGENT) {
+            attributes.push(Mesh::ATTRIBUTE_TANGENT.at_shader_location(4));
+        }
+        if layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
+            attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
+        }
+        if key.bind_group_data.crowd {
+            attributes.push(ATTRIBUTE_CROWD_JOINT_INDEX.at_shader_location(6));
+            attributes.push(ATTRIBUTE_CROWD_JOINT_WEIGHT.at_shader_location(7));
+        } else if layout.0.contains(Mesh::ATTRIBUTE_JOINT_INDEX) {
+            attributes.push(Mesh::ATTRIBUTE_JOINT_INDEX.at_shader_location(6));
+            attributes.push(Mesh::ATTRIBUTE_JOINT_WEIGHT.at_shader_location(7));
+        }
+        if cor {
+            attributes.push(ATTRIBUTE_COR.at_shader_location(8));
+        }
+        if muscle {
+            attributes.push(ATTRIBUTE_MUSCLE.at_shader_location(9));
+            attributes.push(ATTRIBUTE_MUSCLE_JOINT.at_shader_location(10));
+        }
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         Ok(())
     }
 }

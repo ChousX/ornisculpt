@@ -8,7 +8,10 @@
 //!
 //! Only triangles sharing a weighted bone pair with the vertex contribute (the similarity is zero
 //! otherwise), so triangles are bucketed by bone pair; and the centre depends only on the
-//! weights, so vertices with the same (quantized) weights share one.
+//! weights, so vertices with the same (quantized) weights share one. Weight vectors on the same
+//! bones share their candidate triangles too, so each such group gathers them once into a dense
+//! array and scores all its members against it (cache-friendly; 2–2.6× faster than walking the
+//! buckets once per weight vector).
 
 use std::collections::HashMap;
 
@@ -41,6 +44,7 @@ fn get(w: &Weights, bone: u16) -> f32 {
 
 /// The paper's weight similarity: high when two weight vectors use the same bones in the same
 /// proportions.
+#[cfg(test)]
 fn similarity(p: &Weights, v: &Weights) -> f32 {
     let s2 = SIGMA * SIGMA;
     let mut sim = 0.0;
@@ -70,16 +74,80 @@ struct Tri {
     weights: Weights,
 }
 
+/// Centres for the distinct weight vectors `members` (indices into `uniques`), which all weight
+/// exactly `bones` (sorted). Pushes `(member, centre)` to `out`.
+///
+/// The paper's similarity, over the group's bones only (others have zero vertex weight):
+/// Σ over ordered pairs j ≠ k of pⱼpₖvⱼvₖ·exp(−(pₖvⱼ − pⱼvₖ)²/σ²), which is symmetric in the pair,
+/// so twice the sum over j < k.
+#[allow(clippy::too_many_arguments)]
+fn group_centres(
+    bones: &[u16],
+    members: &[u32],
+    weights: &[Weights],
+    uniques: &[usize],
+    tris: &[Tri],
+    buckets: &HashMap<(u16, u16), Vec<u32>>,
+    out: &mut Vec<(u32, Option<Vec3>)>,
+) {
+    let n = bones.len();
+    let pairs: smallvec::SmallVec<[(usize, usize); 28]> = (0..n).flat_map(|j| (j + 1..n).map(move |k| (j, k))).collect();
+    let mut candidates: Vec<u32> = Vec::new();
+    for &(j, k) in &pairs {
+        if let (Some(&a), Some(&b)) = (bones.get(j), bones.get(k))
+            && let Some(list) = buckets.get(&(a.min(b), a.max(b)))
+        {
+            candidates.extend_from_slice(list);
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    // Dense per-triangle data: centre·area, area, and the weights of the group's bones.
+    let mut tri_weights: Vec<f32> = Vec::with_capacity(candidates.len() * n);
+    let mut centres: Vec<(Vec3, f32)> = Vec::with_capacity(candidates.len());
+    for tri in candidates.iter().filter_map(|&t| tris.get(t.idx())) {
+        tri_weights.extend(bones.iter().map(|&b| get(&tri.weights, b)));
+        centres.push((tri.centre, tri.area));
+    }
+    let s2 = SIGMA * SIGMA;
+    let mut v = smallvec::SmallVec::<[f32; 8]>::new();
+    for &u in members {
+        let Some(w) = uniques.get(u.idx()).and_then(|&i| weights.get(i)) else { continue };
+        v.clear();
+        v.extend(bones.iter().map(|&b| get(w, b)));
+        let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
+        for (p, &(centre, area)) in tri_weights.chunks_exact(n).zip(&centres) {
+            let mut sim = 0.0f32;
+            for &(j, k) in &pairs {
+                let (Some(&pj), Some(&pk), Some(&vj), Some(&vk)) = (p.get(j), p.get(k), v.get(j), v.get(k)) else { continue };
+                let e = f32::mul_add(pk, -vj, pj * vk);
+                sim = (pj * pk * vj * vk).mul_add((-(e * e) / s2).exp(), sim);
+            }
+            let contribution = 2.0 * sim * area;
+            num += centre * contribution;
+            den += contribution;
+        }
+        out.push((u, (den > 1e-12).then(|| num / den)));
+    }
+}
+
 /// Every unordered pair of bones in `w`, smaller first.
 fn bone_pairs(w: &Weights) -> impl Iterator<Item = (u16, u16)> + '_ {
     w.iter().enumerate().flat_map(move |(x, &(a, _))| w.iter().skip(x + 1).map(move |&(b, _)| (a.min(b), a.max(b))))
 }
 
+/// Steps per unit weight when grouping vertices that share a centre.
+const WEIGHT_STEPS: f32 = 256.0;
+
+/// Weight vectors scored per work item (a group's candidate triangles are gathered once per item).
+const GROUP_CHUNK: usize = 128;
+
 /// Centre of rotation for every vertex.
 ///
 /// Vertices on one bone (where it doesn't matter) and those with no similar surface get their own
 /// position, which skins them exactly as linear blending (as do all of a worker's vertices,
-/// should it panic).
+/// should it panic). Cost: about 1.7 s on one thread for a 29k-vertex hero mesh, parallel over
+/// [`super::worker_threads`].
 #[must_use]
 pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
     let weights: Vec<Weights> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| sparse(*j, *w)).collect();
@@ -111,7 +179,7 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
     // One centre per distinct (quantized) weight vector.
     let key = |w: &Weights| {
         let mut quantized: smallvec::SmallVec<[(u16, u16); 4]> =
-            w.iter().map(|(b, x)| (*b, (x * 256.0).round().sat_u16())).filter(|e| e.1 > 0).collect();
+            w.iter().map(|(b, x)| (*b, (x * WEIGHT_STEPS).round().sat_u16())).filter(|e| e.1 > 0).collect();
         quantized.sort_unstable();
         quantized
     };
@@ -127,37 +195,31 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
         slots.push(slot);
     }
 
-    let centre_for = |w: &Weights, stamp: &mut [u32], round: u32| -> Option<Vec3> {
-        if w.len() < 2 {
-            return None;
-        }
-        let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
-        for pair in bone_pairs(w) {
-            let Some(list) = buckets.get(&pair) else { continue };
-            for &t in list {
-                let (Some(seen), Some(tri)) = (stamp.get_mut(t.idx()), tris.get(t.idx())) else { continue };
-                if *seen == round {
-                    continue;
-                }
-                *seen = round;
-                let contribution = similarity(w, &tri.weights) * tri.area;
-                num += tri.centre * contribution;
-                den += contribution;
-            }
-        }
-        (den > 1e-12).then(|| num / den)
-    };
-    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get).min(uniques.len().max(1));
+    // Distinct weight vectors on the same bones share their candidate triangles (those sharing a
+    // bone pair with them), so each group gathers its triangles once into a dense array of just
+    // its bones' weights and scores all its members against it: the same sums, without walking
+    // scattered triangles once per weight vector.
+    let mut by_bones: HashMap<smallvec::SmallVec<[u16; 8]>, Vec<u32>> = HashMap::new();
+    for (u, &i) in (0u32..).zip(&uniques) {
+        let Some(w) = weights.get(i).filter(|w| w.len() >= 2) else { continue };
+        let mut bones: smallvec::SmallVec<[u16; 8]> = w.iter().map(|(b, _)| *b).collect();
+        bones.sort_unstable();
+        by_bones.entry(bones).or_default().push(u);
+    }
+    let mut groups: Vec<(smallvec::SmallVec<[u16; 8]>, Vec<u32>)> = by_bones.into_iter().collect();
+    groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    // Big groups (the trunk's bones) split into chunks so the threads share them.
+    let items: Vec<(&[u16], &[u32])> = groups.iter().flat_map(|(bones, members)| members.chunks(GROUP_CHUNK).map(move |c| (bones.as_slice(), c))).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = super::worker_threads().min(items.len().max(1));
     let per_unique: Vec<Option<Vec3>> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(threads);
-        for worker in 0..threads {
-            let (uniques, weights, centre_for, count) = (&uniques, &weights, &centre_for, tris.len());
+        for _ in 0..threads {
+            let (items, next, weights, uniques, tris, buckets) = (&items, &next, &weights, &uniques, &tris, &buckets);
             handles.push(scope.spawn(move || {
-                let mut stamp = vec![u32::MAX; count];
                 let mut out = Vec::new();
-                for (u, &i) in (0u32..).zip(uniques).skip(worker).step_by(threads) {
-                    let centre = weights.get(i).and_then(|w| centre_for(w, &mut stamp, u));
-                    out.push((u, centre));
+                while let Some(&(bones, members)) = items.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    group_centres(bones, members, weights, uniques, tris, buckets, &mut out);
                 }
                 out
             }));
@@ -182,6 +244,50 @@ mod tests {
     use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
     use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, ProceduralHardParts, SurfaceSettings, mesh_lod};
 
+    /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
+    /// vertex (on the near-tier quadruped: small enough to brute-force).
+    #[test]
+    fn grouped_centres_match_brute_force() {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
+        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let settings = SurfaceSettings::default();
+        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
+        let fast = centres_of_rotation(&mesh);
+        let weights: Vec<Weights> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| sparse(*j, *w)).collect();
+        let tris: Vec<(Vec3, f32, Weights)> = mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(Idx::idx);
+                let (pa, pb, pc) = (mesh.positions[a], mesh.positions[b], mesh.positions[c]);
+                let mut sum = Weights::new();
+                for &(bone, w) in weights[a].iter().chain(&weights[b]).chain(&weights[c]) {
+                    match sum.iter_mut().find(|(j, _)| *j == bone) {
+                        Some(e) => e.1 += w / 3.0,
+                        None => sum.push((bone, w / 3.0)),
+                    }
+                }
+                ((pa + pb + pc) / 3.0, (pb - pa).cross(pc - pa).length() * 0.5, sum)
+            })
+            .collect();
+        let mut worst = 0.0f32;
+        for (i, w) in weights.iter().enumerate() {
+            let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
+            for (centre, area, p) in &tris {
+                let c = similarity(w, p) * area;
+                num += *centre * c;
+                den += c;
+            }
+            let expected = if w.len() >= 2 && den > 1e-12 { num / den } else { mesh.positions[i] };
+            worst = worst.max(expected.distance(fast[i]));
+        }
+        println!("{} vertices, largest difference {:.4} mm", weights.len(), worst * 1000.0);
+        // The grouped path shares one centre per quantized weight vector (1/256 steps).
+        assert!(worst < 5e-3, "largest difference {worst} m");
+    }
+
     /// On the human: every blended vertex's centre lies inside the body (where a joint is), and
     /// computing them stays quick.
     #[test]
@@ -205,3 +311,4 @@ mod tests {
         assert!(outside * 50 <= blended.len(), "{outside} of {} centres outside the body", blended.len());
     }
 }
+

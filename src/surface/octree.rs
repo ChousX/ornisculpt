@@ -258,16 +258,18 @@ impl Mesher for AdaptiveContour {
         let mut jobs: Vec<IVec3> = Vec::new();
         let whole = field.view(field.bounds());
         let mut root = top(&grid, &whole, IVec3::ZERO, root_level, job_level, &mut jobs);
-        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get).min(jobs.len().max(1));
+        let threads = super::worker_threads().min(jobs.len().max(1));
         let built: Option<Vec<Built>> = std::thread::scope(|scope| {
             // Spawn every worker before joining any.
             let mut handles = Vec::with_capacity(threads);
             for t in 0..threads {
                 let (jobs, grid) = (&jobs, &grid);
                 handles.push(scope.spawn(move || {
-                    let mut builder = Builder { field, grid, corners: HashMap::new() };
                     let mut out = Vec::new();
                     for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
+                        // A fresh corner cache per job: corners on a job's border are sampled through its
+                        // own view, so the mesh doesn't depend on which jobs share a thread.
+                        let mut builder = Builder { field, grid, corners: HashMap::new() };
                         let view = field.view(grid.region(*cell, job_level, grid.fine));
                         out.push((i, builder.build(&view, *cell, job_level)));
                     }

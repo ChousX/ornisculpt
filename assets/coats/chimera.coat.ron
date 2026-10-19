@@ -1,0 +1,19 @@
+// Every covering on one body: scaly legs, feathered torso, furry neck, head and tail; bare
+// skin elsewhere (paws, snout).
+(
+    base: (0.5, 0.36, 0.22),
+    secondary: (0.28, 0.2, 0.13),
+    accent: (0.92, 0.82, 0.55),
+    roughness: 0.7,
+    coverings: [
+        (
+            regions: Or([Kind(Neck), Kind(Skull), Kind(Jaw), Kind(TailBase), Kind(TailTip)]),
+            kind: Fur((length: 0.03, density: 450.0, thickness: 0.75, tip: 0.5, shells: 12)),
+        ),
+        (
+            regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(TorsoRear), Kind(Belly)]),
+            kind: Feathers((length: 0.07, width: 0.035, density: 1500.0, lift_deg: 10.0, tip: 0.5)),
+        ),
+        (regions: Role(Locomotor), kind: Scales((size: 0.012, relief: 0.8, contrast: 0.6))),
+    ],
+)

@@ -17,7 +17,8 @@ mod tier;
 
 pub use crowd::{BONE_BYTES, ClipLayout, CrowdInstance, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, SLOT_BYTES};
 pub use generate::{
-    BodyKey, CoatMeshHandles, GenBudget, GenCache, GenRequest, GeneratedBody, LodMeshes, PartAssetCache, SlotMaterials, body_key,
+    BodyKey, CoatMeshHandles, GenBudget, GenCache, GenInput, GenOutput, GenRequest, GeneratedBody, LodMeshes, PartAssetCache, SlotMaterials,
+    StageTimes, body_key, generate_body,
 };
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};
 pub use spawn::{HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder};
@@ -126,6 +127,7 @@ impl Plugin for MobPlugin {
             .register_type::<QualityProfile>()
             .configure_sets(Update, (MobSet::Generation, MobSet::Tiering, MobSet::Motion, MobSet::Levers).chain())
             .add_observer(generate::request_on_add)
+            .add_observer(generate::forget_waiting_key)
             .add_observer(generate::request_on_outfit)
             .add_observer(generate::request_on_undress)
             .add_observer(levers::sever_part)
@@ -138,6 +140,7 @@ impl Plugin for MobPlugin {
                         generate::reload_changed_assets,
                         spawn::sync_part_edits,
                         generate::start_generation,
+                        generate::apply_worker_budget,
                         generate::finish_generation,
                         spawn::attach_body,
                         crowd::register_clips,

@@ -267,11 +267,14 @@ pub struct GenRequest;
 #[derive(Component)]
 pub(super) struct GenPending(pub BodyKey);
 
+/// A generation task's result: the body and its meshes, or why it failed.
+type GenResult = Result<(GenOutput, BodyMeshes), String>;
+
 /// Finished bodies plus in-flight work, deduplicated by key.
 #[derive(Resource, Default)]
 pub struct GenCache {
     pub bodies: HashMap<BodyKey, Handle<GeneratedBody>>,
-    in_flight: HashMap<BodyKey, Task<Result<GenOutput, String>>>,
+    in_flight: HashMap<BodyKey, Task<GenResult>>,
 }
 
 impl GenCache {
@@ -286,25 +289,113 @@ impl GenCache {
 pub struct GenBudget {
     pub max_in_flight: usize,
     pub max_completions_per_frame: usize,
+    /// Cores left to the main and render threads while bodies generate: the rest are shared by
+    /// the bodies generating at the time, for their parallel meshing stages ([`crate::surface::set_worker_threads`]).
+    pub reserved_threads: usize,
 }
 
 impl Default for GenBudget {
     fn default() -> Self {
-        Self { max_in_flight: 4, max_completions_per_frame: 2 }
+        Self { max_in_flight: 4, max_completions_per_frame: 2, reserved_threads: 2 }
     }
 }
 
-pub(super) struct GenOutput {
-    anatomy: Anatomy,
-    lods: [BodyMeshData; 3],
-    motion: BakedMotion,
-    coat: Coat,
-    coat_meshes: [CoatMeshes; 3],
-    outfit: Outfit,
+/// Everything one body's generation depends on.
+pub struct GenInput {
+    pub live: BodyPlan,
+    pub rules: PartLodRules,
+    pub assets: PartAssets,
+    pub settings: SurfaceSettings,
+    pub seed: u64,
+    pub coat: Coat,
+    pub outfit: Outfit,
+}
+
+/// A generated body before it becomes GPU assets.
+pub struct GenOutput {
+    pub anatomy: Anatomy,
+    pub lods: [BodyMeshData; 3],
+    pub motion: BakedMotion,
+    pub coat: Coat,
+    pub coat_meshes: [CoatMeshes; 3],
+    pub outfit: Outfit,
+}
+
+/// Wall time of each generation stage, in first-run order (a stage run twice is summed).
+#[derive(Clone, Debug, Default)]
+pub struct StageTimes(pub Vec<(&'static str, std::time::Duration)>);
+
+impl StageTimes {
+    /// Runs `f` as stage `name`: a trace span (for Tracy) plus a timing entry.
+    fn stage<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
+        let _span = info_span!("generate", stage = name).entered();
+        let t = std::time::Instant::now();
+        let out = f();
+        let took = t.elapsed();
+        match self.0.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, d)) => *d += took,
+            None => self.0.push((name, took)),
+        }
+        out
+    }
+}
+
+/// Generates one body: anatomy, outfit, meshes for every LOD, coat geometry and baked motion.
+/// The app runs it on the async compute pool; benchmarks call it directly.
+///
+/// # Errors
+/// When the anatomy or a level's mesh can't be built.
+pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutput, String> {
+    let GenInput { live, rules, assets, settings, seed, coat, outfit } = input;
+    let anatomy = times.stage("anatomy", || build_anatomy(&live, &rules, &assets)).map_err(|e| e.to_string())?;
+    let (anatomy, cloth) =
+        if outfit.garments.is_empty() { (anatomy, None) } else { times.stage("fit_outfit", || fit_outfit(anatomy, &outfit, &assets)) };
+    let mut lods = times
+        .stage("mesh", || mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &settings, seed))
+        .map_err(|e| e.to_string())?;
+    if let Some(cloth) = &cloth {
+        times.stage("garments", || {
+            for (lod, garments) in lods.iter_mut().zip(garment_lods(cloth, &anatomy, &settings)) {
+                merge(lod, &garments);
+            }
+        });
+    }
+    times.stage("annotate", || {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+            annotate(lod, &coat, &anatomy, level);
+        }
+    });
+    // Centres of rotation on the final vertices and weights (coat meshes copy them).
+    times.stage("centres_of_rotation", || {
+        for lod in &mut lods {
+            lod.cor = centres_of_rotation(lod);
+        }
+    });
+    // Muscle flex on the final skin (before the coat copies it onto shells and cards).
+    times.stage("muscle_flex", || {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+            lod.muscle = muscle_flex(lod, &anatomy, level);
+        }
+    });
+    let motion = times.stage("bake_motion", || bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len())));
+    let coat_meshes = times.stage("coat_meshes", || LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level)));
+    Ok(GenOutput { anatomy, lods, motion, coat, coat_meshes, outfit })
 }
 
 pub(super) fn request_on_add(add: On<Add<Mob>>, mut commands: Commands) {
     commands.entity(add.entity).insert(GenRequest);
+}
+
+/// The key of a requested mob that is waiting for a free generation slot (see
+/// `start_generation`).
+#[derive(Component)]
+pub(super) struct WaitingKey(BodyKey);
+
+/// A new request may come with a changed body, coat or outfit: forget the waiting key.
+pub(super) fn forget_waiting_key(ev: On<Insert<GenRequest>>, mut commands: Commands, waiting: Query<(), With<WaitingKey>>) {
+    if waiting.contains(ev.entity) {
+        commands.entity(ev.entity).try_remove::<WaitingKey>();
+    }
 }
 
 /// Changing what a mob wears regenerates its body (the outfit is baked in).
@@ -335,9 +426,23 @@ pub(super) fn start_generation(
     mut part_assets: ResMut<PartAssetCache>,
     coats: Res<Assets<Coat>>,
     outfits: Res<Assets<Outfit>>,
-    mobs: Query<(Entity, &Mob, &Form, &MobSeed, Option<&LiveBody>, Option<&MobCoat>, Option<&MobOutfit>), With<GenRequest>>,
+    mobs: Query<
+        (Entity, &Mob, &Form, &MobSeed, Option<&LiveBody>, Option<&MobCoat>, Option<&MobOutfit>, Option<&WaitingKey>),
+        With<GenRequest>,
+    >,
 ) {
-    for (entity, mob, form, seed, live, mob_coat, mob_outfit) in &mobs {
+    for (entity, mob, form, seed, live, mob_coat, mob_outfit, waiting) in &mobs {
+        // Waiting on the budget with its key known: only a slot opening (or its key starting for
+        // another mob) changes anything, so skip re-resolving and re-hashing the whole body.
+        if let Some(&WaitingKey(key)) = waiting {
+            if cache.bodies.contains_key(&key) || cache.in_flight.contains_key(&key) {
+                commands.entity(entity).remove::<(GenRequest, WaitingKey)>().insert(GenPending(key));
+                continue;
+            }
+            if cache.in_flight.len() >= budget.max_in_flight {
+                continue;
+            }
+        }
         let outfit = match mob_outfit {
             Some(o) => match outfits.get(&o.0) {
                 Some(o) => o.clone(),
@@ -372,37 +477,21 @@ pub(super) fn start_generation(
         let key = body_key(&live, &settings, seed.0, &assets, &coat, &outfit);
         if !cache.bodies.contains_key(&key) && !cache.in_flight.contains_key(&key) {
             if cache.in_flight.len() >= budget.max_in_flight {
+                commands.entity(entity).insert(WaitingKey(key));
                 continue;
             }
             let (settings, rules, seed) = (settings.clone(), *lod_rules, seed.0);
+            let input = GenInput { live, rules, assets, settings, seed, coat, outfit };
+            // Meshes are built in the task too: for a furry body that is several MB of vertex data.
             let task = AsyncComputeTaskPool::get().spawn(async move {
-                let anatomy = build_anatomy(&live, &rules, &assets).map_err(|e| e.to_string())?;
-                let (anatomy, cloth) = if outfit.garments.is_empty() { (anatomy, None) } else { fit_outfit(anatomy, &outfit, &assets) };
-                let mut lods = mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &settings, seed)
-                    .map_err(|e| e.to_string())?;
-                if let Some(cloth) = &cloth {
-                    for (lod, garments) in lods.iter_mut().zip(garment_lods(cloth, &anatomy, &settings)) {
-                        merge(lod, &garments);
-                    }
-                }
-                for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
-                    annotate(lod, &coat, &anatomy, level);
-                }
-                // Centres of rotation on the final vertices and weights (coat meshes copy them).
-                for lod in &mut lods {
-                    lod.cor = centres_of_rotation(lod);
-                }
-                // Muscle flex on the final skin (before the coat copies it onto shells and cards).
-                for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
-                    lod.muscle = muscle_flex(lod, &anatomy, level);
-                }
-                let motion = bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len()));
-                let coat_meshes = LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level));
-                Ok(GenOutput { anatomy, lods, motion, coat, coat_meshes, outfit })
+                generate_body(input, &mut StageTimes::default()).map(|out| {
+                    let meshes = BodyMeshes::new(&out);
+                    (out, meshes)
+                })
             });
             cache.in_flight.insert(key, task);
         }
-        commands.entity(entity).remove::<GenRequest>().insert(GenPending(key));
+        commands.entity(entity).remove::<(GenRequest, WaitingKey)>().insert(GenPending(key));
     }
 }
 
@@ -427,8 +516,8 @@ pub(super) fn finish_generation(
     }
     for (key, result) in done {
         cache.in_flight.remove(&key);
-        let out = match result {
-            Ok(o) => o,
+        let (out, ready) = match result {
+            Ok((o, m)) => (o, m),
             Err(e) => {
                 error!("generation failed: {e}");
                 continue;
@@ -440,22 +529,8 @@ pub(super) fn finish_generation(
             skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect::<Vec<_>>(),
         ));
         let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
-        // Hero meshes are Bevy-skinned; coarser levels are crowd-skinned.
-        let mut level = 0;
-        let lods = out.lods.each_ref().map(|data| {
-            let split = if level == 0 { data.to_bevy_meshes() } else { data.to_crowd_meshes() };
-            level += 1;
-            LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect())
-        });
-        let mut level = 0;
-        let coat_meshes = out.coat_meshes.each_ref().map(|m| {
-            let crowd = level != 0;
-            level += 1;
-            let mut add = |d: &Option<BodyMeshData>| {
-                d.as_ref().map(|d| meshes.add(if crowd { d.to_crowd_mesh() } else { d.to_bevy_mesh() }))
-            };
-            CoatMeshHandles { shells: add(&m.shells), feathers: add(&m.feathers) }
-        });
+        let lods = ready.lods.map(|split| LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect()));
+        let coat_meshes = ready.coats.map(|[shells, feathers]| CoatMeshHandles { shells: shells.map(|m| meshes.add(m)), feathers: feathers.map(|m| meshes.add(m)) });
         let body_materials = body_materials(&out.coat, &out.outfit, &out.anatomy, &crowd_skin.bones, &mut materials);
         let handle = bodies.add(GeneratedBody {
             key,
@@ -480,4 +555,41 @@ pub(super) fn ready_body(cache: &GenCache, pending: &GenPending) -> Option<Handl
 /// Failed keys are neither cached nor in flight; mobs waiting on them give up.
 pub(super) fn is_lost(cache: &GenCache, pending: &GenPending) -> bool {
     !cache.bodies.contains_key(&pending.0) && !cache.in_flight.contains_key(&pending.0)
+}
+
+/// Splits the cores not reserved for the main and render threads between the bodies generating
+/// now (each parallel stage reads the cap as it starts, so a lone body gets them all). Only as
+/// many bodies run at once as the async compute pool has threads; the rest of `in_flight` waits.
+pub(super) fn apply_worker_budget(budget: Res<GenBudget>, cache: Res<GenCache>, mut last: Local<usize>) {
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let running = cache.in_flight.len().min(AsyncComputeTaskPool::get().thread_num()).max(1);
+    let threads = (cores.saturating_sub(budget.reserved_threads) / running).max(1);
+    if threads != *last {
+        *last = threads;
+        crate::surface::set_worker_threads(threads);
+    }
+}
+
+/// A generated body's Bevy meshes, built off the main thread.
+pub(super) struct BodyMeshes {
+    /// Per level, one mesh per material slot.
+    lods: [Vec<(MaterialSlot, Mesh)>; 3],
+    /// Per level, fur shells and feather cards.
+    coats: [[Option<Mesh>; 2]; 3],
+}
+
+impl BodyMeshes {
+    /// Hero meshes are Bevy-skinned; coarser levels are crowd-skinned.
+    fn new(out: &GenOutput) -> Self {
+        let crowd = |level: LodLevel| level != LodLevel::Hero;
+        let lods = LodLevel::ALL.map(|level| {
+            let data = level.pick(&out.lods);
+            if crowd(level) { data.to_crowd_meshes() } else { data.to_bevy_meshes() }
+        });
+        let coats = LodLevel::ALL.map(|level| {
+            let m = level.pick(&out.coat_meshes);
+            [&m.shells, &m.feathers].map(|d| d.as_ref().map(|d| if crowd(level) { d.to_crowd_mesh() } else { d.to_bevy_mesh() }))
+        });
+        Self { lods, coats }
+    }
 }

@@ -270,7 +270,10 @@ impl Plugin for CoatPlugin {
     fn build(&self, app: &mut App) {
         // The dual quaternion skinning module `coat_vertex.wesl` imports (kept loaded as a library).
         bevy::shader::load_shader_library!(app, "dqs.wesl");
+        // The deformation every vertex stage shares (main pass and prepass).
+        bevy::shader::load_shader_library!(app, "deform.wesl");
         bevy::asset::embedded_asset!(app, "coat_vertex.wesl");
+        bevy::asset::embedded_asset!(app, "coat_prepass.wesl");
         bevy::asset::embedded_asset!(app, "coat_fragment.wesl");
         app.init_asset::<Coat>()
             .init_asset_loader::<CoatLoader>()

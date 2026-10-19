@@ -51,6 +51,26 @@ impl Plugin for SurfacePlugin {
     }
 }
 
+/// Threads each parallel meshing stage may use; 0 = one per core.
+static WORKER_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Caps the threads each parallel stage (meshing, centres of rotation) spawns; 0 = one per core.
+///
+/// Process-wide. The mob plugin sets it from `GenBudget` so several bodies generating at once
+/// leave cores for the main and render threads.
+pub fn set_worker_threads(threads: usize) {
+    WORKER_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Threads a parallel stage may use now.
+#[must_use]
+pub fn worker_threads() -> usize {
+    match WORKER_THREADS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
+        n => n,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SurfaceError {
     #[error("field produced no surface (empty or fully inside/outside)")]
@@ -67,6 +87,26 @@ pub enum SurfaceError {
 mod tests {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+
+    /// The hero mesh and its centres of rotation are the same whatever the worker thread count
+    /// (the app caps it while several bodies generate; coat geometry is placed on the vertices).
+    #[test]
+    fn meshing_is_independent_of_thread_count() {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/bird.body.ron")).unwrap();
+        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let settings = SurfaceSettings::default();
+        let mesh = |threads: usize| {
+            set_worker_threads(threads);
+            let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+            let cor = centres_of_rotation(&m);
+            set_worker_threads(0);
+            (m, cor)
+        };
+        let ((all, all_cor), (two, two_cor)) = (mesh(0), mesh(2));
+        assert_eq!(all.positions, two.positions, "vertices");
+        assert_eq!(all.indices, two.indices, "triangles");
+        assert_eq!(all_cor, two_cor, "centres of rotation");
+    }
 
     #[test]
     fn quadruped_meshes_at_far_level() {
