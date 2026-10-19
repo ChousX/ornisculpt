@@ -41,10 +41,15 @@ pub enum PrimShape {
     Grid { grid: Arc<SdfGrid>, mirror_x: bool },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PrimOp {
     Union,
     Subtract,
+    /// Pushes the surface out by `height` (in, if negative) inside an [`PrimShape::Ellipsoid`]
+    /// footprint, fading to nothing at its rim: `d − height·(1 − |q/radii|²)²`. Stamps use it: a
+    /// smooth union with a shape lying nearly flush with the surface inflates the whole footprint
+    /// by a quarter of the blend radius and leaves a ledge round its rim.
+    Displace { height: f32 },
 }
 
 /// Which tone layer a primitive belongs to (scaled by [`Tone`](super::Tone)).

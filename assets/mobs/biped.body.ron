@@ -40,14 +40,14 @@
                 // the hip's outer width. Knees softly bent at rest.
                 name: "leg",
                 kind: Limb((
-                    chain: (segments: 2, length: 0.8, ratios: [1.0, 1.0], radius: (curve: [(0.0, 1.0), (0.45, 0.62), (0.58, 0.68), (1.0, 0.42)], scale: 0.075)),
+                    chain: (segments: 2, length: 0.8, ratios: [1.0, 1.0], radius: (curve: [(0.0, 0.9), (0.25, 0.8), (0.45, 0.64), (0.58, 0.68), (1.0, 0.42)], scale: 0.075)),
                     role: Locomotor,
                     stance: Plantigrade,
                     end: Foot(length: 0.22),
                     bends: [(14.0, 0.0), (-28.0, 0.0)],
                 )),
                 attach: Surface(t: 0.04, around_deg: 120.0),
-                offset: (translate: (0.0, -0.02, 0.0)),
+                offset: (translate: (0.0, -0.05, 0.0)),
                 mirror: true,
                 detail: Always,
             ),

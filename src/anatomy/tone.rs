@@ -57,7 +57,7 @@ pub enum StampKind {
     Fat,
     /// Bony point or ridge; driven by `Tone::landmarks`, damped by fat. `Hero` only.
     Landmark,
-    /// Subtracted hollow (sockets, flank, temples); like `Landmark`. `Hero` only.
+    /// Sunk hollow (sockets, flank, temples); like `Landmark`. `Hero` only.
     Hollow,
 }
 
@@ -68,17 +68,6 @@ impl StampKind {
             StampKind::Muscle => tone.muscle * 1.6,
             StampKind::Fat => tone.fat * 1.5,
             StampKind::Landmark | StampKind::Hollow => bony,
-        }
-    }
-
-    /// Smooth-min radius relative to the local radius. Fat softens everything.
-    fn blend(self, tone: &Tone) -> f32 {
-        let fat = tone.fat.min(1.5);
-        match self {
-            StampKind::Muscle => 0.15 + 0.35 * fat,
-            StampKind::Fat => 0.5,
-            StampKind::Landmark => 0.06 + 0.2 * fat,
-            StampKind::Hollow => 0.2 + 0.2 * fat,
         }
     }
 
@@ -168,7 +157,9 @@ pub(crate) fn apply_stamps(
         StampSet::None => return Ok(()),
         StampSet::Custom(s) => s,
         StampSet::Default => {
-            defaults = default_stamps(kind);
+            // A torso standing up (bipeds) has a human back, not a quadruped's haunch and flank.
+            let upright = matches!(kind, PartKind::Torso(_)) && slots.sample(0.5).is_some_and(|s| (s.model.rotation * Vec3::Y).y.abs() > 0.7);
+            defaults = if upright { upright_torso_stamps() } else { default_stamps(kind) };
             &defaults
         }
     };
@@ -182,19 +173,16 @@ pub(crate) fn apply_stamps(
             // Fat depots spread as well as deepen.
             let spread = if stamp.kind == StampKind::Fat { 1.0 + 0.5 * cx.tone.fat.min(2.0) } else { 1.0 };
             let radii = stamp.size * p.radius * spread;
-            // Muscles/fat/landmarks poke out by `push`; hollows cut in by `push`.
-            let (center, op) = match stamp.kind {
-                StampKind::Hollow => (p.point + p.normal * (radii.z - push), PrimOp::Subtract),
-                _ => (p.point + p.normal * (push - radii.z), PrimOp::Union),
-            };
-            let model = Transform::from_translation(center).with_rotation(frame_y_z(p.along, p.normal));
+            // Muscles/fat/landmarks raise the surface by `push` at the centre; hollows sink it.
+            let height = if stamp.kind == StampKind::Hollow { -push } else { push };
+            let model = Transform::from_translation(p.point).with_rotation(frame_y_z(p.along, p.normal));
             let region = b.bone_region(p.bone);
             b.primitive_at(
                 p.bone,
                 PrimShape::Ellipsoid { radii },
                 model,
-                stamp.kind.blend(&cx.tone) * p.radius,
-                op,
+                0.0,
+                PrimOp::Displace { height },
                 stamp.kind.layer(),
                 region,
                 stamp.kind.lod(),
@@ -228,7 +216,7 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
                 surf(0.12, 75.0, Muscle, [0.50, 0.60, 0.40], 0.12, true),  // haunch
                 surf(0.20, 45.0, Landmark, [0.15, 0.15, 0.12], 0.06, true), // hip point
                 surf(0.60, 110.0, Landmark, [0.50, 0.70, 0.30], 0.04, true), // ribcage
-                surf(0.35, 105.0, Hollow, [0.35, 0.60, 0.30], 0.05, true), // flank hollow
+                surf(0.35, 105.0, Hollow, [0.35, 0.60, 0.30], 0.025, true), // flank hollow
                 surf(0.45, 180.0, Fat, [0.60, 0.90, 0.50], 0.12, false),   // belly
                 surf(0.10, 60.0, Fat, [0.50, 0.50, 0.40], 0.06, true),     // rump
                 surf(0.55, 100.0, Fat, [0.55, 0.90, 0.45], 0.08, true),    // flank
@@ -255,21 +243,23 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
             let seg = |i: f32, f: f32| ((i + f) / n).min(1.0);
             // Limb frame: around 0 = posterior, 180 = anterior, 90 = medial, 270 = lateral.
             let mut s = vec![
-                surf(seg(0.0, 0.40), 180.0, Muscle, [0.55, 1.30, 0.40], 0.14, false), // front of upper
-                surf(seg(0.0, 0.50), 0.0, Muscle, [0.55, 1.40, 0.40], 0.16, false),   // back of upper
-                surf(seg(0.0, 0.35), 270.0, Muscle, [0.45, 1.00, 0.35], 0.08, false), // outer upper
+                // Flat, and short enough to stay within the limb's taper: a straight ellipsoid running on
+                // toward a narrower joint stands proud of it and hangs like a pouch.
+                surf(seg(0.0, 0.45), 180.0, Muscle, [0.60, 1.80, 0.30], 0.05, false), // front of upper
+                surf(seg(0.0, 0.45), 0.0, Muscle, [0.60, 1.80, 0.30], 0.04, false),   // back of upper
+                surf(seg(0.0, 0.40), 270.0, Muscle, [0.50, 1.70, 0.30], 0.035, false), // outer upper
                 surf(seg(0.0, 0.25), 300.0, Fat, [0.55, 0.90, 0.45], 0.08, false),    // thigh / upper-arm fat
             ];
             if n >= 2.0 {
                 s.extend([
-                    surf(seg(1.0, 0.30), 0.0, Muscle, [0.45, 1.00, 0.40], 0.14, false),   // calf / forearm
-                    surf(seg(1.0, 0.35), 180.0, Muscle, [0.35, 1.00, 0.30], 0.06, false), // shin
+                    surf(seg(1.0, 0.30), 0.0, Muscle, [0.50, 1.30, 0.30], 0.07, false),   // calf / forearm
+                    surf(seg(1.0, 0.35), 180.0, Muscle, [0.35, 1.60, 0.30], 0.04, false), // shin
                 ]);
             }
             for j in 1..(n as usize).min(3) {
                 let t = seg(j as f32, 0.0);
-                s.push(surf(t, 90.0, Landmark, [0.25, 0.30, 0.20], 0.08, false)); // inner condyle
-                s.push(surf(t, 270.0, Landmark, [0.25, 0.30, 0.20], 0.08, false)); // outer condyle
+                s.push(surf(t, 90.0, Landmark, [0.30, 0.40, 0.20], 0.04, false)); // inner condyle
+                s.push(surf(t, 270.0, Landmark, [0.30, 0.40, 0.20], 0.04, false)); // outer condyle
             }
             s
         }
@@ -302,4 +292,20 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
         ],
         PartKind::Digits(_) | PartKind::Mass(_) | PartKind::Hard(_) | PartKind::Sculpt(_) | PartKind::Wing(_) => vec![],
     }
+}
+
+/// Stamps for a torso that stands upright (pelvis at `t = 0`, shoulders at `t = 1`; around 0 =
+/// back, 90 = left, 180 = belly): a human back and chest instead of a quadruped's haunch, flank
+/// and ribcage, which on an upright body read as a band round the waist and a shelf of rump.
+pub fn upright_torso_stamps() -> Vec<Stamp> {
+    use StampKind::*;
+    vec![
+        surf(0.80, 150.0, Muscle, [0.70, 0.55, 0.40], 0.07, true), // chest (pectorals)
+        surf(0.92, 100.0, Muscle, [0.30, 0.30, 0.30], 0.05, true), // top of the shoulder
+        surf(0.80, 35.0, Landmark, [0.28, 0.40, 0.15], 0.03, true), // shoulder blade
+        surf(0.50, 15.0, Muscle, [0.16, 1.60, 0.20], 0.05, true),  // the ridges either side of the spine
+        surf(0.10, 30.0, Muscle, [0.65, 0.65, 0.50], 0.08, true),  // buttock
+        surf(0.40, 180.0, Fat, [0.55, 0.70, 0.45], 0.08, false),   // belly
+        surf(0.30, 95.0, Fat, [0.40, 0.60, 0.35], 0.04, true),     // hip / love handle
+    ]
 }

@@ -48,7 +48,7 @@ pub use skeleton::{
     BoneDef, BoneId, CrowdSkeleton, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
     SocketKind,
 };
-pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps};
+pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps, upright_torso_stamps};
 pub use wing::{
     BladeWing, FeatheredWing, MembraneWing, Planform, Sheet, SheetKind, Trailing, WingKind, WingParams, WingRig, WingShape,
 };

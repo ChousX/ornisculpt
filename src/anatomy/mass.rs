@@ -47,7 +47,13 @@ pub fn measure(a: &Anatomy) -> BodyMass {
         let m = model[p.bone.index()] * p.local.compute_affine();
         let (volume, centroid) = volume(&p.shape, &m);
         let layer = if p.layer == PrimLayer::Fat { 0.9 } else { 1.0 };
-        let sign = if p.op == PrimOp::Subtract { -1.0 } else { 1.0 };
+        // A stamp weighs as its whole footprint ellipsoid: the muscle or fat it stands for lies
+        // mostly under the surface it raises.
+        let sign = match p.op {
+            PrimOp::Union => 1.0,
+            PrimOp::Subtract => -1.0,
+            PrimOp::Displace { height } => height.signum(),
+        };
         let kg = sign * volume * d * layer * WATER;
         bones[p.bone.index()] += kg;
         moment += centroid * kg;

@@ -290,6 +290,7 @@ impl BodyField {
         p: Vec3A,
     ) -> (f32, Option<usize>) {
         let mut d: Option<f32> = None;
+        let mut raised = 0.0;
         let mut nearest = None;
         let mut best = f32::INFINITY;
         for i in indices {
@@ -317,9 +318,17 @@ impl BodyField {
                         d = Some(sdf::ssub(cur, dl, blend));
                     }
                 }
+                PrimOp::Displace { height } => {
+                    if let PreparedShape::Simple(PrimShape::Ellipsoid { radii }) = &prim.shape {
+                        let s = 1.0 - (prim.to_local.transform_point3a(p) / Vec3A::from(*radii)).length_squared();
+                        if s > 0.0 {
+                            raised += height * prim.min_scale * s * s;
+                        }
+                    }
+                }
             }
         }
-        let mut d = d.unwrap_or(f32::MAX);
+        let mut d = d.map_or(f32::MAX, |d| d - raised);
         if let Some(c) = &self.creases {
             if d.abs() < 0.03 {
                 d += c.displacement(joints, p);

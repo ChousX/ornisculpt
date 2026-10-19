@@ -107,7 +107,12 @@ fn setup(
     commands.spawn((Camera3d::default(), TierCamera));
     commands.spawn((
         DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // `ORNISCULPT_LIGHT_YAW=deg` swings the light round (to light a mob's back, say).
+        Transform::from_translation(
+            Quat::from_rotation_y(std::env::var("ORNISCULPT_LIGHT_YAW").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0).to_radians())
+                * Vec3::new(3.0, 6.0, 2.0),
+        )
+        .looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
