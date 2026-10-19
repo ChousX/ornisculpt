@@ -6,7 +6,7 @@ use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use super::CoatUniform;
-use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT};
+use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT};
 
 pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
@@ -79,11 +79,18 @@ impl MaterialExtension for CoatExt {
             defs.push("COAT_CROWD".into());
         }
         // The shadow and depth prepass keeps Bevy's shader and vertex layout.
-        let main_pass = descriptor.label.as_deref() != Some("prepass_pipeline");
+        // (`StandardMaterial` prefixes the label with `pbr_` before the extension sees it.)
+        let main_pass = !descriptor.label.as_deref().is_some_and(|l| l.ends_with("prepass_pipeline"));
         // Meshes with centres of rotation skin about them (`dqs.wesl`); others with dual quaternions.
         let cor = main_pass && layout.0.contains(ATTRIBUTE_COR);
         if cor {
             defs.push("COAT_COR".into());
+        }
+        // Meshes with muscle flex bulge their muscles as they shorten (`coat_vertex.wesl`).
+        // `ORNISCULPT_NO_MUSCLE`: keep muscles still (for comparing).
+        let muscle = main_pass && layout.0.contains(ATTRIBUTE_MUSCLE) && std::env::var_os("ORNISCULPT_NO_MUSCLE").is_none();
+        if muscle {
+            defs.push("COAT_MUSCLE".into());
         }
         match key.bind_group_data.layer {
             CoatLayer::Skin => defs.push("COAT_SKIN".into()),
@@ -101,8 +108,8 @@ impl MaterialExtension for CoatExt {
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.extend(defs);
         }
-        if key.bind_group_data.crowd || cor {
-            // Crowd joints and centres of rotation are custom attributes, which Bevy doesn't lay out.
+        if key.bind_group_data.crowd || cor || muscle {
+            // Crowd joints, centres of rotation and muscle flex are custom attributes, which Bevy doesn't lay out.
             let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
             if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
                 attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
@@ -122,6 +129,10 @@ impl MaterialExtension for CoatExt {
             }
             if cor {
                 attributes.push(ATTRIBUTE_COR.at_shader_location(8));
+            }
+            if muscle {
+                attributes.push(ATTRIBUTE_MUSCLE.at_shader_location(9));
+                attributes.push(ATTRIBUTE_MUSCLE_JOINT.at_shader_location(10));
             }
             descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         }

@@ -24,6 +24,24 @@ pub const ATTRIBUTE_CROWD_JOINT_WEIGHT: MeshVertexAttribute =
     MeshVertexAttribute::new("Ornisculpt_CrowdJointWeight", 0x0b5c_0003, VertexFormat::Float32x4);
 /// Per-vertex centre of rotation ([`BodyMeshData::cor`]).
 pub const ATTRIBUTE_COR: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_CentreOfRotation", 0x0b5c_0004, VertexFormat::Float32x3);
+/// Muscle flex ([`MuscleFlex`]): rest-pose insertion (xyz) and amplitude (w).
+pub const ATTRIBUTE_MUSCLE: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_Muscle", 0x0b5c_0005, VertexFormat::Float32x4);
+/// Muscle flex: the joint carrying the insertion (x) and the muscle's length (y, `f32` bits).
+pub const ATTRIBUTE_MUSCLE_JOINT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_MuscleJoint", 0x0b5c_0006, VertexFormat::Uint32x2);
+
+/// Per-vertex muscle flex (see [`muscle_flex`](super::muscle_flex)).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MuscleFlex {
+    /// The muscle's insertion in the rest pose (model space), carried by `joint`.
+    pub insertion: Vec3,
+    /// Outward push per unit of contraction (metres); 0 = no muscle under the vertex.
+    pub amplitude: f32,
+    /// Rest length of the muscle (belly centre to insertion, metres): contraction is the vertex's
+    /// shortening towards the insertion over this, so it stays gentle next to the insertion.
+    pub length: f32,
+    /// Joint carrying the insertion (crowd skeleton index at crowd levels).
+    pub joint: u16,
+}
 
 /// [`BodyMeshData::cloth`] value of vertices that are not part of a garment.
 pub const NOT_CLOTH: u8 = 255;
@@ -123,6 +141,8 @@ pub struct BodyMeshData {
     /// Optimized centre of rotation per vertex (rest pose; see `surface::centres_of_rotation`).
     /// Empty = skin with dual quaternions instead.
     pub cor: Vec<Vec3>,
+    /// Muscle flex per vertex. Empty = no muscles move.
+    pub muscle: Vec<MuscleFlex>,
     pub indices: Vec<u32>,
     pub submeshes: Vec<Submesh>,
 }
@@ -189,6 +209,12 @@ impl BodyMeshData {
         if self.flow.len() == n {
             mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.flow.clone());
         }
+        if self.muscle.len() == n && self.muscle.iter().any(|m| m.amplitude > 0.0) {
+            let flex: Vec<[f32; 4]> = self.muscle.iter().map(|m| m.insertion.extend(m.amplitude).to_array()).collect();
+            let joints: Vec<[u32; 2]> = self.muscle.iter().map(|m| [u32::from(m.joint), m.length.to_bits()]).collect();
+            mesh.insert_attribute(ATTRIBUTE_MUSCLE, flex);
+            mesh.insert_attribute(ATTRIBUTE_MUSCLE_JOINT, joints);
+        }
         mesh
     }
 
@@ -237,6 +263,9 @@ impl BodyMeshData {
                                 }
                                 if let Some(c) = self.cloth.get(i) {
                                     part.cloth.push(*c);
+                                }
+                                if let Some(m) = self.muscle.get(i) {
+                                    part.muscle.push(*m);
                                 }
                             }
                             part.indices.push(*r);

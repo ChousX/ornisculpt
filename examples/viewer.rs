@@ -5,12 +5,15 @@
 //! ```
 //!
 //! Controls: left-drag orbit · scroll zoom · 1/2/3 LOD (hero/near/far) · G skeleton gizmos ·
-//! W wiggle bones · T cycle tone preset · R regenerate.
+//! W wiggle bones · B hold joints bent (shows muscle flex) · M muscle flex on/off · T cycle tone preset ·
+//! R regenerate.
 //! The body plan and any authored part meshes hot-reload when saved.
 //!
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits;
 //! `ORNISCULPT_LOD=near|far`, `ORNISCULPT_WIGGLE=1`, `ORNISCULPT_TONE=<preset>` and
-//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` set the starting state.
+//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` set the starting state; `ORNISCULPT_BEND=<degrees>`
+//! holds the limbs' inner joints bent about their x axes, `ORNISCULPT_MUSCLE=<gain>` scales muscle flex (0 = off) and
+//! `ORNISCULPT_GIZMOS=0` hides the skeleton.
 
 use bevy::asset::AssetPlugin;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
@@ -19,8 +22,8 @@ use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{LodLevel, Tone};
 use ornisculpt::clothing::MobOutfit;
-use ornisculpt::coat::MobCoat;
-use ornisculpt::mob::{BodyReady, ForceTier, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSkeleton};
+use ornisculpt::coat::{MobCoat, MobMaterial};
+use ornisculpt::mob::{BodyReady, ForceTier, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSet, MobSkeleton};
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
@@ -38,7 +41,7 @@ fn main() {
         .init_resource::<Orbit>()
         .add_observer(on_ready)
         .add_systems(Startup, setup)
-        .add_systems(Update, (controls, orbit_camera, wiggle, draw_skeleton, screenshot))
+        .add_systems(Update, (controls, orbit_camera, wiggle.after(MobSet::Motion), muscle_flex, draw_skeleton, screenshot))
         .run();
 }
 
@@ -50,6 +53,12 @@ struct Viewer {
     lod: LodLevel,
     gizmos: bool,
     wiggle: bool,
+    /// Fixed bend of every joint (radians), instead of the rest pose.
+    bend: Option<f32>,
+    /// Muscles bulge as they shorten (the coat's muscle flex gain).
+    muscles: bool,
+    /// Muscle flex gain while on (`ORNISCULPT_MUSCLE=<gain>`; 1 = as baked).
+    muscle_gain: f32,
     tone: usize,
     /// Frames since the latest body became ready (for screenshots).
     ready_frames: Option<u32>,
@@ -64,11 +73,26 @@ impl Viewer {
             _ => LodLevel::Hero,
         };
         let tone = env("ORNISCULPT_TONE").and_then(|t| TONE_PRESETS.iter().position(|(n, _)| *n == t)).unwrap_or(0);
-        Self { path, coat, mob: Entity::PLACEHOLDER, lod, gizmos: true, wiggle: env("ORNISCULPT_WIGGLE").is_some(), tone, ready_frames: None }
+        Self {
+            path,
+            coat,
+            mob: Entity::PLACEHOLDER,
+            lod,
+            gizmos: env("ORNISCULPT_GIZMOS").as_deref() != Some("0"),
+            wiggle: env("ORNISCULPT_WIGGLE").is_some(),
+            bend: env("ORNISCULPT_BEND").and_then(|d| d.parse::<f32>().ok()).map(f32::to_radians),
+            muscles: env("ORNISCULPT_MUSCLE").as_deref() != Some("0"),
+            muscle_gain: env("ORNISCULPT_MUSCLE").and_then(|g| g.parse::<f32>().ok()).filter(|g| *g > 0.0).unwrap_or(1.0),
+            tone,
+            ready_frames: None,
+        }
     }
 }
 
 /// (name, [muscle, fat, folds, landmarks]); `authored` keeps the RON's tone.
+/// Joint bend held by B (degrees).
+const BEND_DEGREES: f32 = 50.0;
+
 const TONE_PRESETS: [(&str, [f32; 4]); 5] = [
     ("authored", [0.0; 4]),
     ("smooth", [0.0, 0.0, 0.0, 0.0]),
@@ -187,6 +211,13 @@ fn controls(
     if keys.just_pressed(KeyCode::KeyW) {
         viewer.wiggle = !viewer.wiggle;
     }
+    if keys.just_pressed(KeyCode::KeyB) {
+        viewer.bend = if viewer.bend.is_some() { None } else { Some(BEND_DEGREES.to_radians()) };
+    }
+    if keys.just_pressed(KeyCode::KeyM) {
+        viewer.muscles = !viewer.muscles;
+        info!("muscle flex {}", if viewer.muscles { "on" } else { "off" });
+    }
     if keys.just_pressed(KeyCode::KeyR) {
         // Re-resolve from the asset (picks up the authored tone again).
         commands.entity(viewer.mob).remove::<LiveBody>().insert(GenRequest);
@@ -221,15 +252,42 @@ fn orbit_camera(
     }
 }
 
-fn wiggle(viewer: Res<Viewer>, time: Res<Time>, mut joints: Query<(&MobJoint, &mut Transform)>) {
+fn wiggle(
+    viewer: Res<Viewer>,
+    time: Res<Time>,
+    bodies: Res<Assets<GeneratedBody>>,
+    mobs: Query<&MobBody>,
+    mut joints: Query<(&MobJoint, &mut Transform)>,
+) {
+    // Otherwise the motion pose shows.
+    if !viewer.wiggle && viewer.bend.is_none() {
+        return;
+    }
     let t = time.elapsed_secs();
+    // The bend holds the limbs' inner joints (knees, elbows, ...) only: the body stays upright.
+    let bent_limb = |joint: &MobJoint| {
+        let body = mobs.get(joint.mob).ok().and_then(|b| bodies.get(&b.0));
+        let bone = body.and_then(|b| b.anatomy.skeleton.get(joint.bone));
+        bone.is_some_and(|b| b.name.starts_with("limb") && !b.name.ends_with(".0"))
+    };
     for (joint, mut tf) in &mut joints {
         let i = f32::from(joint.bone.0);
-        tf.rotation = if viewer.wiggle && joint.bone.0 > 0 {
-            joint.rest.rotation * Quat::from_rotation_x(f32::mul_add(t, 3.0, i).sin() * 0.35)
-        } else {
-            joint.rest.rotation
-        };
+        if viewer.wiggle && joint.bone.0 > 0 {
+            tf.rotation = joint.rest.rotation * Quat::from_rotation_x(f32::mul_add(t, 3.0, i).sin() * 0.35);
+        } else if let Some(bend) = viewer.bend.filter(|_| bent_limb(joint)) {
+            tf.rotation = joint.rest.rotation * Quat::from_rotation_x(bend);
+        }
+    }
+}
+
+/// Applies the muscle toggle to every mob material (new bodies come with flex on).
+fn muscle_flex(viewer: Res<Viewer>, mut materials: ResMut<Assets<MobMaterial>>) {
+    let gain = if viewer.muscles { viewer.muscle_gain } else { 0.0 };
+    let stale: Vec<_> = materials.iter().filter(|(_, m)| m.extension.coat.muscle.x.to_bits() != f32::to_bits(gain)).map(|(id, _)| id).collect();
+    for id in stale {
+        if let Some(mut m) = materials.get_mut(id) {
+            m.extension.coat.muscle.x = gain;
+        }
     }
 }
 

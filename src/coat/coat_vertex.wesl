@@ -4,6 +4,9 @@
 //   rotation (COAT_COR), or blend dual quaternions where a mesh has none (`dqs.wesl`): limbs keep
 //   their volume at bent joints, where averaging matrices shrinks them.
 // - Fur shells (COAT_SHELL) are pushed out along the normal by uv.x · fur length, drooping a little.
+// - Muscles (COAT_MUSCLE) bulge along the normal as they shorten: the distance from the skinned
+//   vertex to its muscle's insertion (carried by the joint across) against the rest distance,
+//   over the muscle's length.
 // - tangent.w is the distance along the coat flow (metres, baked at generation); crowd skin is inflated over fur/feathers so silhouettes keep the coat's volume.
 // - Vertex colour = rest-pose position (xyz) + scale weight (w); tangent = coat flow; on the
 //   skin, uv = (fur, feather) weights.
@@ -28,7 +31,8 @@ struct CoatUniform {
     scale_mask: vec2<u32>,
     fur_mask: vec2<u32>,
     feather_mask: vec2<u32>,
-    pad: vec2<u32>,
+    // flex gain (0 = muscles still), _
+    muscle: vec2<f32>,
     scales: vec4<f32>,
     fur: vec4<f32>,
     feathers: vec4<f32>,
@@ -54,6 +58,10 @@ struct CoatVertex {
     @location(7) joint_weights: vec4<f32>,
     @if(COAT_COR)
     @location(8) cor: vec3<f32>,
+    @if(COAT_MUSCLE)
+    @location(9) muscle: vec4<f32>,
+    @if(COAT_MUSCLE)
+    @location(10) muscle_joint: vec2<u32>,
 };
 
 @vertex
@@ -99,6 +107,9 @@ fn vertex(v: CoatVertex) -> VertexOutput {
     world_normal = s.normal;
     world_tangent = s.tangent;
 }
+@if(COAT_MUSCLE) {
+    world += muscle_offset(v.muscle, bitcast<f32>(v.muscle_joint.y), position, world, world_normal, muscle_joint(v, instance_from_local));
+}
 
     out.world_position = vec4<f32>(world, 1.0);
     out.position = position_world_to_clip(world);
@@ -133,4 +144,40 @@ fn hero_joints(indexes: vec4<u32>, instance_index: u32) -> array<mat4x4<f32>, 4>
         skinning::joint_matrices[base + indexes.z],
         skinning::joint_matrices[base + indexes.w],
     );
+}
+
+// One joint's skin matrix for a hero vertex.
+@if(SKINNED)
+fn hero_joint(index: u32, instance_index: u32) -> mat4x4<f32> {
+@if(SKINS_USE_UNIFORM_BUFFERS)
+    return skinning::joint_matrices.data[index];
+@if(!SKINS_USE_UNIFORM_BUFFERS)
+    return skinning::joint_matrices[mesh[instance_index].current_skin_index + index];
+}
+
+// World-from-rest matrix of the joint carrying the vertex's muscle insertion.
+@if(COAT_MUSCLE)
+fn muscle_joint(v: CoatVertex, instance_from_local: mat4x4<f32>) -> mat4x4<f32> {
+@if(COAT_CROWD)
+    return instance_from_local * crowd_bones[mesh_functions::get_tag(v.instance_index) * MAX_CROWD_BONES + v.muscle_joint.x];
+@if(!COAT_CROWD && SKINNED)
+    return hero_joint(v.muscle_joint.x, v.instance_index);
+@if(!COAT_CROWD && !SKINNED)
+    return instance_from_local;
+}
+
+// Muscle bulge (world space): out along the normal by amplitude · contraction, where contraction
+// is how much closer the vertex has come to the insertion than at rest, over the muscle's rest
+// length (negative when stretched, which flattens the muscle a little). Dividing by the muscle's
+// length rather than the vertex's own distance keeps vertices next to the insertion calm.
+@if(COAT_MUSCLE)
+fn muscle_offset(muscle: vec4<f32>, muscle_length: f32, rest: vec3<f32>, world: vec3<f32>, world_normal: vec3<f32>, joint: mat4x4<f32>) -> vec3<f32> {
+    if muscle.w <= 0.0 || coat.muscle.x <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let insertion = (joint * vec4<f32>(muscle.xyz, 1.0)).xyz;
+    let scale = length(joint[0].xyz);
+    let shortening = distance(rest, muscle.xyz) * scale - distance(world, insertion);
+    let contraction = clamp(shortening / max(muscle_length * scale, 1e-4), -0.1, 0.3);
+    return world_normal * (muscle.w * contraction * scale * coat.muscle.x);
 }

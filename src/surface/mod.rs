@@ -17,6 +17,7 @@ mod hard;
 mod lod;
 mod mesh_data;
 mod mesher;
+mod muscle;
 mod octree;
 mod process;
 pub mod sdf;
@@ -29,10 +30,12 @@ pub use field::{Field, Influences, SurfaceInfo};
 pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
-    ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, BodyMeshData, MaterialSlot, MobVertexData,
+    ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
+    BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
     NOT_CLOTH, Submesh, Vertex,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
+pub use muscle::muscle_flex;
 pub use octree::AdaptiveContour;
 pub use process::{merge, remap_to_crowd, simplify, skin_and_attrs, smooth, weld};
 

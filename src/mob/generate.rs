@@ -17,7 +17,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{MobOutfit, Outfit, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods};
+use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -391,6 +391,10 @@ pub(super) fn start_generation(
                 // Centres of rotation on the final vertices and weights (coat meshes copy them).
                 for lod in &mut lods {
                     lod.cor = centres_of_rotation(lod);
+                }
+                // Muscle flex on the final skin (before the coat copies it onto shells and cards).
+                for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+                    lod.muscle = muscle_flex(lod, &anatomy, level);
                 }
                 let motion = bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len()));
                 let coat_meshes = LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level));

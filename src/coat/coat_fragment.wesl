@@ -26,7 +26,8 @@ struct CoatUniform {
     scale_mask: vec2<u32>,
     fur_mask: vec2<u32>,
     feather_mask: vec2<u32>,
-    pad: vec2<u32>,
+    // flex gain (0 = muscles still), _
+    muscle: vec2<f32>,
     scales: vec4<f32>,
     fur: vec4<f32>,
     feathers: vec4<f32>,
