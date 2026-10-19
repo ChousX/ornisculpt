@@ -144,7 +144,7 @@ fn setup(
         commands.entity(viewer.mob).insert(MobCoat(assets.load(coat.clone())));
     }
     info!("viewing {}", viewer.path);
-    info!("controls: left-drag orbit, scroll zoom, 1/2/3 LOD, G gizmos, W wiggle, T tone preset, R regenerate");
+    info!("controls: left-drag orbit, scroll zoom, 1/2/3 LOD, G gizmos, W wiggle, B bend joints, M muscle flex, T tone preset, R regenerate");
 }
 
 /// Applies the tone preset to a freshly resolved body, and counts frames for screenshots.
