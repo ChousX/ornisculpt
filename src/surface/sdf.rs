@@ -66,23 +66,35 @@ pub fn round_box(p: Vec3A, half: Vec3A, round: f32) -> f32 {
 /// Distance to a swept cross-section along a polyline.
 ///
 /// A tube whose radius runs linearly between the points' radii. Non-round sections squash local
-/// x by their aspect (the teardrop's keel isn't modelled); the result stays a lower bound but
-/// is no longer exact.
+/// x by their aspect; the result stays a lower bound but is no longer exact. A teardrop adds
+/// its keel ([`CrossSection::KEEL`]) toward local +Z (the ventral side in the parts'
+/// convention), smoothly blended on.
 #[must_use]
 pub fn sweep(p: Vec3A, points: &[Vec3A], radii: &[f32], cross: CrossSection) -> f32 {
-    let aspect = match cross {
-        CrossSection::Round => 1.0,
-        CrossSection::Ellipse { aspect } | CrossSection::Flat { aspect } | CrossSection::Teardrop { aspect } => aspect.max(1e-3),
-    };
+    let aspect = cross.aspect().max(1e-3);
+    let main = tube(p, points, |i| radii.get(i).copied().unwrap_or(0.0), aspect, 0.0);
+    if !matches!(cross, CrossSection::Teardrop { .. }) {
+        return main;
+    }
+    let keel = CrossSection::KEEL;
+    let keel_radius = |i: usize| radii.get(i).copied().unwrap_or(0.0) * keel.y;
+    let d = tube(p, points, keel_radius, aspect * keel.x / keel.y, keel.z / keel.y);
+    let k = 0.5 * keel.x * radii.iter().copied().fold(0.0, f32::max) * aspect;
+    smin(main, d, k).0
+}
+
+/// [`sweep`] of one elliptic tube: radius `radius(i)` at point `i`, local x squashed by `aspect`,
+/// its centre line `drop × radius` toward local +Z of the points.
+fn tube(p: Vec3A, points: &[Vec3A], radius: impl Fn(usize) -> f32, aspect: f32, drop: f32) -> f32 {
     let squash = |v: Vec3A| Vec3A::new(v.x / aspect, v.y, v.z);
-    let radius = |i: usize| radii.get(i).copied().unwrap_or(0.0);
+    let point = |i: usize, v: Vec3A| squash(v + Vec3A::Z * drop * radius(i));
     let at = squash(p);
     let mut best = match points {
-        [only] => (at - squash(*only)).length() - radius(0),
+        [only] => (at - point(0, *only)).length() - radius(0),
         _ => f32::INFINITY,
     };
     for (i, [start, end]) in points.array_windows().enumerate() {
-        let (start, end) = (squash(*start), squash(*end));
+        let (start, end) = (point(i, *start), point(i + 1, *end));
         let seg = end - start;
         let along = ((at - start).dot(seg) / seg.length_squared().max(1e-12)).clamp(0.0, 1.0);
         let r = (radius(i + 1) - radius(i)).mul_add(along, radius(i));
@@ -123,6 +135,21 @@ mod tests {
         assert!(round_cone(Vec3A::new(0.5, 0.0, 0.0), 0.5, 0.25, 1.0).abs() < 1e-5);
         assert!(round_cone(Vec3A::new(0.0, 1.25, 0.0), 0.5, 0.25, 1.0).abs() < 1e-5);
         assert!(round_box(Vec3A::new(1.0, 0.0, 0.0), Vec3A::splat(1.0), 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn teardrop_sweep_has_a_keel() {
+        let points = [Vec3A::ZERO, Vec3A::Y];
+        let radii = [0.2, 0.2];
+        let ellipse = |p| sweep(p, &points, &radii, CrossSection::Ellipse { aspect: 0.8 });
+        let teardrop = |p| sweep(p, &points, &radii, CrossSection::Teardrop { aspect: 0.8 });
+        // The same on top; a keel reaching further down local +Z, and no wider there.
+        let top = Vec3A::new(0.0, 0.5, -0.2);
+        assert!((ellipse(top) - teardrop(top)).abs() < 1e-3);
+        let low = Vec3A::new(0.0, 0.5, 0.2 * CrossSection::TEARDROP_KEEL.mul_add(0.5, 1.0));
+        assert!(ellipse(low) > 0.0 && teardrop(low) < 0.0);
+        let low_side = Vec3A::new(0.15, 0.5, 0.2);
+        assert!(teardrop(low_side) > 0.0);
     }
 
     #[test]

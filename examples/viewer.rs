@@ -13,7 +13,8 @@
 //! `ORNISCULPT_LOD=near|far`, `ORNISCULPT_WIGGLE=1`, `ORNISCULPT_TONE=<preset>` and
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` set the starting state; `ORNISCULPT_BEND=<degrees>`
 //! holds the limbs' inner joints bent about their x axes, `ORNISCULPT_MUSCLE=<gain>` scales muscle flex (0 = off) and
-//! `ORNISCULPT_GIZMOS=0` hides the skeleton.
+//! `ORNISCULPT_GIZMOS=0` hides the skeleton. `ORNISCULPT_FOCUS=<bone>` (e.g. `skull`) keeps the
+//! camera on the middle of that bone, offset by the `x,y,z` of `ORNISCULPT_CAM`.
 
 use bevy::asset::AssetPlugin;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
@@ -41,7 +42,7 @@ fn main() {
         .init_resource::<Orbit>()
         .add_observer(on_ready)
         .add_systems(Startup, setup)
-        .add_systems(Update, (controls, orbit_camera, wiggle.after(MobSet::Motion), muscle_flex, draw_skeleton, screenshot))
+        .add_systems(Update, (controls, focus_camera.before(orbit_camera), orbit_camera, wiggle.after(MobSet::Motion), muscle_flex, draw_skeleton, screenshot))
         .run();
 }
 
@@ -107,17 +108,39 @@ struct Orbit {
     pitch: f32,
     distance: f32,
     target: Vec3,
+    /// `ORNISCULPT_FOCUS`: the bone to follow, and the target's offset from its middle.
+    focus: Option<(String, Vec3)>,
 }
 
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
             .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0) },
-        }
+        let (yaw, pitch, distance, target) = match v[..] {
+            [yaw, pitch, distance, x, y, z] => (yaw, pitch, distance, Vec3::new(x, y, z)),
+            _ => (0.9, 0.35, 3.0, Vec3::new(0.0, 0.5, 0.0)),
+        };
+        let focus = std::env::var("ORNISCULPT_FOCUS").ok().map(|bone| (bone, if v.len() == 6 { target } else { Vec3::ZERO }));
+        Self { yaw, pitch, distance, target, focus }
     }
+}
+
+/// Keeps the orbit target on the middle of the `ORNISCULPT_FOCUS` bone.
+fn focus_camera(
+    mut orbit: ResMut<Orbit>,
+    viewer: Res<Viewer>,
+    bodies: Res<Assets<GeneratedBody>>,
+    mobs: Query<(&MobBody, &MobSkeleton)>,
+    joints: Query<&GlobalTransform, With<MobJoint>>,
+) {
+    let Some((name, offset)) = orbit.focus.clone() else { return };
+    let Ok((body, skeleton)) = mobs.get(viewer.mob) else { return };
+    let Some(body) = bodies.get(&body.0) else { return };
+    let sk = &body.anatomy.skeleton;
+    let Some(bone) = sk.find(&name) else { return };
+    let Some(Ok(g)) = skeleton.0.get(bone.index()).map(|&j| joints.get(j)) else { return };
+    let length = sk.get(bone).map_or(0.0, |b| b.length);
+    orbit.target = g.transform_point(Vec3::Y * length * 0.5) + offset;
 }
 
 fn setup(

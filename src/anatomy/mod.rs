@@ -40,7 +40,7 @@ pub use mass::{BodyMass, WATER, measure as measure_mass};
 pub use part::*;
 pub use path::PartPath;
 pub use plan::{AttachSlot, BodyPlan, PartNode, PartOffset, PartTone, Repeat, Tone};
-pub use primitive::{HardPart, PrimLayer, PrimOp, PrimShape, Primitive};
+pub use primitive::{HardPart, PrimLayer, PrimOp, PrimShape, Primitive, Weigh};
 pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, RegionTable, Side};
 pub use rig::{Clavicle, ClothFollow, HandDef, LegInfo, LookDef, SpringChainDef};
 pub use spread::{Spread, spread_pose};

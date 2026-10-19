@@ -14,9 +14,9 @@ use super::builder::{AxisSample, SkullFrame, frame_y_z};
 use super::{
     AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, ChainParams, ChainPart,
     ChainRole, CrossSection, DigitParams, FaceParams, HandDef, HardParams, HeadParams, LimbEnd, LimbParams, LimbRole,
-    HardKind, LookDef, MassParams, MassShape, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
+    HardKind, LookDef, MassParams, MassShape, MuzzleParams, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
     SculptParams,
-    RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams,
+    RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams, Weigh,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -47,16 +47,150 @@ fn radius_at(p: &Profile, t: f32) -> f32 {
     (curve_at(&p.curve, t, 1.0) * p.scale).max(1e-3)
 }
 
-/// Non-uniform scale (local X = width, local Z = height) for a cross-section.
+/// Non-uniform scale (local X = width, local Z = height) for a cross-section's main ellipse.
 fn cross_scale(c: CrossSection) -> Vec3 {
     let aspect = match c {
         CrossSection::Round => 1.0,
-        CrossSection::Ellipse { aspect } | CrossSection::Flat { aspect } | CrossSection::Teardrop { aspect } => {
-            aspect.max(0.05)
-        }
+        c => c.aspect().max(0.05),
     };
     let s = aspect.sqrt();
     Vec3::new(s, 1.0, 1.0 / s)
+}
+
+/// A chain's cross-section at one `t`: the half width (x) and half height (y) of its main
+/// ellipse, and the ventral offset of its centre from the axis, in metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Section {
+    radii: Vec2,
+    drop: f32,
+}
+
+/// Part of a keel's volume outside the ellipse it hangs from (with the blend fillets).
+const KEEL_OUTSIDE: f32 = 0.2;
+
+impl Section {
+    /// The section of `p` at `t`, where its radius is `r`.
+    fn at(p: &Profile, t: f32, r: f32) -> Self {
+        let s = cross_scale(p.cross);
+        let width = curve_at(&p.width, t, 1.0).max(0.05);
+        let depth = curve_at(&p.depth, t, 1.0).max(0.05);
+        Self { radii: Vec2::new(s.x * width, s.z * depth) * r, drop: curve_at(&p.drop, t, 0.0) * r }
+    }
+
+    /// A teardrop's keel under this section.
+    fn keel(self) -> Self {
+        Self {
+            radii: self.radii * CrossSection::KEEL.truncate(),
+            drop: CrossSection::KEEL.z.mul_add(self.radii.y, self.drop),
+        }
+    }
+
+    /// The ellipse round the whole section (a teardrop's keel included), for axis samples.
+    fn hull(self, cross: CrossSection) -> Self {
+        match cross {
+            CrossSection::Teardrop { .. } => {
+                let half = 0.5 * CrossSection::TEARDROP_KEEL * self.radii.y;
+                Self { radii: self.radii + Vec2::Y * half, drop: self.drop + half }
+            }
+            _ => self,
+        }
+    }
+}
+
+/// Where a chain bone's surface (`t0..t1` of the chain) is split into pieces, as fractions of
+/// the bone from `0.0` to `1.0`: at the section curves' keys inside it (the curves are linear
+/// between keys), else evenly into two or three where the section's aspect changes along it
+/// (each piece has one aspect). One piece if nothing varies.
+fn pieces(p: &Profile, (t0, t1): (f32, f32)) -> SmallVec<[f32; 4]> {
+    let mut ks: SmallVec<[f32; 4]> = SmallVec::new();
+    ks.push(0.0);
+    if !p.is_plain() {
+        let mut keys: SmallVec<[f32; 8]> = [&p.width, &p.depth, &p.drop]
+            .into_iter()
+            .flatten()
+            .map(|(t, _)| (t - t0) / (t1 - t0).max(1e-6))
+            .filter(|k| (0.1..=0.9).contains(k))
+            .collect();
+        keys.sort_by(f32::total_cmp);
+        for k in keys {
+            if ks.len() < 3 && ks.last().is_none_or(|last| k - last >= 0.1) {
+                ks.push(k);
+            }
+        }
+        if ks.len() == 1 {
+            let aspect = |t: f32| curve_at(&p.width, t, 1.0).max(0.05) / curve_at(&p.depth, t, 1.0).max(0.05);
+            let change = (aspect(t1) / aspect(t0)).ln().abs();
+            let n = if change > 0.2 { 3 } else if change > 0.03 { 2 } else { 1 };
+            ks.extend((1..n).map(|j| j.to_f32() / n.to_f32()));
+        }
+    }
+    ks.push(1.0);
+    ks
+}
+
+/// One round cone of a chain bone's surface, from section `a` at fraction `ka` of the bone to
+/// section `b` at `kb`, each centred `drop` below the bone's axis. Its scale makes the cone's
+/// ends the sections' ellipses (their aspect averaged; a bone with a changing aspect gets
+/// several pieces).
+#[allow(clippy::too_many_arguments)]
+fn emit_piece(
+    b: &mut AnatomyBuilder,
+    bone: BoneId,
+    start: &Transform,
+    len: f32,
+    (ka, a): (f32, Section),
+    (kb, z): (f32, Section),
+    blend: f32,
+    region: RegionId,
+) -> f32 {
+    let at = |k: f32, s: Section| start.translation + start.rotation * Vec3::new(0.0, len * k, s.drop);
+    let (pa, pb) = (at(ka, a), at(kb, z));
+    let aspect = (a.radii.x / a.radii.y * (z.radii.x / z.radii.y)).sqrt();
+    let s = aspect.sqrt();
+    let (r0, r1) = ((a.radii.x * a.radii.y).sqrt(), (z.radii.x * z.radii.y).sqrt());
+    let model = Transform { translation: pa, rotation: frame_y_z(pb - pa, start.rotation * Vec3::Z), scale: Vec3::new(s, 1.0, 1.0 / s) };
+    let shape = PrimShape::RoundCone { r0, r1, len: pa.distance(pb).max(1e-3) };
+    b.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
+    r0
+}
+
+/// The surface of one chain bone from `start` (`len` long, `t0..t1` of the chain, radius `r0`
+/// to `r1`), shaped by the profile's section curves: two or three pieces where they vary, the
+/// first blending with the bone before by `blend`, plus a keel under each for a teardrop.
+#[allow(clippy::too_many_arguments)]
+fn emit_sections(
+    b: &mut AnatomyBuilder,
+    bone: BoneId,
+    profile: &Profile,
+    start: &Transform,
+    len: f32,
+    (t0, t1): (f32, f32),
+    (r0, r1): (f32, f32),
+    blend: f32,
+    region: RegionId,
+) -> SmallVec<[(f32, Section); 3]> {
+    let section = |k: f32| (k, Section::at(profile, t0.lerp(t1, k), r0.lerp(r1, k)));
+    let mut starts = SmallVec::new();
+    for (j, &[ka, kz]) in pieces(profile, (t0, t1)).array_windows().enumerate() {
+        let (from, to) = (section(ka), section(kz));
+        let first = j == 0;
+        // Pieces within a bone meet nearly flush: a small blend smooths their aspect step
+        // without the bulge a large one raises at the joint.
+        let piece_blend = if first { blend } else { 0.2 * from.1.radii.min_element().min(to.1.radii.min_element()) };
+        let radius = emit_piece(b, bone, start, len, from, to, piece_blend, region);
+        b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(piece_blend, 2.0 * radius));
+        if !first {
+            b.weigh_last(Weigh::Continues);
+        }
+        if matches!(profile.cross, CrossSection::Teardrop { .. }) {
+            let (keel_from, keel_to) = (from.1.keel(), to.1.keel());
+            let keel_blend = 0.5 * keel_from.radii.x.min(keel_to.radii.x);
+            emit_piece(b, bone, start, len, (ka, keel_from), (kz, keel_to), keel_blend, region);
+            b.weigh_last(Weigh::Fraction(KEEL_OUTSIDE));
+        }
+        starts.push(from);
+    }
+    starts
 }
 
 fn with_offset(at: &AttachPoint, cx: &BuildCx) -> Transform {
@@ -91,7 +225,9 @@ fn chain_frames(start: Transform, lens: &[f32], bend: impl Fn(usize) -> Quat) ->
     frames
 }
 
-/// Emits one bone + one round-cone primitive per segment. Returns bones and axis samples.
+/// Emits one bone per segment, and its surface: one round cone, or a few where the profile's
+/// section curves vary (all owned by that bone). Returns bones and axis samples (one at each
+/// bone's start and at each piece's start, plus the tip).
 fn emit_chain(
     b: &mut AnatomyBuilder,
     parent: Option<BoneId>,
@@ -118,19 +254,28 @@ fn emit_chain(
         let bone = b.bone(prev, &format!("{name}.{i}"), *start, len, region(t0))?;
         let (r0, r1) = (radius_at(&chain.radius, t0), radius_at(&chain.radius, t1));
         let blend = if i == 0 { chain.blend } else { 0.5 * r0.min(r1) };
-        b.primitive(
-            bone,
-            PrimShape::RoundCone { r0, r1, len },
-            Transform { scale, ..*start },
-            blend,
-            PrimOp::Union,
-            PrimLayer::Base,
-            region(t0),
-        );
         // Blend only around the segment's own joint, so a limb hanging beside the body (or a
         // tail beside a leg) stays separate along its length.
-        b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * r0));
-        axis.push(AxisSample { t: t0, bone, model: *start, radii: Vec2::new(scale.x, scale.z) * r0 });
+        if chain.radius.is_plain() && !matches!(chain.radius.cross, CrossSection::Teardrop { .. }) {
+            b.primitive(
+                bone,
+                PrimShape::RoundCone { r0, r1, len },
+                Transform { scale, ..*start },
+                blend,
+                PrimOp::Union,
+                PrimLayer::Base,
+                region(t0),
+            );
+            b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * r0));
+            axis.push(AxisSample { t: t0, bone, model: *start, radii: Vec2::new(scale.x, scale.z) * r0, drop: 0.0 });
+        } else {
+            let sections = emit_sections(b, bone, &chain.radius, start, len, (t0, t1), (r0, r1), blend, region(t0));
+            for (k, s) in sections {
+                let s = s.hull(chain.radius.cross);
+                let model = moved(*start, Vec3::Y * len * k);
+                axis.push(AxisSample { t: t0.lerp(t1, k), bone, model, radii: s.radii, drop: s.drop });
+            }
+        }
         bones.push(bone);
         prev = Some(bone);
     }
@@ -138,7 +283,8 @@ fn emit_chain(
         return Err(AnatomyError::Internal("chain without segments"));
     };
     let r_end = radius_at(&chain.radius, 1.0);
-    axis.push(AxisSample { t: 1.0, bone: last, model: tip, radii: Vec2::new(scale.x, scale.z) * r_end });
+    let end = Section::at(&chain.radius, 1.0, r_end).hull(chain.radius.cross);
+    axis.push(AxisSample { t: 1.0, bone: last, model: tip, radii: end.radii, drop: end.drop });
     Ok((bones, axis))
 }
 
@@ -197,14 +343,15 @@ impl PartBuild for TorsoParams {
         b.spine(&bones);
 
         if self.belly > 0.0
-            && let (Some(&s), Some(&mid_bone)) = (axis.get(n / 2), bones.get(n / 2))
+            && let Some(&mid_bone) = bones.get(n / 2)
+            && let Some(&s) = axis.iter().find(|s| s.bone == mid_bone)
         {
             let belly = b.region(RegionKind::Belly, cx.side)?;
             let r = s.min_radius();
             b.primitive(
                 mid_bone,
                 PrimShape::Ellipsoid { radii: Vec3::new(r * 0.85, len / n.to_f32() * 1.2, r * 0.4f32.mul_add(self.belly, 0.6)) },
-                moved(s.model, Vec3::new(0.0, 0.0, r * 0.35 * self.belly)),
+                moved(s.model, Vec3::new(0.0, 0.0, (r * 0.35).mul_add(self.belly, s.drop))),
                 r * 0.5,
                 PrimOp::Union,
                 PrimLayer::Fat,
@@ -437,14 +584,27 @@ fn limb_end(end: LimbEnd, b: &mut AnatomyBuilder, last: BoneId, tip: Transform, 
 // ---------------------------------------------------------------------------------------------
 
 impl HeadParams {
+    /// The snout's centre line and half sizes in the skull frame.
+    fn muzzle_line(&self) -> MuzzleLine {
+        let s = self.skull.size;
+        let m = &self.muzzle;
+        let drop = m.drop.to_radians();
+        let dir = Vec3::new(0.0, drop.cos(), drop.sin());
+        let start = Vec3::new(0.0, s.z * 1.2, -m.rise * s.y);
+        let min = Vec2::splat(0.02);
+        MuzzleLine { start, dir, tip: start + dir * self.snout, base: m.base.max(min) * s.y, end: m.tip.max(min) * s.y }
+    }
+
     /// The head's fixed slots in model space, from its `skull` frame (Y forward, Z down, X left)
-    /// and the front of its snout (`front`, forward of the skull origin).
-    fn slots(&self, skull: Transform, front: f32) -> [(AttachSlot, Transform); 7] {
+    /// and the snout's centre `line`.
+    fn slots(&self, skull: Transform, line: &MuzzleLine) -> [(AttachSlot, Transform); 7] {
         let s = self.skull.size;
         // Local placement in the skull frame: (position, +Y direction, +Z hint).
         let place = |p: Vec3, dir: Vec3, hint: Vec3| skull * Transform::from_translation(p).with_rotation(frame_y_z(dir, hint));
         let eye_dir = Vec3::Y.lerp(Vec3::X, self.eye_lateral.clamp(0.0, 1.0));
         let eye_x = s.x * self.eye_spacing.max(0.2);
+        // The front of the snout's tip.
+        let nose = line.tip + line.dir * line.end.y;
         // A face (see `build_face` for its layout): eyes halfway down the head, just under the
         // surface; ears flat on the sides from nose to brow (wide across the head's depth, thin
         // outward); nose and mouth on the face. An animal's ears stand on top.
@@ -460,8 +620,8 @@ impl HeadParams {
             (
                 place(Vec3::new(eye_x, s.z * 1.3, -s.y * 0.3), eye_dir, Vec3::Z),
                 place(Vec3::new(s.x * 0.6, s.z * 0.5, -s.y * 0.85), Vec3::new(0.5, -0.2, -1.0), Vec3::Y),
-                place(Vec3::new(0.0, front, s.y * 0.15), Vec3::Y, Vec3::Z),
-                place(Vec3::new(0.0, front * 0.9, s.y * 0.5), Vec3::Y, Vec3::Z),
+                place(nose, line.dir, Vec3::Z),
+                place(Vec3::new(0.0, nose.y * 0.9, line.tip.z + line.end.y), line.dir, Vec3::Z),
             )
         };
         [
@@ -481,7 +641,9 @@ impl PartBuild for HeadParams {
         let base = with_offset(&at, cx);
         let fwd = base.rotation * Vec3::Y;
         let level = Vec3::new(fwd.x, 0.0, fwd.z).try_normalize().unwrap_or(Vec3::Z);
-        // Skull frame: Y forward (level), Z down, X left.
+        let pitch = self.pitch.clamp(-80.0, 80.0).to_radians();
+        let level = level * pitch.cos() - Vec3::Y * pitch.sin();
+        // Skull frame: Y forward (level, or pitched nose-down), Z down, X left.
         let skull = Transform::from_translation(base.translation).with_rotation(frame_y_z(level, Vec3::NEG_Y));
         let s = self.skull.size; // half extents: x width, y height, z depth
         let skull_region = b.region(RegionKind::Skull, cx.side)?;
@@ -508,45 +670,30 @@ impl PartBuild for HeadParams {
             PrimLayer::Base,
             skull_region,
         );
-        let snout_start = s.z * 1.2;
-        if self.snout > 0.0 {
-            b.primitive(
-                bone,
-                PrimShape::RoundCone { r0: s.y * 0.55, r1: s.y * 0.35, len: self.snout },
-                moved(skull, Vec3::new(0.0, snout_start, s.y * 0.15)),
-                s.y * 0.3,
-                PrimOp::Union,
-                PrimLayer::Base,
-                snout_region,
-            );
-        }
-        let front = s.y.mul_add(0.35, snout_start + self.snout);
-
+        let line = self.muzzle_line();
         let mut fixed: SmallVec<[(AttachSlot, AttachPoint); 6]> = SmallVec::new();
         if let Some(face) = &self.face {
+            if self.snout > 0.0 {
+                let shape = PrimShape::RoundCone { r0: s.y * 0.55, r1: s.y * 0.35, len: self.snout };
+                b.primitive(bone, shape, moved(skull, Vec3::new(0.0, s.z * 1.2, s.y * 0.15)), s.y * 0.3, PrimOp::Union, PrimLayer::Base, snout_region);
+            }
             let jaw_region = if self.jaw.is_some() { Some(b.region(RegionKind::Jaw, cx.side)?) } else { None };
             let jaw = build_face(b, face, skull, s, bone, skull_region, snout_region, jaw_region)?;
             if let Some((jaw, chin)) = jaw {
                 fixed.push(slot(AttachSlot::Jaw, jaw, chin));
             }
-        } else if let Some(j) = &self.jaw {
-            let jaw_region = b.region(RegionKind::Jaw, cx.side)?;
-            let start = moved(skull, Vec3::new(0.0, s.z * 0.6, s.y * 0.45));
-            let jaw = b.bone(Some(bone), "jaw", start, j.length, jaw_region)?;
-            let (r0, r1) = (radius_at(&j.radius, 0.0) * 0.8, radius_at(&j.radius, 1.0) * 0.6);
-            b.primitive(
-                jaw,
-                PrimShape::RoundCone { r0, r1, len: j.length },
-                Transform { scale: Vec3::new(1.4, 1.0, 0.6), ..start },
-                j.blend,
-                PrimOp::Union,
-                PrimLayer::Base,
-                jaw_region,
-            );
-            fixed.push(slot(AttachSlot::Jaw, jaw, moved(start, Vec3::Y * j.length)));
+        } else {
+            let muzzle = Muzzle { params: &self.muzzle, line, skull, s, bone, region: snout_region };
+            muzzle.build(b, self.snout);
+            if let Some(j) = &self.jaw {
+                let jaw_region = b.region(RegionKind::Jaw, cx.side)?;
+                fixed.push(muzzle.build_jaw(b, j, jaw_region)?);
+            } else if self.muzzle.cheek > 0.0 {
+                muzzle.build_cheeks(b, bone, snout_region);
+            }
         }
 
-        let slots = self.slots(skull, front);
+        let slots = self.slots(skull, &line);
         let [_, _, _, (_, crown), _, (_, mouth), _] = slots;
         fixed.extend(slots.into_iter().map(|(sl, m)| slot(sl, bone, m)));
         b.socket("head", SocketKind::Head, cx.side, bone, crown, s.x * 2.0);
@@ -561,10 +708,143 @@ impl PartBuild for HeadParams {
 
         let axis = [0.0, 1.0]
             .into_iter()
-            .map(|t| AxisSample { t, bone, model: moved(skull, Vec3::Y * s.z * 1.6 * t), radii: Vec2::new(s.x, s.y) })
+            .map(|t| AxisSample { t, bone, model: moved(skull, Vec3::Y * s.z * 1.6 * t), radii: Vec2::new(s.x, s.y), drop: 0.0 })
             .collect();
         let skull_frame = SkullFrame { bone, model: moved(skull, cranium_at), radii: cranium_radii };
         Ok(PartSlots { fixed, axis, skull: Some(skull_frame) })
+    }
+}
+
+/// The centre line of an animal's snout in the skull frame (X left, Y forward, Z down): from
+/// `start` (where it leaves the skull) along `dir` to `tip`, with half (width, height) `base` at
+/// the start and `end` at the tip.
+#[derive(Clone, Copy)]
+struct MuzzleLine {
+    start: Vec3,
+    dir: Vec3,
+    tip: Vec3,
+    base: Vec2,
+    end: Vec2,
+}
+
+impl MuzzleLine {
+    /// Half (width, height) of the snout `t` of the way from its start to its tip.
+    fn size_at(&self, t: f32) -> Vec2 {
+        self.base.lerp(self.end, t)
+    }
+}
+
+/// Builds an animal's muzzle: the snout on the skull bone, then the lower jaw, its cheeks and lip.
+struct Muzzle<'a> {
+    params: &'a MuzzleParams,
+    line: MuzzleLine,
+    /// The skull frame (X left, Y forward, Z down).
+    skull: Transform,
+    /// Skull half extents: x width, y height, z depth.
+    s: Vec3,
+    bone: BoneId,
+    region: RegionId,
+}
+
+impl Muzzle<'_> {
+    /// A model-space frame at skull-frame point `p` whose +Y runs along the snout.
+    fn frame(&self, p: Vec3) -> Transform {
+        Transform::from_translation(self.skull.transform_point(p)).with_rotation(self.skull.rotation * frame_y_z(self.line.dir, Vec3::Z))
+    }
+
+    fn add(b: &mut AnatomyBuilder, bone: BoneId, shape: PrimShape, model: Transform, blend: f32, region: RegionId) {
+        b.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
+    }
+
+    /// A round cone along the snout from `t0` to `t1` (fractions of its length), its height
+    /// tapering with the snout and its width following the start's aspect.
+    fn cone(&self, b: &mut AnatomyBuilder, snout: f32, (t0, t1): (f32, f32), blend: f32) {
+        let l = &self.line;
+        let (a, z) = (l.size_at(t0), l.size_at(t1));
+        let model = Transform { scale: Vec3::new(a.x / a.y, 1.0, 1.0), ..self.frame(l.start + l.dir * snout * t0) };
+        Self::add(b, self.bone, PrimShape::RoundCone { r0: a.y, r1: z.y, len: (snout * (t1 - t0)).max(1e-3) }, model, blend, self.region);
+    }
+
+    /// The snout: a tapering cone (two, if its cross-section changes shape on the way, each with
+    /// its own width), then the dish of the nose bridge, the nostrils' rims and the upper lip.
+    fn build(&self, b: &mut AnatomyBuilder, snout: f32) {
+        if snout <= 0.0 {
+            return;
+        }
+        let line = &self.line;
+        let aspect = |v: Vec2| v.x / v.y;
+        if (aspect(line.base) - aspect(line.end)).abs() < 1e-3 {
+            self.cone(b, snout, (0.0, 1.0), self.s.y * 0.3);
+        } else {
+            self.cone(b, snout, (0.0, 0.5), self.s.y * 0.3);
+            // Shares the middle's height, so the two blend into one smooth taper.
+            let mid = line.size_at(0.5);
+            let model = Transform { scale: Vec3::new(aspect(line.end), 1.0, 1.0), ..self.frame(line.start + line.dir * snout * 0.5) };
+            let shape = PrimShape::RoundCone { r0: mid.y, r1: line.end.y, len: snout * 0.5 };
+            Self::add(b, self.bone, shape, model, mid.y * 0.6, self.region);
+        }
+        if self.params.dish > 0.0 {
+            let at = line.size_at(0.35);
+            let centre = line.start + line.dir * snout * 0.35 - Vec3::Z * at.y;
+            let footprint = PrimShape::Ellipsoid { radii: Vec3::new(at.x * 0.9, snout * 0.3, at.y * 0.6) };
+            let op = PrimOp::Displace { height: -self.params.dish * at.y * 0.4 };
+            b.primitive(self.bone, footprint, self.frame(centre), 0.0, op, PrimLayer::Base, self.region);
+        }
+        self.build_tip(b);
+    }
+
+    /// The nostrils' rims and the upper lip round the tip of the snout.
+    fn build_tip(&self, b: &mut AnatomyBuilder) {
+        let (line, params) = (&self.line, self.params);
+        let tip = line.end;
+        if params.nostrils > 0.0 {
+            // The rims stand out round the front and sides of the tip, a little above its middle.
+            let scale = params.nostrils.min(2.0).sqrt();
+            for x in [0.62, -0.62] {
+                let centre = line.tip + line.dir * (tip.y * 0.45) + Vec3::new(x * tip.x, 0.0, -tip.y * 0.15);
+                let radii = Vec3::new(tip.x * 0.32, tip.y * 0.5, tip.y * 0.45) * scale;
+                Self::add(b, self.bone, PrimShape::Ellipsoid { radii }, self.frame(centre), tip.y * 0.3, self.region);
+            }
+        }
+        if params.lips > 0.0 {
+            // The upper lip: a fleshy roll under the front of the tip, overhanging the jaw.
+            let centre = line.tip - line.dir * (tip.y * 0.15) + Vec3::Z * (tip.y * 0.65);
+            let radii = Vec3::new(tip.x * 0.9, tip.y * 0.8, tip.y * 0.42 * params.lips.min(2.0));
+            Self::add(b, self.bone, PrimShape::Ellipsoid { radii }, self.frame(centre), tip.y * 0.3, self.region);
+        }
+    }
+
+    /// The lower jaw under the snout, hinged below the skull, with its cheeks and lower lip.
+    /// Returns the `Jaw` slot (the chin).
+    fn build_jaw(&self, b: &mut AnatomyBuilder, j: &ChainParams, region: RegionId) -> Result<(AttachSlot, AttachPoint), AnatomyError> {
+        let params = self.params;
+        let start = self.frame(Vec3::new(0.0, self.s.z * 0.6, self.s.y * 0.45));
+        let jaw = b.bone(Some(self.bone), "jaw", start, j.length, region)?;
+        let (r0, r1) = (radius_at(&j.radius, 0.0) * 0.8, radius_at(&j.radius, 1.0) * 0.6);
+        let scale = Vec3::new(1.4 * params.jaw_width.max(0.05), 1.0, 0.6 * params.jaw_depth.max(0.05));
+        Self::add(b, jaw, PrimShape::RoundCone { r0, r1, len: j.length }, Transform { scale, ..start }, j.blend, region);
+        if params.cheek > 0.0 {
+            self.build_cheeks(b, jaw, region);
+        }
+        let chin = moved(start, Vec3::Y * j.length);
+        if params.lips > 0.0 {
+            let tip = self.line.end;
+            let radii = Vec3::new(tip.x * 0.7, tip.y * 0.7, tip.y * 0.3 * params.lips.min(2.0));
+            let model = moved(chin, Vec3::new(0.0, -tip.y * 0.2, -r1 * 0.3));
+            Self::add(b, jaw, PrimShape::Ellipsoid { radii }, model, tip.y * 0.25, region);
+        }
+        Ok(slot(AttachSlot::Jaw, jaw, chin))
+    }
+
+    /// Broad, flat cheeks (the jowls) over the back of the lower jaw, one each side.
+    fn build_cheeks(&self, b: &mut AnatomyBuilder, bone: BoneId, region: RegionId) {
+        let (c, s) = (self.params.cheek.min(2.0), self.s);
+        for x in [0.6, -0.6] {
+            let centre = Vec3::new(x * s.x, s.z * 1.15, s.y * 0.4f32.mul_add(c, 0.5));
+            let radii = Vec3::new(s.x * 0.32, s.z * 0.7, s.y * 0.6) * Vec3::new(c.sqrt(), c.sqrt(), c);
+            let model = moved(self.skull, centre);
+            Self::add(b, bone, PrimShape::Ellipsoid { radii }, model, s.y * 0.35, region);
+        }
     }
 }
 
@@ -608,7 +888,7 @@ fn build_face(
     }
     if face.cheekbones > 0.0 {
         let scale = face.cheekbones.sqrt();
-        for x in [0.55, -0.55] {
+        for x in [0.6, -0.6] {
             add(bone, ellipsoid(0.24 * scale, 0.2 * scale, 0.11), at(p(x, 0.62, 0.17)), rz * 0.2, face_region);
         }
     }
@@ -811,5 +1091,99 @@ impl PartBuild for SculptParams {
             axis,
             skull: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anatomy::{Anatomy, BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy, sample_axis};
+
+    /// A lone torso (3 bones, 1 m, radius 0.2) with the given `Profile` fields.
+    fn torso(profile: &str) -> Anatomy {
+        let src = format!(
+            "(root: (name: \"torso\", kind: Torso((chain: (segments: 3, length: 1.0, radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.2, {profile}))))))"
+        );
+        let plan: BodyPlan = ron::from_str(&src).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+    }
+
+    /// The torso's base-layer cones, in model space: (start, end, r0, r1, scale).
+    fn cones(a: &Anatomy) -> Vec<(Vec3, Vec3, f32, f32, Vec3)> {
+        let model = a.skeleton.model_rest();
+        a.primitives
+            .iter()
+            .filter(|p| p.layer == PrimLayer::Base)
+            .filter_map(|p| {
+                let PrimShape::RoundCone { r0, r1, len } = p.shape else { return None };
+                let m = model[p.bone.index()] * p.local.compute_affine();
+                Some((m.transform_point3(Vec3::ZERO), m.transform_point3(Vec3::Y * len), r0, r1, p.local.scale))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_and_identity_section_curves_change_nothing() {
+        let plain = torso("cross: Ellipse(aspect: 0.8)");
+        let identity = torso("cross: Ellipse(aspect: 0.8), width: [(0.0, 1.0), (1.0, 1.0)], depth: [(0.0, 1.0)], drop: [(0.0, 0.0)]");
+        let (a, b) = (cones(&plain), cones(&identity));
+        assert_eq!(a.len(), 3);
+        assert_eq!(a.len(), b.len(), "constant curves keep one piece per bone");
+        for (x, y) in a.iter().zip(&b) {
+            assert!(x.0.distance(y.0) < 1e-5 && x.1.distance(y.1) < 1e-5, "{x:?} vs {y:?}");
+            assert!((x.2 - y.2).abs() < 1e-5 && (x.3 - y.3).abs() < 1e-5 && x.4.distance(y.4) < 1e-5);
+        }
+        let (pa, pb) = (&plain.parts[0].axis, &identity.parts[0].axis);
+        assert_eq!(pa.len(), pb.len());
+        for (s, u) in pa.iter().zip(pb) {
+            assert!(s.radii.distance(u.radii) < 1e-5 && u.drop.abs() < 1e-6);
+        }
+        // The same within 1% by weight, though keys inside the bones split them into pieces.
+        let split = torso("cross: Ellipse(aspect: 0.8), width: [(0.0, 1.0), (0.2, 1.0), (0.5, 1.0), (0.8, 1.0), (1.0, 1.0)]");
+        assert_eq!(cones(&split).len(), 6, "split at the keys");
+        let (m0, m1) = (plain.mass.total, split.mass.total);
+        assert!((m1 / m0 - 1.0).abs() < 0.01, "{m0} kg vs {m1} kg");
+    }
+
+    #[test]
+    fn axis_samples_follow_the_section_curves() {
+        let a = torso("cross: Ellipse(aspect: 0.64), width: [(0.0, 1.0), (1.0, 2.0)], depth: [(0.0, 1.0), (0.5, 0.5), (1.0, 1.0)], drop: [(0.0, 0.0), (1.0, 0.5)]");
+        let axis = &a.parts[0].axis;
+        assert!(cones(&a).len() > 3, "varying sections split the bones");
+        // Ellipse(0.64): width × 0.8, height × 1.25 of the radius.
+        for t in [0.0, 0.25, 0.5, 0.7, 1.0] {
+            let s = sample_axis(axis, t).unwrap();
+            let r = 0.2f32.lerp(0.16, t);
+            let width = 1.0f32.lerp(2.0, t);
+            let depth = if t < 0.5 { 1.0f32.lerp(0.5, t * 2.0) } else { 0.5f32.lerp(1.0, t.mul_add(2.0, -1.0)) };
+            let want = Vec2::new(0.8 * width, 1.25 * depth) * r;
+            // Samples sit at piece ends, so a radius between them is interpolated (≤ 2%).
+            assert!((s.radii - want).abs().max_element() < 0.02 * want.max_element(), "t {t}: {} vs {want}", s.radii);
+            let want_drop = 0.5 * t * r;
+            assert!((s.drop - want_drop).abs() < 0.01f32.mul_add(r, 1e-4), "t {t}: drop {} vs {want_drop}", s.drop);
+            // The ventral surface point is the dropped centre plus the half height.
+            let below = s.surface_toward(std::f32::consts::PI);
+            let want_below = s.model.translation + s.model.rotation * Vec3::Z * (s.drop + s.radii.y);
+            assert!(below.distance(want_below) < 1e-4);
+        }
+    }
+
+    #[test]
+    fn teardrop_hangs_a_keel_under_the_ellipse() {
+        let ellipse = torso("cross: Ellipse(aspect: 0.9)");
+        let teardrop = torso("cross: Teardrop(aspect: 0.9)");
+        assert_eq!(cones(&ellipse).len(), 3);
+        assert_eq!(cones(&teardrop).len(), 6, "a keel under each bone");
+        let (e, d) = (&ellipse.parts[0].axis[1], &teardrop.parts[0].axis[1]);
+        // Same top and width, deeper below.
+        let top = |s: &AxisSample| s.drop - s.radii.y;
+        assert!((top(e) - top(d)).abs() < 1e-5 && (e.radii.x - d.radii.x).abs() < 1e-5);
+        let bottom = |s: &AxisSample| s.drop + s.radii.y;
+        assert!((bottom(d) / bottom(e) - (1.0 + CrossSection::TEARDROP_KEEL)).abs() < 1e-4);
+        // The keel is narrow and adds a little weight.
+        let keel = cones(&teardrop)[1];
+        assert!(keel.2 < cones(&ellipse)[0].2);
+        assert!(teardrop.mass.total > ellipse.mass.total && teardrop.mass.total < ellipse.mass.total * 1.1);
     }
 }

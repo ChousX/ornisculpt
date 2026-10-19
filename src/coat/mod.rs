@@ -281,3 +281,119 @@ impl Plugin for CoatPlugin {
             .add_plugins(MaterialPlugin::<MobMaterial>::default());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, LimbRole, LodLevel, PartAssets, PartLodRules, RegionKind, apply_form, build_anatomy};
+    use crate::num::Idx;
+    use crate::surface::{AdaptiveContour, BodyMeshData, ProceduralHardParts, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
+
+    fn kinds(kinds: &[RegionKind]) -> RegionSelector {
+        RegionSelector::Or(kinds.iter().map(|k| RegionSelector::Kind(*k)).collect())
+    }
+
+    /// Scales on the legs, feathers on the torso, fur on the neck, head and tail; bare skin elsewhere.
+    fn mixed() -> Coat {
+        Coat {
+            coverings: vec![
+                Covering { regions: kinds(&[RegionKind::Neck, RegionKind::Skull, RegionKind::Jaw, RegionKind::TailBase, RegionKind::TailTip]), kind: CoveringKind::Fur(Fur::default()) },
+                Covering { regions: kinds(&[RegionKind::TorsoFront, RegionKind::TorsoMid, RegionKind::TorsoRear, RegionKind::Belly]), kind: CoveringKind::Feathers(Feathers::default()) },
+                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()) },
+            ],
+            ..Coat::default()
+        }
+    }
+
+    /// Every per-vertex stream is empty or one per vertex, so the mesh builds.
+    fn assert_consistent(what: &str, d: &BodyMeshData) {
+        let n = d.positions.len();
+        for (name, len) in [
+            ("normals", d.normals.len()),
+            ("joints", d.joints.len()),
+            ("weights", d.weights.len()),
+            ("mob_data", d.mob_data.len()),
+            ("uvs", d.uvs.len()),
+            ("coverage", d.coverage.len()),
+            ("flow", d.flow.len()),
+            ("cor", d.cor.len()),
+            ("muscle", d.muscle.len()),
+        ] {
+            assert!(len == 0 || len == n, "{what}: {name} has {len} entries for {n} vertices");
+        }
+        assert!(d.indices.iter().all(|&i| i.idx() < n), "{what}: index out of range");
+    }
+
+    #[test]
+    fn scales_fur_and_feathers_share_one_body() {
+        let coat = mixed();
+        for (name, src) in [
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
+        ] {
+            let plan: BodyPlan = ron::from_str(src).unwrap();
+            let live = apply_form(&plan, &Form::default()).unwrap();
+            let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+
+            let m = coat.coverage(&anatomy);
+            assert!(m.scales.0 != 0 && m.fur.0 != 0 && m.feathers.0 != 0, "{name}: a covering lost its regions: {m:?}");
+            assert_eq!(m.scales.0 & m.fur.0, 0, "{name}: scales and fur overlap");
+            assert_eq!(m.scales.0 & m.feathers.0, 0, "{name}: scales and feathers overlap");
+            assert_eq!(m.fur.0 & m.feathers.0, 0, "{name}: fur and feathers overlap");
+            let u = coat.uniform(&anatomy);
+            assert!(u.scales.x > 0.0 && u.fur.x > 0.0 && u.feathers.x > 0.0, "{name}: uniform lost a covering");
+
+            let mut lods = mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &SurfaceSettings::default(), 0).unwrap();
+            for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+                annotate(lod, &coat, &anatomy, level);
+                lod.cor = centres_of_rotation(lod);
+                lod.muscle = muscle_flex(lod, &anatomy, level);
+            }
+            for (lod, level) in lods.iter().zip(LodLevel::ALL) {
+                assert_consistent(&format!("{name} {level:?} skin"), lod);
+                // Each covering shows on the skin somewhere (border smoothing keeps coarse tiers a little under 1).
+                for k in 0..3 {
+                    assert!(lod.coverage.iter().any(|c| c[k] > 0.5), "{name} {level:?}: covering {k} missing from the skin");
+                }
+                let _ = if level == LodLevel::Hero { lod.to_bevy_meshes() } else { lod.to_crowd_meshes() };
+            }
+            let hero = build_coat_meshes(&coat, &anatomy, LodLevel::Hero.pick(&lods), LodLevel::Hero);
+            let shells = hero.shells.as_ref().unwrap_or_else(|| panic!("{name}: no fur shells"));
+            let cards = hero.feathers.as_ref().unwrap_or_else(|| panic!("{name}: no feather cards"));
+            assert_consistent(&format!("{name} shells"), shells);
+            assert_consistent(&format!("{name} feathers"), cards);
+            // Shells and cards reach the GPU with their own coordinates in UV0 (shell height,
+            // card across/along), not the skin's coat weights.
+            for (what, d) in [("shells", shells), ("feathers", cards)] {
+                let mesh = d.to_bevy_mesh();
+                let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else {
+                    panic!("{name} {what}: no UV0");
+                };
+                assert_eq!(uv, &d.uvs, "{name} {what}: UV0 replaced");
+            }
+            for level in [LodLevel::Near, LodLevel::Far] {
+                let c = build_coat_meshes(&coat, &anatomy, level.pick(&lods), level);
+                assert!(c.shells.is_none() && c.feathers.is_none(), "{name} {level:?}: crowd tiers shade coverings on the skin");
+            }
+        }
+    }
+
+    #[test]
+    fn later_coverings_take_regions() {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let coat = Coat {
+            coverings: vec![
+                Covering { regions: RegionSelector::All, kind: CoveringKind::Fur(Fur::default()) },
+                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()) },
+            ],
+            ..Coat::default()
+        };
+        let m = coat.coverage(&anatomy);
+        let legs = RegionSelector::Role(LimbRole::Locomotor).mask(&anatomy);
+        assert_eq!(m.scales, legs);
+        assert_eq!(m.fur.0, RegionSelector::All.mask(&anatomy).0 & !legs.0);
+    }
+}

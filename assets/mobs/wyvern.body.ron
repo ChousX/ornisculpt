@@ -26,6 +26,8 @@
                             jaw: Some((segments: 1, length: 0.34)),
                             eye_spacing: 0.7,
                             eye_lateral: 0.6,
+                            // A long, flat, narrow snout.
+                            muzzle: (base: (0.65, 0.5), tip: (0.45, 0.28), rise: 0.05, cheek: 0.4, nostrils: 0.6, jaw_depth: 1.2, jaw_width: 1.2),
                         )),
                         offset: (rotate_deg: (30.0, 0.0, 0.0)),
                         detail: Always,

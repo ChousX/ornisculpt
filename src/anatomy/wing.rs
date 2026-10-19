@@ -529,7 +529,7 @@ fn trailing_point(b: &AnatomyBuilder, trailing: Trailing, ax: &Axes, at: &Attach
         let dorsal = s.model.rotation * Vec3::NEG_Z;
         let side = (s.model.rotation * Vec3::X) * ax.out.x.signum();
         let normal = (dorsal * a.cos() + side * a.sin()).normalize();
-        return (s.model.translation + normal * s.radius_toward(a) * 0.9, Some(s.bone));
+        return (s.centre() + normal * s.radius_toward(a) * 0.9, Some(s.bone));
     }
     (ax.root - ax.fwd * chord.max(span * 0.3), at.bone)
 }

@@ -30,6 +30,8 @@
                             jaw: Some((segments: 1, length: 0.13)),
                             eye_spacing: 0.6,
                             eye_lateral: 0.3,
+                            // A blunt, nearly parallel-sided muzzle below a clear stop.
+                            muzzle: (base: (0.55, 0.5), tip: (0.47, 0.4), drop: 3.0, jaw_depth: 1.1),
                         )),
                         detail: Always,
                         children: [

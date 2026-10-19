@@ -23,6 +23,22 @@ pub struct Primitive {
     pub region: RegionId,
     /// Coarsest level this primitive appears in (also gated by its part's LOD).
     pub lod: LodLevel,
+    /// How [`measure_mass`](super::measure_mass) weighs it where it overlaps its neighbours.
+    pub weigh: Weigh,
+}
+
+/// Overlap correction for weighing a primitive (the smooth union counts every volume once; the
+/// mass sums primitives).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Weigh {
+    /// Its whole volume.
+    #[default]
+    Whole,
+    /// A round cone continuing the previous piece of the same section: the sphere where they
+    /// join (its start cap and the previous piece's end cap) is already weighed.
+    Continues,
+    /// Only this fraction of its volume lies outside the shapes it is blended onto.
+    Fraction(f32),
 }
 
 /// Shapes are aligned to local +Y where they have an axis.

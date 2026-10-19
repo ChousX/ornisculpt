@@ -6,8 +6,16 @@
     root: (
         name: "torso",
         kind: Torso((
-            // Croup → loin → barrel → chest; deep, slightly narrower than tall.
-            chain: (segments: 4, length: 1.3, radius: (curve: [(0.0, 0.85), (0.3, 0.86), (0.6, 1.0), (0.85, 0.98), (1.0, 0.82)], scale: 0.3, cross: Ellipse(aspect: 0.82))),
+            // Croup → loin → barrel → chest; deep, slightly narrower than tall. The sections
+            // keep the back flat (each `drop` ≈ (depth − 1) × 1.1, the ellipse's height
+            // factor) while the underline tucks up at the flank and hangs low at the girth and
+            // the brisket; wide quarters and barrel, a narrow chest between the forelegs.
+            chain: (segments: 4, length: 1.3, radius: (
+                curve: [(0.0, 0.85), (0.3, 0.86), (0.6, 1.0), (0.85, 0.98), (1.0, 0.82)], scale: 0.3, cross: Ellipse(aspect: 0.82),
+                width: [(0.0, 1.1), (0.2, 0.95), (0.55, 1.12), (0.85, 0.88), (1.0, 0.8)],
+                depth: [(0.0, 1.05), (0.2, 0.85), (0.5, 1.12), (0.75, 1.28), (0.9, 1.28), (1.0, 1.1)],
+                drop: [(0.0, 0.05), (0.2, -0.17), (0.5, 0.13), (0.75, 0.31), (0.9, 0.31), (1.0, 0.11)],
+            )),
             arch: [(0.0, 0.0), (0.3, -0.03), (0.6, -0.05), (1.0, 0.0)],
             belly: 0.3,
         )),
@@ -16,7 +24,7 @@
             (
                 // Carried ~45° up; thick at the base, narrowing to the throatlatch.
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 3, length: 0.7, radius: (curve: [(0.0, 1.0), (0.6, 0.62), (1.0, 0.5)], scale: 0.2, cross: Ellipse(aspect: 0.6)), curl: -25.0))),
+                kind: Chain((role: Neck, chain: (segments: 3, length: 0.7, radius: (curve: [(0.0, 1.0), (0.6, 0.6), (1.0, 0.4)], scale: 0.2, cross: Ellipse(aspect: 0.6)), curl: -25.0))),
                 attach: End,
                 offset: (rotate_deg: (-50.0, 0.0, 0.0), translate: (0.0, 0.0, 0.08)),
                 detail: Always,
@@ -25,13 +33,26 @@
                         // ≈ 0.4 of withers height, long and narrow, held angled down.
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.1, 0.11, 0.13)),
+                            skull: (shape: Ellipsoid, size: (0.13, 0.115, 0.13)),
                             snout: 0.33,
                             jaw: Some((segments: 1, length: 0.38)),
-                            eye_spacing: 0.85,
+                            eye_spacing: 0.74,
                             eye_lateral: 0.9,
+                            pitch: 40.0,
+                            // Long and wedge-shaped: deep, flat cheeks at the back, a straight nose
+                            // line running on from the forehead, flared nostrils and soft lips.
+                            muzzle: (
+                                base: (0.8, 0.75),
+                                tip: (0.5, 0.42),
+                                rise: 0.22,
+                                drop: 5.0,
+                                cheek: 1.0,
+                                nostrils: 1.5,
+                                lips: 0.6,
+                                jaw_depth: 1.8,
+                            ),
                         )),
-                        offset: (rotate_deg: (35.0, 0.0, 0.0)),
+                        offset: (rotate_deg: (35.0, 0.0, 0.0), translate: (0.0, 0.0, 0.06)),
                         detail: Always,
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.025)), attach: Eye, mirror: true),
@@ -51,7 +72,7 @@
                     end: Hoof(split: false),
                     bends: [(-32.0, 0.0), (34.0, 0.0), (0.0, 0.0), (38.0, 0.0)],
                 )),
-                attach: Surface(t: 0.88, around_deg: 140.0),
+                attach: Surface(t: 0.88, around_deg: 130.0),
                 mirror: true,
                 detail: Always,
             ),

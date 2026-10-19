@@ -59,7 +59,7 @@ impl Piece<'_> {
         let tip = if y < 0.0 { -axis } else { axis };
         let phi = over * std::f32::consts::FRAC_PI_2;
         let dir = (around * phi.cos() + tip * phi.sin()).normalize();
-        let origin = sample.model.translation;
+        let origin = sample.centre();
         let at = |dist: f32| Vec3A::from(self.stored(origin + dir * dist));
         let estimate = sample.radius_toward(theta);
         let limit = f32::mul_add(estimate, 3.0, 0.05);

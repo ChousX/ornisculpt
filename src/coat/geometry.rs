@@ -89,8 +89,9 @@ pub fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<
         // Covered triangles only reference complete vertices.
         for (i, v) in used.iter().filter_map(|&v| Some((v.idx(), body.vertex(v.idx())?))) {
             out.push_vertex(v);
+            // No coverage on shells or cards: a skin mesh with coverage puts coat weights in UV0
+            // in place of these coordinates (see `BodyMeshData::build_mesh`).
             out.uvs.push([h, 0.0]);
-            out.coverage.push(body.coverage.get(i).copied().unwrap_or([0.0, 1.0, 0.0]));
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
             if let Some(c) = body.cor.get(i) {
                 out.cor.push(*c);
@@ -288,7 +289,6 @@ pub fn feather_cards(
             ] {
                 out.push_vertex(Vertex { position, normal: n, ..va });
                 out.uvs.push(uv);
-                out.coverage.push([0.0, 0.0, 1.0]);
                 out.flow.push(along.extend(0.0).to_array());
                 // A card turns about its root vertex's centre (it shares that vertex's weights).
                 if let Some(c) = body.cor.get(a.idx()) {

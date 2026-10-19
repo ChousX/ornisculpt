@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::{Anatomy, CrossSection, PrimLayer, PrimOp, PrimShape};
+use super::{Anatomy, CrossSection, PrimLayer, PrimOp, PrimShape, Weigh};
 use crate::num::Idx;
 
 /// Water, kg/m³: a body of density `1.0` weighs what its volume of water would.
@@ -48,7 +48,7 @@ pub fn measure(a: &Anatomy) -> BodyMass {
     for (p, d) in a.primitives.iter().zip(density) {
         let Some(bone) = model.get(p.bone.index()) else { continue };
         let m = *bone * p.local.compute_affine();
-        let (volume, centroid) = volume(&p.shape, &m);
+        let (volume, centroid) = weighed(volume(&p.shape, &m), &p.shape, p.weigh, &m);
         let layer = if p.layer == PrimLayer::Fat { 0.9 } else { 1.0 };
         // A stamp weighs as its whole footprint ellipsoid: the muscle or fat it stands for lies
         // mostly under the surface it raises.
@@ -71,6 +71,21 @@ pub fn measure(a: &Anatomy) -> BodyMass {
     BodyMass { total, centre, bones }
 }
 
+/// Applies a primitive's overlap correction to its `(volume, centroid)`.
+fn weighed((volume, centroid): (f32, Vec3), shape: &PrimShape, weigh: Weigh, place: &Affine3A) -> (f32, Vec3) {
+    match (weigh, shape) {
+        (Weigh::Fraction(f), _) => (volume * f.clamp(0.0, 1.0), centroid),
+        // The joint sphere (both caps) sits at the cone's start.
+        (Weigh::Continues, PrimShape::Capsule { r0, .. } | PrimShape::RoundCone { r0, .. }) => {
+            let joint = (4.0 / 3.0 * PI * r0.powi(3) * place.matrix3.determinant().abs()).min(volume * 0.9);
+            let rest = volume - joint;
+            let at = place.transform_point3(Vec3::ZERO);
+            (rest, (centroid * volume - at * joint) / rest)
+        }
+        (Weigh::Whole | Weigh::Continues, _) => (volume, centroid),
+    }
+}
+
 /// Volume (m³) and centroid (model space) of a primitive placed by `m`.
 fn volume(shape: &PrimShape, place: &Affine3A) -> (f32, Vec3) {
     let scale = place.matrix3.determinant().abs();
@@ -91,10 +106,9 @@ fn volume(shape: &PrimShape, place: &Affine3A) -> (f32, Vec3) {
             (8.0 * extent.x * extent.y * extent.z * scale, at(Vec3::ZERO))
         }
         PrimShape::Sweep { points, radii, cross } => {
-            let squash = match cross {
-                CrossSection::Round => 1.0,
-                CrossSection::Ellipse { aspect } | CrossSection::Flat { aspect } | CrossSection::Teardrop { aspect } => *aspect,
-            };
+            // A teardrop's keel adds a little under the ellipse (see `sdf::sweep`).
+            let keel = if matches!(cross, CrossSection::Teardrop { .. }) { 0.5f32.mul_add(CrossSection::TEARDROP_KEEL, 1.0) } else { 1.0 };
+            let squash = cross.aspect() * keel;
             let (mut total, mut moment) = (0.0, Vec3::ZERO);
             for (i, [p0, p1]) in points.array_windows().enumerate() {
                 let (r0, r1) = (radii.get(i).copied().unwrap_or(0.0), radii.get(i + 1).copied().unwrap_or(0.0));

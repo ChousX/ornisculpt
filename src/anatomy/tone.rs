@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::builder::{frame_y_z, mirror_transform};
 use super::{
-    AnatomyBuilder, AttachSlot, AxisSample, BuildCx, ChainRole, LimbRole, LodLevel, PartKind, PartSlots,
+    AnatomyBuilder, AttachSlot, AxisSample, BuildCx, ChainRole, HeadParams, LimbRole, LodLevel, PartKind, PartSlots,
     PrimLayer, PrimOp, PrimShape, Tone,
 };
 
@@ -102,12 +102,10 @@ fn place(at: StampAt, mirrored: bool, slots: &PartSlots) -> Option<Placement> {
         StampAt::Surface { t, around_deg } => {
             let s = slots.sample(t)?;
             let a = (if mirrored { -around_deg } else { around_deg }).to_radians();
-            let dorsal = s.model.rotation * Vec3::NEG_Z;
-            let side = s.model.rotation * Vec3::X;
-            let normal = (dorsal * a.cos() + side * a.sin()).normalize();
+            let normal = s.normal_toward(a);
             Some(Placement {
                 bone: s.bone,
-                point: s.model.translation + normal * s.radius_toward(a),
+                point: s.surface_toward(a),
                 normal,
                 along: s.model.rotation * Vec3::Y,
                 radius: s.min_radius(),
@@ -276,7 +274,7 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
             s
         }
         PartKind::Head(h) if h.face.is_some() => face_stamps(),
-        PartKind::Head(_) => vec![
+        PartKind::Head(h) => vec![
             skull([0.45, 0.75, -0.55], K::Landmark, [0.50, 0.35, 0.25], 0.10), // brow
             skull([0.85, 0.45, 0.10], K::Landmark, [0.30, 0.50, 0.25], 0.08),  // cheekbone
             skull([0.80, 0.10, 0.55], K::Muscle, [0.35, 0.50, 0.30], 0.10),    // jaw muscle
@@ -295,13 +293,7 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
                 depth: 0.12,
                 mirror: true,
             }, // eye socket
-            Stamp {
-                at: StampAt::Slot { slot: AttachSlot::Nose, offset: Vec3::new(0.25, -0.1, 0.0) },
-                kind: K::Hollow,
-                size: Vec3::new(0.12, 0.15, 0.12),
-                depth: 0.06,
-                mirror: true,
-            }, // nostril
+            nostril(h), // nostril
         ],
         PartKind::Digits(_) | PartKind::Mass(_) | PartKind::Hard(_) | PartKind::Sculpt(_) | PartKind::Wing(_) => vec![],
     }
@@ -349,4 +341,20 @@ pub fn upright_torso_stamps() -> Vec<Stamp> {
         surf(0.40, 180.0, K::Fat, [0.55, 0.70, 0.45], 0.08, false),   // belly
         surf(0.30, 95.0, K::Fat, [0.40, 0.60, 0.35], 0.04, true),     // hip / love handle
     ]
+}
+
+/// The nostril hollow at the tip of an animal's snout. Flared nostrils (`muzzle.nostrils`) open
+/// wider apart, toward the snout's sides, and larger.
+fn nostril(h: &HeadParams) -> Stamp {
+    let n = h.muzzle.nostrils.clamp(0.0, 2.0);
+    let (offset, size) = if n > 0.0 {
+        // Stamp units are the skull's smallest radius; the snout tip's half size is in skull heights.
+        let s = h.skull.size;
+        let unit = s.min_element().max(1e-3);
+        let tip = h.muzzle.tip * s.y / unit;
+        (Vec3::new(tip.x * 0.5, -0.1, -tip.y * 0.25), Vec3::new(0.12, 0.05f32.mul_add(n, 0.15), 0.12) * 0.3f32.mul_add(n, 1.0))
+    } else {
+        (Vec3::new(0.25, -0.1, 0.0), Vec3::new(0.12, 0.15, 0.12))
+    };
+    Stamp { at: StampAt::Slot { slot: AttachSlot::Nose, offset }, kind: StampKind::Hollow, size, depth: 0.06, mirror: true }
 }

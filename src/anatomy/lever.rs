@@ -68,9 +68,11 @@ pub enum Lever {
     Spread,
     Webbing,
 
-    // --- Mass ----------------------------------------------------------------------------------
+    // --- Mass (and chains: `Width` and `Depth` scale the whole section) -----------------------
+    /// Mass: size along X. Chains: section width, a multiplier on the profile's `width` curve.
     Width,
     Height,
+    /// Mass: size along Z. Chains: section depth, a multiplier on the profile's `depth` curve.
     Depth,
 
     // --- Hard ----------------------------------------------------------------------------------
@@ -136,6 +138,8 @@ const CHAIN: &[Lever] = &[
     Lever::Taper,
     Lever::Curl,
     Lever::Flatten,
+    Lever::Width,
+    Lever::Depth,
     Lever::Segments,
 ];
 
@@ -281,6 +285,16 @@ fn apply_kind_lever(kind: &mut PartKind, lever: Lever, value: f32) -> Result<(),
                 _ => d.webbing = (d.webbing + f).clamp(0.0, 1.0),
             }
         }
+        L::Width | L::Depth if chain_mut(kind).is_some() => {
+            let c = chain_mut(kind).ok_or(unsupported)?;
+            let curve = if lever == L::Width { &mut c.radius.width } else { &mut c.radius.depth };
+            if curve.is_empty() {
+                curve.push((0.0, 1.0));
+            }
+            for (_, v) in curve.iter_mut() {
+                *v *= f;
+            }
+        }
         L::Width | L::Height | L::Depth => {
             let PartKind::Mass(m) = kind else { return Err(unsupported) };
             match lever {
@@ -388,5 +402,24 @@ mod tests {
         assert!(!limb.contains(&Lever::Snout));
         let claw = PartKind::Hard(HardParams::default()).levers();
         assert!(!claw.contains(&Lever::Tines) && !claw.contains(&Lever::Muscle));
+    }
+
+    #[test]
+    fn width_and_depth_scale_chain_sections() {
+        let node = |kind: &str| ron::from_str::<PartNode>(&format!("(name: \"p\", kind: {kind}(()))")).unwrap();
+        let mut torso = node("Torso");
+        torso.apply_lever(Lever::Width, 1.5).unwrap();
+        torso.apply_lever(Lever::Depth, 0.5).unwrap();
+        torso.apply_lever(Lever::Depth, 2.0).unwrap();
+        let PartKind::Torso(t) = &torso.kind else { panic!() };
+        assert_eq!(t.chain.radius.width, vec![(0.0, 1.5)]);
+        assert_eq!(t.chain.radius.depth, vec![(0.0, 1.0)]);
+        assert!(torso.apply_lever(Lever::Height, 2.0).is_err());
+        // Masses keep their own meaning.
+        let mut mass = node("Mass");
+        let before = match &mass.kind { PartKind::Mass(m) => m.size, _ => panic!() };
+        mass.apply_lever(Lever::Width, 2.0).unwrap();
+        let PartKind::Mass(m) = &mass.kind else { panic!() };
+        assert_eq!(m.size.x, before.x * 2.0);
     }
 }

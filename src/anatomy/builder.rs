@@ -9,7 +9,7 @@ use super::{
     HardPart, JointLimit, LegInfo, LimbRole, LodLevel, LookDef, MAX_BONES, PartKind,
     PartLodRules, PartNode, PartPath, PrimLayer, PrimOp, PrimShape, Primitive, RegionDef,
     PartAssets, RegionId, RegionKind, Sheet, Side, SocketDef, SocketKind, SpringChainDef, Stance, Tone,
-    WingRig,
+    Weigh, WingRig,
 };
 
 /// Implemented by every part kind's params. Emits bones, primitives, sockets and rig info into the
@@ -55,13 +55,37 @@ pub struct AxisSample {
     pub model: Transform,
     /// Cross-section radii: x = lateral (local X), y = dorsal/ventral (local Z).
     pub radii: Vec2,
+    /// Ventral offset (local +Z, metres) of the cross-section's centre from the axis: a chest
+    /// hanging below the spine (see [`Profile::drop`](super::Profile::drop)).
+    pub drop: f32,
 }
 
 impl AxisSample {
     /// Round cross-section.
     #[must_use]
     pub const fn round(t: f32, bone: BoneId, model: Transform, radius: f32) -> Self {
-        Self { t, bone, model, radii: Vec2::splat(radius) }
+        Self { t, bone, model, radii: Vec2::splat(radius), drop: 0.0 }
+    }
+
+    /// Centre of the cross-section (model space): the axis point moved by `drop`.
+    #[must_use]
+    pub fn centre(&self) -> Vec3 {
+        self.model.translation + self.model.rotation * Vec3::Z * self.drop
+    }
+
+    /// Outward direction `around` the section (radians; 0 = dorsal, π/2 = local +X).
+    #[must_use]
+    pub fn normal_toward(&self, around: f32) -> Vec3 {
+        let dorsal = self.model.rotation * Vec3::NEG_Z;
+        let side = self.model.rotation * Vec3::X;
+        (dorsal * around.cos() + side * around.sin()).normalize()
+    }
+
+    /// Surface point `around` the section (radians; 0 = dorsal, π/2 = local +X): from the
+    /// section's centre out along [`normal_toward`](Self::normal_toward).
+    #[must_use]
+    pub fn surface_toward(&self, around: f32) -> Vec3 {
+        self.centre() + self.normal_toward(around) * self.radius_toward(around)
     }
 
     /// Distance from the axis to the surface at `around` (radians; 0 = dorsal, π/2 = left).
@@ -108,14 +132,11 @@ impl PartSlots {
             AttachSlot::Surface { t, around_deg } => {
                 let s = self.sample(t)?;
                 let a = around_deg.to_radians();
-                let dorsal = s.model.rotation * Vec3::NEG_Z;
-                let left = s.model.rotation * Vec3::X;
-                let normal = (dorsal * a.cos() + left * a.sin()).normalize();
+                let normal = s.normal_toward(a);
                 let along = s.model.rotation * Vec3::Y;
                 Some(AttachPoint {
                     bone: Some(s.bone),
-                    model: Transform::from_translation(s.model.translation + normal * s.radius_toward(a))
-                        .with_rotation(frame_y_z(normal, along)),
+                    model: Transform::from_translation(s.surface_toward(a)).with_rotation(frame_y_z(normal, along)),
                 })
             }
             fixed => self.fixed.iter().find(|(s, _)| *s == fixed).map(|(_, p)| *p),
@@ -146,6 +167,7 @@ pub fn sample_axis(axis: &[AxisSample], t: f32) -> Option<AxisSample> {
         model: Transform::from_translation(a.model.translation.lerp(b.model.translation, k))
             .with_rotation(a.model.rotation.slerp(b.model.rotation, k)),
         radii: a.radii.lerp(b.radii, k),
+        drop: a.drop.lerp(b.drop, k),
     })
 }
 
@@ -414,13 +436,20 @@ impl AnatomyBuilder {
             }
         }
         let local = relative(&self.bone_model(bone), &self.to_stored(model));
-        self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod });
+        self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod, weigh: Weigh::Whole });
     }
 
     /// Limits the most recent primitive's blend to within `reach` of `point` (primitive-local).
     pub fn anchor_last_blend(&mut self, point: Vec3, reach: f32) {
         if let Some(p) = self.anatomy.primitives.last_mut() {
             p.blend_anchor = Some((point, reach));
+        }
+    }
+
+    /// Sets how the most recent primitive is weighed (see [`Weigh`]).
+    pub fn weigh_last(&mut self, weigh: Weigh) {
+        if let Some(p) = self.anatomy.primitives.last_mut() {
+            p.weigh = weigh;
         }
     }
 

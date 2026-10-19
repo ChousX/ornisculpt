@@ -121,6 +121,11 @@ impl ChainParams {
 }
 
 /// Radius along a chain: `curve` maps `t ∈ 0..=1` to a relative radius, multiplied by `scale`.
+///
+/// The section curves (`width`, `depth`, `drop`) shape the cross-section along the chain on top
+/// of `cross`, in the same `(t, value)` keys as `curve`; empty = no change. Where they vary
+/// inside a bone, the bone's surface is built from two or three pieces (the skeleton is
+/// unchanged).
 #[derive(Reflect, Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Profile {
@@ -128,6 +133,16 @@ pub struct Profile {
     /// Base radius in metres.
     pub scale: f32,
     pub cross: CrossSection,
+    /// Lateral (side to side) multiplier along `t`: a barrel that swells, a waist that narrows.
+    pub width: Vec<(f32, f32)>,
+    /// Dorsal-ventral (top to bottom) multiplier along `t`.
+    pub depth: Vec<(f32, f32)>,
+    /// Ventral shift of the section's centre along `t`, in units of the radius at `t` (`curve ×
+    /// scale`): the section hangs below the axis while the axis (and the bones) stay put. With
+    /// `depth`, it deepens a chest downward and keeps the topline flat: a section `depth` `d`
+    /// times as deep keeps its top in place with `drop = (d − 1) × h`, where `h` is the cross's
+    /// height factor (`1` round, `1/√aspect` for the others). Negative values raise the section.
+    pub drop: Vec<(f32, f32)>,
 }
 
 impl Default for Profile {
@@ -136,7 +151,18 @@ impl Default for Profile {
             curve: vec![(0.0, 1.0), (1.0, 0.7)],
             scale: 0.08,
             cross: CrossSection::Round,
+            width: Vec::new(),
+            depth: Vec::new(),
+            drop: Vec::new(),
         }
+    }
+}
+
+impl Profile {
+    /// No section curves: every bone is one plain piece of the `cross` section.
+    #[must_use]
+    pub const fn is_plain(&self) -> bool {
+        self.width.is_empty() && self.depth.is_empty() && self.drop.is_empty()
     }
 }
 
@@ -148,14 +174,37 @@ pub enum CrossSection {
     Ellipse {
         aspect: f32,
     },
-    /// Strongly flattened: paddles, beaver tails, ear flaps.
+    /// Strongly flattened: paddles, beaver tails, ear flaps. Built as an ellipse; the name
+    /// documents intent (an `aspect` far from `1`).
     Flat {
         aspect: f32,
     },
-    /// Rounded top, narrow keel below: bird chests, fish bodies, dorsal ridges.
+    /// Rounded top, narrow keel below: bird chests, fish bodies, dorsal ridges. An `aspect`
+    /// ellipse with a narrower keel blended along its underside, reaching
+    /// [`TEARDROP_KEEL`](Self::TEARDROP_KEEL) further down.
     Teardrop {
         aspect: f32,
     },
+}
+
+impl CrossSection {
+    /// How much deeper (ventrally, as a fraction of the ellipse's half height) a teardrop's
+    /// keel reaches than its ellipse.
+    pub const TEARDROP_KEEL: f32 = 0.2;
+
+    /// A teardrop's keel, relative to its main ellipse: half width (x) and half height (y), and
+    /// the ventral offset of its centre (z, of the half height). Its bottom is
+    /// [`TEARDROP_KEEL`](Self::TEARDROP_KEEL) below the ellipse's.
+    pub const KEEL: Vec3 = Vec3::new(0.5, 0.7, 1.0 + Self::TEARDROP_KEEL - 0.7);
+
+    /// Width / height of the section's main ellipse.
+    #[must_use]
+    pub const fn aspect(self) -> f32 {
+        match self {
+            Self::Round => 1.0,
+            Self::Ellipse { aspect } | Self::Flat { aspect } | Self::Teardrop { aspect } => aspect,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -216,9 +265,65 @@ pub struct HeadParams {
     pub eye_spacing: f32,
     /// Eye placement: `0.0` = forward-facing (predator), `1.0` = side-facing (prey).
     pub eye_lateral: f32,
+    /// How far the head is carried nose-down, in degrees from level (`0.0` = the skull's long
+    /// axis level, as in dogs; horses and other grazers carry the face steeply).
+    pub pitch: f32,
     /// A flat, primate face (nose, brow, cheekbones, lips, mandible and chin) in place of a
     /// muzzle, with the ears on the sides of the head. `None` = an animal head.
     pub face: Option<FaceParams>,
+    /// Shape of an animal's muzzle and jaw (ignored under a `face`). The default is the plain
+    /// round, tapering snout.
+    pub muzzle: MuzzleParams,
+}
+
+/// The muzzle of an animal [`HeadParams`]: its snout and lower jaw.
+///
+/// The snout runs `snout` metres forward of the skull. Sizes are fractions of the skull's half
+/// height (`skull.size.y`) unless noted; the defaults give the plain round snout.
+#[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct MuzzleParams {
+    /// Half (width, height) of the snout where it leaves the skull.
+    pub base: Vec2,
+    /// Half (width, height) of the snout at its tip.
+    pub tip: Vec2,
+    /// Height of the snout's axis where it leaves the skull, up from the skull's centre line
+    /// (`-0.15` = a little low, leaving a stop under the brow; raise it until the snout's top
+    /// runs on from the forehead for a straight horse profile).
+    pub rise: f32,
+    /// Downward tilt of the snout in degrees (the nose line dropping toward the nose).
+    pub drop: f32,
+    /// Dish: how far the bridge of the nose sinks between the eyes and the nostrils (Arab
+    /// horses, pugs). `0.0` = straight.
+    pub dish: f32,
+    /// Broad, flat cheeks over the back of the lower jaw (horses, cattle, deer). `0.0` = none,
+    /// `1.0` = the jowl reaches half the skull's height below it.
+    pub cheek: f32,
+    /// Flared nostrils at the end of the snout, `0.0` = none, `1.0` = a horse's.
+    pub nostrils: f32,
+    /// Fleshy lips round the end of the snout and the jaw, `0.0` = none.
+    pub lips: f32,
+    /// Depth (top to bottom) of the lower jaw, relative to the plain jaw.
+    pub jaw_depth: f32,
+    /// Width of the lower jaw, relative to the plain jaw.
+    pub jaw_width: f32,
+}
+
+impl Default for MuzzleParams {
+    fn default() -> Self {
+        Self {
+            base: Vec2::splat(0.55),
+            tip: Vec2::splat(0.35),
+            rise: -0.15,
+            drop: 0.0,
+            dish: 0.0,
+            cheek: 0.0,
+            nostrils: 0.0,
+            lips: 0.0,
+            jaw_depth: 1.0,
+            jaw_width: 1.0,
+        }
+    }
 }
 
 /// Facial features of a [`HeadParams::face`], each a fraction of the skull's size (`1.0` = a
