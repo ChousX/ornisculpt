@@ -14,20 +14,24 @@ pub struct PartPath(pub String);
 impl PartPath {
     pub const SEPARATOR: char = '/';
 
+    #[must_use]
     pub fn root(name: &str) -> Self {
         Self(name.to_owned())
     }
 
+    #[must_use]
     pub fn child(&self, name: &str) -> Self {
         Self(format!("{}{}{name}", self.0, Self::SEPARATOR))
     }
 
     /// Copy suffix for symmetry: `limb.front` → `limb.front.l`.
+    #[must_use]
     pub fn with_suffix(&self, suffix: &str) -> Self {
         Self(format!("{}.{suffix}", self.0))
     }
 
-    pub fn parent(&self) -> Option<PartPath> {
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
         self.0.rsplit_once(Self::SEPARATOR).map(|(p, _)| Self(p.to_owned()))
     }
 
@@ -35,14 +39,14 @@ impl PartPath {
         self.0.split(Self::SEPARATOR)
     }
 
+    #[must_use]
     pub fn depth(&self) -> usize {
         self.segments().count()
     }
 
-    pub fn is_ancestor_of(&self, other: &PartPath) -> bool {
-        other.0.len() > self.0.len()
-            && other.0.starts_with(&self.0)
-            && other.0[self.0.len()..].starts_with(Self::SEPARATOR)
+    #[must_use]
+    pub fn is_ancestor_of(&self, other: &Self) -> bool {
+        other.0.strip_prefix(self.0.as_str()).is_some_and(|rest| rest.starts_with(Self::SEPARATOR))
     }
 }
 

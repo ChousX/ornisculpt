@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use super::Gait;
 use super::stages::{Frame, Sim, leg_length};
 use crate::anatomy::{Anatomy, MAX_CROWD_BONES};
+use crate::num::{Idx, Saturate, ToF32};
 
 /// Frames recorded per gait cycle.
 pub const BAKE_FRAMES: usize = 24;
@@ -34,6 +35,7 @@ pub struct BakedClip {
 impl BakedMotion {
     /// Matrix `index` of this body's clips as laid out in the crowd atlas: the idle pose, then
     /// every clip's frames in order, `bones` matrices each.
+    #[must_use]
     pub fn matrix(&self, index: usize) -> Option<&[f32; 16]> {
         let bones = self.idle.len();
         if index < bones {
@@ -51,17 +53,19 @@ impl BakedMotion {
     /// together, so the error is negligible.
     pub fn sample_into(&self, mode: usize, phase: f32, idle_weight: f32, out: &mut [[f32; 16]]) {
         let Some(clip) = self.clips.get(mode).filter(|c| !c.frames.is_empty()) else {
-            out[..self.idle.len()].copy_from_slice(&self.idle);
+            for (dst, idle) in out.iter_mut().zip(&self.idle) {
+                *dst = *idle;
+            }
             return;
         };
-        let n = clip.frames.len();
-        let f = (phase - clip.start_phase).rem_euclid(1.0) * n as f32;
-        let (i0, t) = (f.floor() as usize % n, f.fract());
-        let (a, b) = (&clip.frames[i0], &clip.frames[(i0 + 1) % n]);
+        let count = clip.frames.len();
+        let at = (phase - clip.start_phase).rem_euclid(1.0) * count.to_f32();
+        let (i0, t) = (at.floor().sat_usize() % count, at.fract());
+        let (Some(from), Some(to)) = (clip.frames.get(i0), clip.frames.get((i0 + 1) % count)) else { return };
         let (wa, wb, wi) = ((1.0 - t) * (1.0 - idle_weight), t * (1.0 - idle_weight), idle_weight);
-        for (k, dst) in out.iter_mut().take(a.len()).enumerate() {
-            for e in 0..16 {
-                dst[e] = a[k][e] * wa + b[k][e] * wb + self.idle[k][e] * wi;
+        for (((dst, idle), ma), mb) in out.iter_mut().zip(&self.idle).zip(from).zip(to) {
+            for (((d, i), x), y) in dst.iter_mut().zip(idle).zip(ma).zip(mb) {
+                *d = i.mul_add(wi, f32::mul_add(*y, wb, x * wa));
             }
         }
     }
@@ -76,37 +80,45 @@ fn skin_frame(anatomy: &Anatomy, local: &[Transform]) -> SkinFrame {
         .bones
         .iter()
         .map(|b| {
-            let l = &local[b.index()];
+            let l = local.get(b.index()).copied().unwrap_or_default();
             let local = Affine3A::from_rotation_translation(l.rotation, l.translation);
-            let m = match skeleton.bones[b.index()].parent {
-                Some(p) => model[crowd.map[p.index()] as usize] * local,
-                None => local,
-            };
+            let parent = skeleton
+                .get(*b)
+                .and_then(|def| def.parent)
+                .and_then(|p| crowd.map.get(p.index()))
+                .and_then(|c| model.get(c.idx()));
+            let m = parent.map_or(local, |parent| *parent * local);
             model.push(m);
-            (Mat4::from(m) * skeleton.inverse_bind[b.index()]).to_cols_array()
+            let inverse_bind = skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY);
+            (Mat4::from(m) * inverse_bind).to_cols_array()
         })
         .collect()
 }
 
 /// Bakes `gait` on `anatomy`: each mode is walked in a straight line at a representative speed;
 /// after a warm-up, one cycle is recorded.
+#[must_use]
 pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
     debug_assert!(anatomy.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
     // Idle: the rest pose with wings folded by their rest fold.
     let mut rest: Vec<Transform> = anatomy.skeleton.bones.iter().map(|b| b.rest).collect();
     for w in &anatomy.wings {
         for (bone, folded) in &w.bones {
-            let r = &mut rest[bone.index()].rotation;
-            *r = r.slerp(*folded, w.fold);
+            if let Some(r) = rest.get_mut(bone.index()) {
+                r.rotation = r.rotation.slerp(*folded, w.fold);
+            }
         }
     }
     let idle = skin_frame(anatomy, &rest);
     let leg = leg_length(anatomy);
 
-    let clips = (0..gait.modes.len())
-        .map(|m| {
-            let lo = gait.modes[m].min_speed;
-            let speed = gait.modes.get(m + 1).map_or(lo + 1.0, |next| (lo + next.min_speed) * 0.5).max(0.3);
+    let clips = gait
+        .modes
+        .iter()
+        .enumerate()
+        .map(|(m, mode)| {
+            let lo = mode.min_speed;
+            let speed = gait.modes.get(m + 1).map_or(lo + 1.0, |next| f32::midpoint(lo, next.min_speed)).max(0.3);
             let mut root = Affine3A::IDENTITY;
             let mut sim = Sim::new(anatomy, root);
             sim.loco.velocity = Vec3::Z * speed * leg;
@@ -114,10 +126,10 @@ pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
             // One frame to settle the step and its rate, then a cycle per BAKE_FRAMES frames.
             let settle = Frame { a: anatomy, gait, root, dt: 1e-4, time: 0.0, leg };
             sim.frame(&settle, None);
-            let dt = 1.0 / (sim.clock.rate.max(1e-3) * BAKE_FRAMES as f32);
+            let dt = 1.0 / (sim.clock.rate.max(1e-3) * BAKE_FRAMES.to_f32());
             let step = |sim: &mut Sim, root: &mut Affine3A, i: usize| {
                 root.translation += bevy::math::Vec3A::from(sim.loco.velocity * dt);
-                let f = Frame { a: anatomy, gait, root: *root, dt, time: i as f32 * dt, leg };
+                let f = Frame { a: anatomy, gait, root: *root, dt, time: i.to_f32() * dt, leg };
                 sim.frame(&f, None).to_vec()
             };
             for i in 0..BAKE_FRAMES * 3 {

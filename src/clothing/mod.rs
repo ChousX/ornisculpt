@@ -105,6 +105,7 @@ impl Default for Hang {
 
 impl Outfit {
     /// Asset paths of every garment mesh.
+    #[must_use]
     pub fn referenced_meshes(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for g in &self.garments {
@@ -116,6 +117,7 @@ impl Outfit {
     }
 
     /// Palette for the shaders: garment colours (linear) with roughness in w; 8 at most.
+    #[must_use]
     pub fn palette(&self) -> [Vec4; MAX_GARMENTS] {
         let mut out = [Vec4::new(0.5, 0.5, 0.5, 0.85); MAX_GARMENTS];
         for (o, g) in out.iter_mut().zip(&self.garments) {
@@ -150,7 +152,7 @@ impl AssetLoader for OutfitLoader {
     type Settings = ();
     type Error = OutfitLoaderError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>) -> Result<Outfit, Self::Error> {
+    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Outfit, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         Ok(ron::de::from_bytes(&bytes)?)

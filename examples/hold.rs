@@ -21,6 +21,7 @@ use ornisculpt::anatomy::{LodLevel, Side, SocketKind};
 use ornisculpt::equip::{HeldBy, Holding, SocketSel};
 use ornisculpt::mob::{BodyReady, ForceTier, GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::motion::MobIntent;
+use ornisculpt::num::{Saturate, ToF32};
 
 const BODIES: [&str; 4] = ["mobs/biped.body.ron", "mobs/quadruped.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
 
@@ -77,8 +78,7 @@ struct Orbit {
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
         match v[..] {
             [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
             _ => Self { yaw: 0.5, pitch: 0.35, distance: 8.0, target: Vec3::new(0.0, 0.6, 0.0) },
@@ -124,12 +124,12 @@ fn setup(
         Ok("far") => Some(LodLevel::Far),
         _ => None,
     };
-    let side = (count.0 as f32).sqrt().ceil() as usize;
-    for i in 0..count.0 {
-        let centre = Vec3::new((i % side) as f32 * 2.5, 0.0, (i / side) as f32 * 2.5) - Vec3::new(side as f32 * 1.25, 0.0, side as f32 * 1.25);
+    let side = count.0.to_f32().sqrt().ceil().sat_usize();
+    for (i, path) in BODIES.iter().cycle().take(count.0).enumerate() {
+        let centre = Vec3::new((i % side).to_f32() * 2.5, 0.0, (i / side).to_f32() * 2.5) - Vec3::new(side.to_f32() * 1.25, 0.0, side.to_f32() * 1.25);
         let mut mob = commands.spawn((
-            Mob::new(assets.load(BODIES[i % BODIES.len()])),
-            Wanderer { centre, seed: i as f32 * 1.7 },
+            Mob::new(assets.load(*path)),
+            Wanderer { centre, seed: i.to_f32() * 1.7 },
             Transform::from_translation(centre),
         ));
         if let Some(tier) = forced {
@@ -185,7 +185,7 @@ fn wander(time: Res<Time>, mut mobs: Query<(&Wanderer, &Transform, &mut MobInten
         let to_centre = w.centre - tf.translation;
         let tangent = Vec3::new(-to_centre.z, 0.0, to_centre.x).normalize_or_zero();
         let pull = to_centre.normalize_or_zero() * (to_centre.length() - 0.8);
-        let pause = ((t * 0.2 + w.seed).sin() > 0.8) as u8 as f32;
+        let pause = f32::from(u8::from(f32::mul_add(t, 0.2, w.seed).sin() > 0.8));
         intent.velocity = (tangent * 0.7 + pull) * (1.0 - pause);
     }
 }
@@ -232,10 +232,10 @@ fn orbit_camera(
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     if buttons.pressed(MouseButton::Left) {
-        orbit.yaw -= motion.delta.x * 0.008;
-        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
+        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 200.0);
+    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 200.0);
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);

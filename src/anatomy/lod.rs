@@ -11,7 +11,17 @@ pub enum LodLevel {
 }
 
 impl LodLevel {
-    pub const ALL: [LodLevel; 3] = [LodLevel::Hero, LodLevel::Near, LodLevel::Far];
+    pub const ALL: [Self; 3] = [Self::Hero, Self::Near, Self::Far];
+
+    /// This level's entry in a per-level array (in [`ALL`](Self::ALL) order).
+    pub const fn pick<T>(self, per_level: &[T; 3]) -> &T {
+        let [hero, near, far] = per_level;
+        match self {
+            Self::Hero => hero,
+            Self::Near => near,
+            Self::Far => far,
+        }
+    }
 }
 
 /// Coarsest level at which a part still exists (in mesh, skeleton and ECS).
@@ -43,6 +53,7 @@ impl Default for PartLodRules {
 
 impl PartLodRules {
     /// Coarsest level a part of the given relative size survives to.
+    #[must_use]
     pub fn resolve(&self, detail: PartDetail, size_ratio: f32) -> LodLevel {
         match detail {
             PartDetail::Always => LodLevel::Far,

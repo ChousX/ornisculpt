@@ -8,10 +8,12 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::prelude::*;
 use smallvec::SmallVec;
 
+use crate::num::ToF32;
+
 use super::builder::{AxisSample, SkullFrame, frame_y_z};
 use super::{
     AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, ChainParams, ChainPart,
-    ChainRole, CrossSection, DigitParams, HardParams, HeadParams, LimbEnd, LimbParams, LimbRole,
+    ChainRole, CrossSection, DigitParams, FaceParams, HandDef, HardParams, HeadParams, LimbEnd, LimbParams, LimbRole,
     HardKind, LookDef, MassParams, MassShape, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
     SculptParams,
     RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams,
@@ -26,18 +28,17 @@ fn curve_at(keys: &[(f32, f32)], t: f32, default: f32) -> f32 {
     match keys {
         [] => default,
         [(_, v)] => *v,
-        _ => {
-            if t <= keys[0].0 {
-                return keys[0].1;
+        [(t_first, v_first), .., (_, v_last)] => {
+            if t <= *t_first {
+                return *v_first;
             }
-            for w in keys.windows(2) {
-                let ((t0, v0), (t1, v1)) = (w[0], w[1]);
+            for &[(t0, v0), (t1, v1)] in keys.array_windows() {
                 if t <= t1 {
                     let k = if t1 > t0 { (t - t0) / (t1 - t0) } else { 1.0 };
-                    return v0 + (v1 - v0) * k;
+                    return f32::mul_add(v1 - v0, k, v0);
                 }
             }
-            keys[keys.len() - 1].1
+            *v_last
         }
     }
 }
@@ -80,9 +81,9 @@ fn chain_frames(start: Transform, lens: &[f32], bend: impl Fn(usize) -> Quat) ->
     let n = lens.len();
     let mut frames = Vec::with_capacity(n + 1);
     let mut f = Transform { rotation: start.rotation * bend(0), ..start };
-    for i in 0..n {
+    for (i, len) in lens.iter().enumerate() {
         frames.push(f);
-        let tip = f.translation + f.rotation * Vec3::Y * lens[i];
+        let tip = f.translation + f.rotation * Vec3::Y * *len;
         let rot = if i + 1 < n { f.rotation * bend(i + 1) } else { f.rotation };
         f = Transform::from_translation(tip).with_rotation(rot);
     }
@@ -99,27 +100,28 @@ fn emit_chain(
     chain: &ChainParams,
     region: impl Fn(f32) -> RegionId,
 ) -> Result<(Vec<BoneId>, SmallVec<[AxisSample; 9]>), AnatomyError> {
-    let n = frames.len() - 1;
+    let n = frames.len().saturating_sub(1);
     let mut bones = Vec::with_capacity(n);
     let mut axis = SmallVec::new();
     let scale = cross_scale(chain.radius.cross);
     let mut prev = parent;
     // `t` runs along the chain's length (segments may differ), so radius profiles stay put.
-    let mut along = vec![0.0f32; n + 1];
-    for i in 0..n {
-        along[i + 1] = along[i] + frames[i].translation.distance(frames[i + 1].translation);
+    let mut along = Vec::with_capacity(n + 1);
+    along.push(0.0f32);
+    for [start, end] in frames.array_windows() {
+        along.push(along.last().copied().unwrap_or(0.0) + start.translation.distance(end.translation));
     }
-    let total = along[n].max(1e-6);
-    for i in 0..n {
-        let (t0, t1) = (along[i] / total, along[i + 1] / total);
-        let len = frames[i].translation.distance(frames[i + 1].translation).max(1e-3);
-        let bone = b.bone(prev, &format!("{name}.{i}"), frames[i], len, region(t0))?;
+    let total = along.last().copied().unwrap_or(0.0).max(1e-6);
+    for (i, ([start, end], [a0, a1])) in frames.array_windows().zip(along.array_windows()).enumerate() {
+        let (t0, t1) = (a0 / total, a1 / total);
+        let len = start.translation.distance(end.translation).max(1e-3);
+        let bone = b.bone(prev, &format!("{name}.{i}"), *start, len, region(t0))?;
         let (r0, r1) = (radius_at(&chain.radius, t0), radius_at(&chain.radius, t1));
         let blend = if i == 0 { chain.blend } else { 0.5 * r0.min(r1) };
         b.primitive(
             bone,
             PrimShape::RoundCone { r0, r1, len },
-            Transform { scale, ..frames[i] },
+            Transform { scale, ..*start },
             blend,
             PrimOp::Union,
             PrimLayer::Base,
@@ -127,34 +129,35 @@ fn emit_chain(
         );
         // Blend only around the segment's own joint, so a limb hanging beside the body (or a
         // tail beside a leg) stays separate along its length.
-        b.anchor_last_blend(Vec3::ZERO, 2.0 * r0 + 2.0 * blend);
-        axis.push(AxisSample { t: t0, bone, model: frames[i], radii: Vec2::new(scale.x, scale.z) * r0 });
+        b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * r0));
+        axis.push(AxisSample { t: t0, bone, model: *start, radii: Vec2::new(scale.x, scale.z) * r0 });
         bones.push(bone);
         prev = Some(bone);
     }
-    let last = *bones.last().expect("chain has at least one segment");
+    let (Some(&last), Some(&tip)) = (bones.last(), frames.last()) else {
+        return Err(AnatomyError::Internal("chain without segments"));
+    };
     let r_end = radius_at(&chain.radius, 1.0);
-    axis.push(AxisSample { t: 1.0, bone: last, model: frames[n], radii: Vec2::new(scale.x, scale.z) * r_end });
+    axis.push(AxisSample { t: 1.0, bone: last, model: tip, radii: Vec2::new(scale.x, scale.z) * r_end });
     Ok((bones, axis))
 }
 
-fn slot(slot: AttachSlot, bone: BoneId, model: Transform) -> (AttachSlot, AttachPoint) {
+const fn slot(slot: AttachSlot, bone: BoneId, model: Transform) -> (AttachSlot, AttachPoint) {
     (slot, AttachPoint { bone: Some(bone), model })
 }
 
 /// Start/End/axis slots of a plain chain.
-fn chain_slots(bones: &[BoneId], frames: &[Transform], axis: SmallVec<[AxisSample; 9]>) -> PartSlots {
-    let (first, last) = (bones[0], bones[bones.len() - 1]);
-    let start = frames[0];
+fn chain_slots(bones: &[BoneId], frames: &[Transform], axis: SmallVec<[AxisSample; 9]>) -> Result<PartSlots, AnatomyError> {
+    let (Some(&first), Some(&last), Some(&start), Some(&tip)) = (bones.first(), bones.last(), frames.first(), frames.last()) else {
+        return Err(AnatomyError::Internal("chain without segments"));
+    };
     // Flip about local Z: points back along the chain while keeping the dorsal side (-Z) up.
     let back = Transform { rotation: start.rotation * Quat::from_rotation_z(std::f32::consts::PI), ..start };
-    PartSlots {
-        fixed: [slot(AttachSlot::Start, first, back), slot(AttachSlot::End, last, frames[frames.len() - 1])]
-            .into_iter()
-            .collect(),
+    Ok(PartSlots {
+        fixed: [slot(AttachSlot::Start, first, back), slot(AttachSlot::End, last, tip)].into_iter().collect(),
         axis,
         skull: None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -163,19 +166,26 @@ fn chain_slots(bones: &[BoneId], frames: &[Transform], axis: SmallVec<[AxisSampl
 
 impl PartBuild for TorsoParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
-        let n = self.chain.segments.max(1) as usize;
+        let n = usize::from(self.chain.segments.max(1));
         let len = self.chain.length.max(0.01);
         let base = with_offset(&at, cx);
         let points: Vec<Vec3> = (0..=n)
             .map(|i| {
-                let t = i as f32 / n as f32;
-                base.transform_point(Vec3::new(0.0, curve_at(&self.arch, t, 0.0), -len * 0.5 + t * len))
+                let t = i.to_f32() / n.to_f32();
+                base.transform_point(Vec3::new(0.0, curve_at(&self.arch, t, 0.0), t.mul_add(len, -len * 0.5)))
             })
             .collect();
-        let frames: Vec<Transform> = (0..=n)
-            .map(|i| {
-                let dir = if i < n { points[i + 1] - points[i] } else { points[n] - points[n - 1] };
-                Transform::from_translation(points[i]).with_rotation(frame_y_z(dir, base.rotation * Vec3::NEG_Y))
+        let frames: Vec<Transform> = points
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                // Toward the next point; the last continues from the one before.
+                let dir = match (points.get(i + 1), i.checked_sub(1).and_then(|j| points.get(j))) {
+                    (Some(next), _) => *next - p,
+                    (None, Some(prev)) => p - *prev,
+                    (None, None) => Vec3::Y,
+                };
+                Transform::from_translation(p).with_rotation(frame_y_z(dir, base.rotation * Vec3::NEG_Y))
             })
             .collect();
 
@@ -186,13 +196,14 @@ impl PartBuild for TorsoParams {
         let (bones, axis) = emit_chain(b, at.bone, "torso", &frames, &self.chain, region)?;
         b.spine(&bones);
 
-        if self.belly > 0.0 {
+        if self.belly > 0.0
+            && let (Some(&s), Some(&mid_bone)) = (axis.get(n / 2), bones.get(n / 2))
+        {
             let belly = b.region(RegionKind::Belly, cx.side)?;
-            let s = axis[n / 2];
             let r = s.min_radius();
             b.primitive(
-                bones[n / 2],
-                PrimShape::Ellipsoid { radii: Vec3::new(r * 0.85, len / n as f32 * 1.2, r * (0.6 + 0.4 * self.belly)) },
+                mid_bone,
+                PrimShape::Ellipsoid { radii: Vec3::new(r * 0.85, len / n.to_f32() * 1.2, r * 0.4f32.mul_add(self.belly, 0.6)) },
                 moved(s.model, Vec3::new(0.0, 0.0, r * 0.35 * self.belly)),
                 r * 0.5,
                 PrimOp::Union,
@@ -200,7 +211,7 @@ impl PartBuild for TorsoParams {
                 belly,
             );
         }
-        let slots = chain_slots(&bones, &frames, axis);
+        let slots = chain_slots(&bones, &frames, axis)?;
         for (name, kind, side, t, around) in [
             ("back", SocketKind::Back, Side::Center, 0.6, 0.0),
             ("saddle", SocketKind::Saddle, Side::Center, 0.45, 0.0),
@@ -230,11 +241,11 @@ fn surface_socket(b: &mut AnatomyBuilder, slots: &PartSlots, name: &str, kind: S
 impl PartBuild for ChainPart {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let c = &self.chain;
-        let n = c.segments.max(1) as usize;
         let lens = c.segment_lengths();
         // Curl is per metre: each joint bends by the curl over the segment before it.
         let frames = chain_frames(with_offset(&at, cx), &lens, |i| {
-            if i == 0 { Quat::IDENTITY } else { Quat::from_rotation_x((c.curl * lens[i - 1]).to_radians()) }
+            let before = i.checked_sub(1).and_then(|j| lens.get(j));
+            before.map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((c.curl * len).to_radians()))
         });
 
         let (r0, r1) = match self.role {
@@ -259,12 +270,14 @@ impl PartBuild for ChainPart {
         if stiffness > 0.0 {
             b.spring_chain(SpringChainDef { bones: bones.iter().copied().collect(), stiffness, damping, gravity: 1.0 });
         }
-        let slots = chain_slots(&bones, &frames, axis);
+        let slots = chain_slots(&bones, &frames, axis)?;
         match self.role {
             ChainRole::Neck => surface_socket(b, &slots, &suffixed("neck", cx), SocketKind::Neck, cx.side, 0.5, 180.0),
             ChainRole::Tail => {
                 let size = slots.axis.last().map_or(0.02, |s| s.min_radius() * 2.0);
-                b.socket(&suffixed("tail_tip", cx), SocketKind::TailTip, cx.side, bones[n - 1], frames[n], size);
+                if let (Some(&last), Some(&tip)) = (bones.last(), frames.last()) {
+                    b.socket(&suffixed("tail_tip", cx), SocketKind::TailTip, cx.side, last, tip, size);
+                }
             }
             _ => {}
         }
@@ -291,7 +304,6 @@ fn limb_bends(role: LimbRole, stance: Stance, i: usize) -> (f32, f32) {
 
 impl PartBuild for LimbParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
-        let n = self.chain.segments.max(1) as usize;
         let lens = self.chain.segment_lengths();
         let pos = with_offset(&at, cx).translation;
         let outward = at.model.rotation * Vec3::Y;
@@ -318,7 +330,7 @@ impl PartBuild for LimbParams {
         // share their rotation with it (a shoulder lifts; it doesn't fold).
         let clavicle_len = match self.clavicle {
             Some(l) => l,
-            None if self.role == LimbRole::Manipulator => lens[0] * 0.45,
+            None if self.role == LimbRole::Manipulator => lens.first().copied().unwrap_or(0.0) * 0.45,
             None => 0.0,
         };
         let clavicle = if self.role == LimbRole::Manipulator && clavicle_len > 1e-3 && at.bone.is_some() {
@@ -331,56 +343,14 @@ impl PartBuild for LimbParams {
         let (bones, axis_samples) = emit_chain(b, clavicle.or(at.bone), &name, &frames, &self.chain, |t| {
             if t < 0.5 { upper } else { lower }
         })?;
+        let (Some(&first), Some(&last), Some(&tip)) = (bones.first(), bones.last(), frames.last()) else {
+            return Err(AnatomyError::Internal("limb without segments"));
+        };
         if let Some(c) = clavicle {
-            b.clavicle(c, bones[0], cx.side);
+            b.clavicle(c, first, cx.side);
         }
-        let last = bones[n - 1];
-        let tip = frames[n];
         let r = radius_at(&self.chain.radius, 1.0);
-        // Ground-contact frame at the tip: Y forward (horizontal), Z down.
-        let ground = Transform::from_translation(tip.translation).with_rotation(frame_y_z(Vec3::Z, Vec3::NEG_Y));
-
-        let prim = |b: &mut AnatomyBuilder, shape: PrimShape, model: Transform| {
-            b.primitive(last, shape, model, r * 0.6, PrimOp::Union, PrimLayer::Base, end_region)
-        };
-        let end_slot = match self.end {
-            LimbEnd::None | LimbEnd::Point => tip,
-            LimbEnd::Hand { palm } => {
-                let m = moved(tip, Vec3::Y * palm * 0.5);
-                // A flat, square-edged palm the fingers line up along (not a pillow).
-                let round = palm * 0.1;
-                let half = (Vec3::new(palm * 0.42, palm * 0.5, palm * 0.14) - Vec3::splat(round)).max(Vec3::splat(palm * 0.02));
-                prim(b, PrimShape::RoundBox { half, round }, m);
-                moved(tip, Vec3::Y * palm)
-            }
-            LimbEnd::Foot { length } => {
-                let m = moved(ground, Vec3::new(0.0, length * 0.5 - r * 0.5, r * 0.2));
-                prim(b, PrimShape::RoundBox { half: Vec3::new(r * 1.1, length * 0.5, r * 0.45), round: r * 0.4 }, m);
-                moved(ground, Vec3::new(0.0, length - r * 0.5, r * 0.2))
-            }
-            LimbEnd::Pad => {
-                prim(b, PrimShape::Ellipsoid { radii: Vec3::new(r * 1.3, r * 1.4, r * 0.7) }, moved(ground, Vec3::Y * r * 0.4));
-                moved(ground, Vec3::new(0.0, r * 1.5, r * 0.2))
-            }
-            LimbEnd::Hoof { .. } => {
-                let down = Transform::from_translation(tip.translation).with_rotation(frame_y_z(Vec3::NEG_Y, Vec3::Z));
-                prim(b, PrimShape::RoundCone { r0: r * 1.05, r1: r * 1.3, len: r * 1.2 }, down);
-                moved(ground, Vec3::Y * r * 1.3)
-            }
-            LimbEnd::Pincer { size } => {
-                prim(b, PrimShape::Ellipsoid { radii: Vec3::new(size * 0.5, size, size * 0.4) }, moved(tip, Vec3::Y * size));
-                moved(tip, Vec3::Y * size * 2.0)
-            }
-            LimbEnd::Blade { length } => {
-                let m = Transform { scale: Vec3::new(0.3, 1.0, 1.0), ..tip };
-                prim(b, PrimShape::RoundCone { r0: r, r1: r * 0.2, len: length }, m);
-                moved(tip, Vec3::Y * length)
-            }
-            LimbEnd::Paddle { width } => {
-                prim(b, PrimShape::Ellipsoid { radii: Vec3::new(width * 0.5, width * 0.8, r * 0.3) }, moved(ground, Vec3::Y * width * 0.6));
-                moved(ground, Vec3::Y * width * 1.4)
-            }
-        };
+        let end_slot = limb_end(self.end, b, last, tip, r, end_region);
 
         if matches!(self.role, LimbRole::Manipulator | LimbRole::Both) && self.end.grasps() {
             let size = match self.end {
@@ -390,29 +360,121 @@ impl PartBuild for LimbParams {
             };
             // Socket +Y = the held tool's axis: across the fist (forward when the arm hangs);
             // +Z runs down the limb toward the fingers.
-            let fist = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_X, Vec3::Z, Vec3::Y));
-            let grip = moved(tip, Vec3::Y * size * 0.5).with_rotation(tip.rotation * fist);
+            let fist_turn = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_X, Vec3::Z, Vec3::Y));
+            let grip = moved(tip, Vec3::Y * size * 0.5).with_rotation(tip.rotation * fist_turn);
             b.socket(&suffixed("grip", cx), SocketKind::Grip, cx.side, last, grip, size);
         }
         if matches!(self.role, LimbRole::Locomotor | LimbRole::Both) {
             // The IK pole is the rest pose's own first joint direction: knees forward, a
             // quadruped's elbows back, a spider's knees up.
-            let (hip, foot) = (frames[0].translation, frames[n].translation);
+            let (hip, foot) = (frames.first().map_or(tip.translation, |f| f.translation), tip.translation);
             let axis = (foot - hip).normalize_or(Vec3::NEG_Y);
-            let knee = frames[1.min(n)].translation - hip;
+            let knee = frames.get(1).unwrap_or(&tip).translation - hip;
             let pole = (knee - axis * knee.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
             b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
         }
 
-        let mut slots = chain_slots(&bones, &frames, axis_samples);
-        slots.fixed[1] = slot(AttachSlot::End, last, end_slot);
+        let mut slots = chain_slots(&bones, &frames, axis_samples)?;
+        if let Some(end) = slots.fixed.iter_mut().find(|(s, _)| *s == AttachSlot::End) {
+            *end = slot(AttachSlot::End, last, end_slot);
+        }
         Ok(slots)
     }
 }
 
+/// Adds a limb's end shape (hand, foot, hoof, ...) at `tip` on bone `last` (`r` = the limb's
+/// radius there); returns the frame its children attach to.
+fn limb_end(end: LimbEnd, b: &mut AnatomyBuilder, last: BoneId, tip: Transform, r: f32, end_region: RegionId) -> Transform {
+    // Ground-contact frame at the tip: Y forward (horizontal), Z down.
+    let ground = Transform::from_translation(tip.translation).with_rotation(frame_y_z(Vec3::Z, Vec3::NEG_Y));
+
+    let prim = |b: &mut AnatomyBuilder, shape: PrimShape, model: Transform| {
+        b.primitive(last, shape, model, r * 0.6, PrimOp::Union, PrimLayer::Base, end_region);
+    };
+    match end {
+        LimbEnd::None | LimbEnd::Point => tip,
+        LimbEnd::Hand { palm } => {
+            let m = moved(tip, Vec3::Y * palm * 0.5);
+            // A flat, square-edged palm the fingers line up along (not a pillow).
+            let round = palm * 0.1;
+            let half = (Vec3::new(palm * 0.42, palm * 0.5, palm * 0.14) - Vec3::splat(round)).max(Vec3::splat(palm * 0.02));
+            prim(b, PrimShape::RoundBox { half, round }, m);
+            moved(tip, Vec3::Y * palm)
+        }
+        LimbEnd::Foot { length } => {
+            let m = moved(ground, Vec3::new(0.0, r.mul_add(-0.5, length * 0.5), r * 0.2));
+            prim(b, PrimShape::RoundBox { half: Vec3::new(r * 1.1, length * 0.5, r * 0.45), round: r * 0.4 }, m);
+            moved(ground, Vec3::new(0.0, r.mul_add(-0.5, length), r * 0.2))
+        }
+        LimbEnd::Pad => {
+            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(r * 1.3, r * 1.4, r * 0.7) }, moved(ground, Vec3::Y * r * 0.4));
+            moved(ground, Vec3::new(0.0, r * 1.5, r * 0.2))
+        }
+        LimbEnd::Hoof { .. } => {
+            let down = Transform::from_translation(tip.translation).with_rotation(frame_y_z(Vec3::NEG_Y, Vec3::Z));
+            prim(b, PrimShape::RoundCone { r0: r * 1.05, r1: r * 1.3, len: r * 1.2 }, down);
+            moved(ground, Vec3::Y * r * 1.3)
+        }
+        LimbEnd::Pincer { size } => {
+            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(size * 0.5, size, size * 0.4) }, moved(tip, Vec3::Y * size));
+            moved(tip, Vec3::Y * size * 2.0)
+        }
+        LimbEnd::Blade { length } => {
+            let m = Transform { scale: Vec3::new(0.3, 1.0, 1.0), ..tip };
+            prim(b, PrimShape::RoundCone { r0: r, r1: r * 0.2, len: length }, m);
+            moved(tip, Vec3::Y * length)
+        }
+        LimbEnd::Paddle { width } => {
+            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(width * 0.5, width * 0.8, r * 0.3) }, moved(ground, Vec3::Y * width * 0.6));
+            moved(ground, Vec3::Y * width * 1.4)
+        }
+    }
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // Head
 // ---------------------------------------------------------------------------------------------
+
+impl HeadParams {
+    /// The head's fixed slots in model space, from its `skull` frame (Y forward, Z down, X left)
+    /// and the front of its snout (`front`, forward of the skull origin).
+    fn slots(&self, skull: Transform, front: f32) -> [(AttachSlot, Transform); 7] {
+        let s = self.skull.size;
+        // Local placement in the skull frame: (position, +Y direction, +Z hint).
+        let place = |p: Vec3, dir: Vec3, hint: Vec3| skull * Transform::from_translation(p).with_rotation(frame_y_z(dir, hint));
+        let eye_dir = Vec3::Y.lerp(Vec3::X, self.eye_lateral.clamp(0.0, 1.0));
+        let eye_x = s.x * self.eye_spacing.max(0.2);
+        // A face (see `build_face` for its layout): eyes halfway down the head, just under the
+        // surface; ears flat on the sides from nose to brow (wide across the head's depth, thin
+        // outward); nose and mouth on the face. An animal's ears stand on top.
+        let (eye, ear, nose, mouth) = if self.face.is_some() {
+            let cy = s.z * 0.8;
+            (
+                place(Vec3::new(eye_x, s.z.mul_add(0.72, cy), -s.y * 0.05), eye_dir, Vec3::Z),
+                place(Vec3::new(s.x * 0.92, s.z.mul_add(-0.1, cy), s.y * 0.2), Vec3::new(0.25, -0.3, -1.0), Vec3::X),
+                place(Vec3::new(0.0, s.z.mul_add(1.12, cy), s.y * 0.3), Vec3::Y, Vec3::Z),
+                place(Vec3::new(0.0, s.z.mul_add(0.95, cy), s.y * 0.55), Vec3::Y, Vec3::Z),
+            )
+        } else {
+            (
+                place(Vec3::new(eye_x, s.z * 1.3, -s.y * 0.3), eye_dir, Vec3::Z),
+                place(Vec3::new(s.x * 0.6, s.z * 0.5, -s.y * 0.85), Vec3::new(0.5, -0.2, -1.0), Vec3::Y),
+                place(Vec3::new(0.0, front, s.y * 0.15), Vec3::Y, Vec3::Z),
+                place(Vec3::new(0.0, front * 0.9, s.y * 0.5), Vec3::Y, Vec3::Z),
+            )
+        };
+        [
+            (AttachSlot::Eye, eye),
+            (AttachSlot::Ear, ear),
+            (AttachSlot::Horn, place(Vec3::new(s.x * 0.45, s.z * 1.1, -s.y * 0.85), Vec3::new(0.3, 0.4, -1.0), Vec3::Y)),
+            (AttachSlot::Crown, place(Vec3::new(0.0, s.z * 0.8, -s.y), Vec3::NEG_Z, Vec3::Y)),
+            (AttachSlot::Nose, nose),
+            (AttachSlot::Mouth, mouth),
+            (AttachSlot::End, nose),
+        ]
+    }
+}
 
 impl PartBuild for HeadParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
@@ -424,12 +486,23 @@ impl PartBuild for HeadParams {
         let s = self.skull.size; // half extents: x width, y height, z depth
         let skull_region = b.region(RegionKind::Skull, cx.side)?;
         let snout_region = b.region(RegionKind::Snout, cx.side)?;
-        let bone = b.bone(at.bone, "skull", skull, s.z * 2.0 + self.snout, skull_region)?;
+        let bone = b.bone(at.bone, "skull", skull, s.z.mul_add(2.0, self.snout), skull_region)?;
+        // A face sits upright on its neck: the neck enters the skull's base from below, with the
+        // braincase over it and the back of the head overhanging the nape. An animal's head hangs
+        // forward of its neck. The bone still pivots at the neck's top.
+        let skull = if self.face.is_some() { moved(skull, Vec3::new(0.0, -s.z * 0.5, -s.y * 0.5)) } else { skull };
 
+        // The cranium. Under a face it is shorter and sits higher: the face and jaw hang below its
+        // front instead of the braincase filling down to the chin.
+        let (cranium_radii, cranium_at) = if self.face.is_some() {
+            (Vec3::new(s.x, s.z, s.y * 0.85), Vec3::new(0.0, s.z * 0.8, -s.y * 0.15))
+        } else {
+            (Vec3::new(s.x, s.z, s.y), Vec3::Y * s.z * 0.8)
+        };
         b.primitive(
             bone,
-            PrimShape::Ellipsoid { radii: Vec3::new(s.x, s.z, s.y) },
-            moved(skull, Vec3::Y * s.z * 0.8),
+            PrimShape::Ellipsoid { radii: cranium_radii },
+            moved(skull, cranium_at),
             self.skull.blend,
             PrimOp::Union,
             PrimLayer::Base,
@@ -447,10 +520,16 @@ impl PartBuild for HeadParams {
                 snout_region,
             );
         }
-        let front = snout_start + self.snout + s.y * 0.35;
+        let front = s.y.mul_add(0.35, snout_start + self.snout);
 
         let mut fixed: SmallVec<[(AttachSlot, AttachPoint); 6]> = SmallVec::new();
-        if let Some(j) = &self.jaw {
+        if let Some(face) = &self.face {
+            let jaw_region = if self.jaw.is_some() { Some(b.region(RegionKind::Jaw, cx.side)?) } else { None };
+            let jaw = build_face(b, face, skull, s, bone, skull_region, snout_region, jaw_region)?;
+            if let Some((jaw, chin)) = jaw {
+                fixed.push(slot(AttachSlot::Jaw, jaw, chin));
+            }
+        } else if let Some(j) = &self.jaw {
             let jaw_region = b.region(RegionKind::Jaw, cx.side)?;
             let start = moved(skull, Vec3::new(0.0, s.z * 0.6, s.y * 0.45));
             let jaw = b.bone(Some(bone), "jaw", start, j.length, jaw_region)?;
@@ -467,43 +546,108 @@ impl PartBuild for HeadParams {
             fixed.push(slot(AttachSlot::Jaw, jaw, moved(start, Vec3::Y * j.length)));
         }
 
-        // Local placement in the skull frame: (position, +Y direction, +Z hint).
-        let place = |p: Vec3, dir: Vec3, hint: Vec3| skull * Transform::from_translation(p).with_rotation(frame_y_z(dir, hint));
-        let eye_dir = Vec3::Y.lerp(Vec3::X, self.eye_lateral.clamp(0.0, 1.0));
-        let eye = place(Vec3::new(s.x * self.eye_spacing.max(0.2), s.z * 1.3, -s.y * 0.3), eye_dir, Vec3::Z);
-        let ear = place(Vec3::new(s.x * 0.6, s.z * 0.5, -s.y * 0.85), Vec3::new(0.5, -0.2, -1.0), Vec3::Y);
-        let horn = place(Vec3::new(s.x * 0.45, s.z * 1.1, -s.y * 0.85), Vec3::new(0.3, 0.4, -1.0), Vec3::Y);
-        let crown = place(Vec3::new(0.0, s.z * 0.8, -s.y), Vec3::NEG_Z, Vec3::Y);
-        let nose = place(Vec3::new(0.0, front, s.y * 0.15), Vec3::Y, Vec3::Z);
-        let mouth = place(Vec3::new(0.0, front * 0.9, s.y * 0.5), Vec3::Y, Vec3::Z);
-        for (sl, m) in [
-            (AttachSlot::Eye, eye),
-            (AttachSlot::Ear, ear),
-            (AttachSlot::Horn, horn),
-            (AttachSlot::Crown, crown),
-            (AttachSlot::Nose, nose),
-            (AttachSlot::Mouth, mouth),
-            (AttachSlot::End, nose),
-        ] {
-            fixed.push(slot(sl, bone, m));
-        }
+        let slots = self.slots(skull, front);
+        let [_, _, _, (_, crown), _, (_, mouth), _] = slots;
+        fixed.extend(slots.into_iter().map(|(sl, m)| slot(sl, bone, m)));
         b.socket("head", SocketKind::Head, cx.side, bone, crown, s.x * 2.0);
         b.socket("mouth", SocketKind::Mouth, cx.side, bone, mouth, s.y);
 
         // Look-at: neck bones (root to head) plus the skull, sharing the turn.
-        let mut look: Vec<BoneId> = at.bone.map(|p| b.ancestor_bones(p, RegionKind::Neck).into_vec()).unwrap_or_default();
+        let mut look: Vec<BoneId> = at.bone.map_or_default(|p| b.ancestor_bones(p, RegionKind::Neck).into_vec());
         look.reverse();
         look.push(bone);
-        let share = 1.0 / look.len() as f32;
+        let share = 1.0 / look.len().to_f32();
         b.look(LookDef { bones: look.into_iter().map(|b| (b, share)).collect(), limit_deg: 70.0 });
 
         let axis = [0.0, 1.0]
             .into_iter()
             .map(|t| AxisSample { t, bone, model: moved(skull, Vec3::Y * s.z * 1.6 * t), radii: Vec2::new(s.x, s.y) })
             .collect();
-        let skull_frame = SkullFrame { bone, model: moved(skull, Vec3::Y * s.z * 0.8), radii: Vec3::new(s.x, s.z, s.y) };
+        let skull_frame = SkullFrame { bone, model: moved(skull, cranium_at), radii: cranium_radii };
         Ok(PartSlots { fixed, axis, skull: Some(skull_frame) })
     }
+}
+
+/// A primate face on the skull (`skull` frame: X left, Y forward, Z down; `s` = skull half
+/// extents: x width, y height, z depth): midface, brow, cheekbones, nose and upper lip on the
+/// skull bone; mandible, chin and lower lip on a jaw bone hinged in front of the ears. Returns
+/// the jaw bone and its chin frame.
+///
+/// Layout, in skull radii down from the skull centre (crown at -1): brow -0.22, eyes -0.05
+/// (halfway from crown to chin), nose base 0.32, mouth 0.55, chin 0.95 — the facial thirds.
+#[allow(clippy::too_many_arguments)]
+fn build_face(
+    b: &mut AnatomyBuilder,
+    face: &FaceParams,
+    skull: Transform,
+    s: Vec3,
+    bone: BoneId,
+    skull_region: RegionId,
+    face_region: RegionId,
+    jaw_region: Option<RegionId>,
+) -> Result<Option<(BoneId, Transform)>, AnatomyError> {
+    let (rx, ry, rz) = (s.x, s.z, s.y);
+    let cy = ry * 0.8; // skull centre, forward of the head's root
+    // A point on the face: (across, forward from the skull centre, down), in skull radii.
+    let p = |x: f32, y: f32, z: f32| Vec3::new(x * rx, y.mul_add(ry, cy), z * rz);
+    let at = |q: Vec3| moved(skull, q);
+    // A frame at `from` whose +Y runs to `to`, and the distance.
+    let span = |from: Vec3, to: Vec3| {
+        let delta = to - from;
+        (Transform::from_translation(skull.transform_point(from)).with_rotation(skull.rotation * frame_y_z(delta, Vec3::Z)), delta.length())
+    };
+    let ellipsoid = |x: f32, y: f32, z: f32| PrimShape::Ellipsoid { radii: Vec3::new(x * rx, y * ry, z * rz) };
+    let mut add = |bone: BoneId, shape: PrimShape, model: Transform, blend: f32, region: RegionId| {
+        b.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
+    };
+
+    // Midface (upper jaw and cheeks): the front of the face from under the eyes to the mouth.
+    add(bone, ellipsoid(0.56, 0.38, 0.4), at(p(0.0, 0.5, 0.3)), rz * 0.3, face_region);
+    if face.brow > 0.0 {
+        add(bone, ellipsoid(0.6 * face.brow.sqrt(), 0.13, 0.07), at(p(0.0, 0.84, -0.22)), rz * 0.12, skull_region);
+    }
+    if face.cheekbones > 0.0 {
+        let scale = face.cheekbones.sqrt();
+        for x in [0.55, -0.55] {
+            add(bone, ellipsoid(0.24 * scale, 0.2 * scale, 0.11), at(p(x, 0.62, 0.17)), rz * 0.2, face_region);
+        }
+    }
+    // Nose: a ridge from between the eyes down and out to the tip, nostril wings either side.
+    if face.nose > 0.0 {
+        let tip = p(0.0, 0.25f32.mul_add(face.nose, 0.9), 0.27);
+        let (model, len) = span(p(0.0, 0.86, -0.1), tip);
+        add(bone, PrimShape::RoundCone { r0: rz * 0.05, r1: rz * 0.085, len }, model, rz * 0.04, face_region);
+        for x in [0.15, -0.15] {
+            add(bone, PrimShape::Sphere { r: rz * 0.06 }, at(tip + Vec3::new(x * rx, -ry * 0.16, rz * 0.03)), rz * 0.07, face_region);
+        }
+    }
+    if face.lips > 0.0 {
+        add(bone, ellipsoid(0.26, 0.08 * face.lips.sqrt(), 0.055), at(p(0.0, 0.9, 0.46)), rz * 0.06, face_region);
+    }
+
+    let Some(jaw_region) = jaw_region else { return Ok(None) };
+    // Mandible: hinged in front of the ears, running down and forward to the chin.
+    let chin = p(0.0, 0.08f32.mul_add(face.chin, 0.8), 0.95);
+    let (jaw_model, jaw_len) = span(p(0.0, 0.0, 0.15), chin);
+    let jaw = b.bone(Some(bone), "jaw", jaw_model, jaw_len, jaw_region)?;
+    let mut add = |shape: PrimShape, model: Transform, blend: f32| {
+        b.primitive(jaw, shape, model, blend, PrimOp::Union, PrimLayer::Base, jaw_region);
+    };
+    // Each side of the jaw, from its angle below the ear to the chin.
+    for x in [0.7 * face.jaw_width, -0.7 * face.jaw_width] {
+        let (model, len) = span(p(x, -0.05, 0.72), chin + Vec3::new(x * rx * 0.3, -ry * 0.15, -rz * 0.05));
+        add(PrimShape::RoundCone { r0: rz * 0.1, r1: rz * 0.09, len }, model, rz * 0.3);
+    }
+    // Floor of the mouth, so the jaw is solid underneath.
+    add(ellipsoid(0.42, 0.38, 0.14), at(p(0.0, 0.45, 0.67)), rz * 0.3);
+    if face.chin > 0.0 {
+        let scale = face.chin.sqrt();
+        add(ellipsoid(0.27 * scale, 0.12 * scale, 0.11), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.08)), rz * 0.1);
+    }
+    if face.lips > 0.0 {
+        add(ellipsoid(0.23, 0.08 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.58)), rz * 0.06);
+    }
+    Ok(Some((jaw, moved(jaw_model, Vec3::Y * jaw_len))))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -513,11 +657,13 @@ impl PartBuild for HeadParams {
 impl PartBuild for DigitParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let base = with_offset(&at, cx);
-        let n = self.count.max(1) as usize;
-        let segs = self.chain.segments.max(1) as usize;
+        let n = usize::from(self.count.max(1));
         let lens = self.chain.segment_lengths();
         let spacing = self.chain.radius.scale * 2.4;
-        let curl = |s: usize| Quat::from_rotation_x((self.chain.curl * lens[s - 1]).to_radians());
+        let curl = |seg: usize| {
+            let before = seg.checked_sub(1).and_then(|j| lens.get(j));
+            before.map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((self.chain.curl * len).to_radians()))
+        };
         let region = b.region(RegionKind::Digit, cx.side)?;
         let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
@@ -526,33 +672,38 @@ impl PartBuild for DigitParams {
         let thumb = self.opposable && n > 1;
         let row = if thumb { n - 1 } else { n };
         let reach: f32 = lens.iter().sum();
-        let r = self.chain.radius.scale;
-        let thumb_chain = ChainParams { radius: Profile { scale: r * 1.2, ..self.chain.radius.clone() }, ..self.chain.clone() };
+        let radius = self.chain.radius.scale;
+        let thumb_chain = ChainParams { radius: Profile { scale: radius * 1.2, ..self.chain.radius.clone() }, ..self.chain.clone() };
         let thumb_lens: Vec<f32> = lens.iter().map(|l| l * 0.75).collect();
+        let mut digits = Vec::with_capacity(n);
         for i in 0..n {
             let is_thumb = thumb && i == 0;
-            let j = if thumb { i.saturating_sub(1) } else { i };
-            let k = if row > 1 { j as f32 / (row - 1) as f32 - 0.5 } else { 0.0 };
+            let place = if thumb { i.saturating_sub(1) } else { i };
+            let k = if row > 1 { place.to_f32() / (row - 1).to_f32() - 0.5 } else { 0.0 };
             let start = if is_thumb {
-                let edge = spacing * 0.5 * (row - 1) as f32 + r;
-                base * Transform::from_translation(Vec3::new(-edge, -reach * 0.6, r * 0.6))
+                let edge = (spacing * 0.5).mul_add((row - 1).to_f32(), radius);
+                base * Transform::from_translation(Vec3::new(-edge, -reach * 0.6, radius * 0.6))
                     .with_rotation(Quat::from_rotation_z(40f32.to_radians()) * Quat::from_rotation_y(70f32.to_radians()))
             } else {
-                base * Transform::from_translation(Vec3::X * spacing * k * (row - 1) as f32)
+                base * Transform::from_translation(Vec3::X * spacing * k * (row - 1).to_f32())
                     .with_rotation(Quat::from_rotation_z((-self.spread_deg * k).to_radians()))
             };
             let (chain, seg_lens) = if is_thumb { (&thumb_chain, &thumb_lens) } else { (&self.chain, &lens) };
-            let frames = chain_frames(start, seg_lens, |s| if s == 0 { Quat::IDENTITY } else { curl(s) });
+            let frames = chain_frames(start, seg_lens, curl);
             let name = suffixed(&format!("digit{i}"), cx);
             let (bones, _) = emit_chain(b, at.bone, &name, &frames, chain, |_| region)?;
-            let last = bones[segs - 1];
+            digits.push(bones.iter().copied().collect());
+            let (Some(&last), Some(&tip_frame)) = (bones.last(), frames.last()) else {
+                return Err(AnatomyError::Internal("digit without segments"));
+            };
             if let (Some(tip), Some(hr)) = (&self.tip, hard_region) {
-                b.hard_part(last, frames[segs], tip.clone(), hr);
+                b.hard_part(last, tip_frame, tip.clone(), hr);
             }
             if i == n / 2 {
-                end = Some(slot(AttachSlot::End, last, frames[segs]));
+                end = Some(slot(AttachSlot::End, last, tip_frame));
             }
         }
+        b.hand(HandDef { side: cx.side, mirrored: b.is_mirrored(), digits, thumb });
         Ok(PartSlots { fixed: end.into_iter().collect(), ..default() })
     }
 }
@@ -584,7 +735,7 @@ impl PartBuild for MassParams {
         let layer = if self.shape == MassShape::Sac { PrimLayer::Fat } else { PrimLayer::Base };
         b.primitive(bone, shape, model, self.blend, PrimOp::Union, layer, region);
         Ok(PartSlots {
-            fixed: [slot(AttachSlot::End, bone, moved(model, Vec3::Y * s.y))].into_iter().collect(),
+            fixed: std::iter::once(slot(AttachSlot::End, bone, moved(model, Vec3::Y * s.y))).collect(),
             ..default()
         })
     }
@@ -648,7 +799,7 @@ impl PartBuild for SculptParams {
         // Slots along the part's local +Y, through the middle of its bounds.
         let mid = (lo + hi) * 0.5;
         let radius = ((hi.x - lo.x) + (hi.z - lo.z)) * 0.25;
-        let sample = |t: f32| moved(base, Vec3::new(mid.x, lo.y + (hi.y - lo.y) * t, mid.z));
+        let sample = |t: f32| moved(base, Vec3::new(mid.x, f32::mul_add(hi.y - lo.y, t, lo.y), mid.z));
         let axis = [0.0, 0.5, 1.0]
             .into_iter()
             .map(|t| AxisSample::round(t, bone, sample(t), radius))

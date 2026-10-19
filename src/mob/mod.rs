@@ -52,7 +52,8 @@ pub struct Mob {
 }
 
 impl Mob {
-    pub fn new(body: Handle<BodyPlan>) -> Self {
+    #[must_use]
+    pub const fn new(body: Handle<BodyPlan>) -> Self {
         Self { body }
     }
 }

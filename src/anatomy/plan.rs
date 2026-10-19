@@ -49,7 +49,7 @@ pub struct PartNode {
     #[serde(default = "unit")]
     pub density: f32,
     #[serde(default)]
-    pub children: Vec<PartNode>,
+    pub children: Vec<Self>,
 }
 
 /// Per-part multipliers on the body [`Tone`]. `1.0` = body default.
@@ -68,6 +68,7 @@ impl Default for PartTone {
 }
 
 impl PartTone {
+    #[must_use]
     pub fn apply(&self, body: &Tone) -> Tone {
         Tone {
             muscle: body.muscle * self.muscle,
@@ -136,6 +137,7 @@ impl Default for PartOffset {
 }
 
 impl PartOffset {
+    #[must_use]
     pub fn to_transform(&self) -> Transform {
         let r = self.rotate_deg * (std::f32::consts::PI / 180.0);
         Transform {
@@ -181,10 +183,11 @@ impl BodyPlan {
     ///
     /// Geometry is not flipped here: a right copy is built as if it were the left one, then
     /// reflected by the builder (see `AnatomyBuilder`), so bones never carry negative scale.
-    pub fn expand_symmetry(&self) -> BodyPlan {
+    #[must_use]
+    pub fn expand_symmetry(&self) -> Self {
         let mut roots = expand_node(&self.root);
         debug_assert_eq!(roots.len(), 1, "the root part cannot repeat or mirror");
-        BodyPlan { root: roots.swap_remove(0), tone: self.tone }
+        Self { root: roots.swap_remove(0), tone: self.tone }
     }
 
     /// Visits every node depth-first with its path.
@@ -212,6 +215,7 @@ impl BodyPlan {
     }
 
     /// Finds a node by exact path.
+    #[must_use]
     pub fn node(&self, path: &PartPath) -> Option<&PartNode> {
         let mut segs = path.segments();
         if segs.next()? != self.root.name {
@@ -238,7 +242,7 @@ fn expand_node(node: &PartNode) -> Vec<PartNode> {
         Repeat::Once => vec![base],
         Repeat::Series { count, from, to } => (0..count)
             .map(|i| {
-                let t = if count > 1 { from + (to - from) * i as f32 / (count - 1) as f32 } else { from };
+                let t = if count > 1 { from + (to - from) * f32::from(i) / f32::from(count - 1) } else { from };
                 let attach = match base.attach {
                     AttachSlot::Along(_) => AttachSlot::Along(t),
                     AttachSlot::Surface { around_deg, .. } => AttachSlot::Surface { t, around_deg },
@@ -250,7 +254,7 @@ fn expand_node(node: &PartNode) -> Vec<PartNode> {
         Repeat::Radial { count } => (0..count)
             .map(|i| {
                 let mut offset = base.offset;
-                offset.rotate_deg.y += 360.0 * i as f32 / count.max(1) as f32;
+                offset.rotate_deg.y += 360.0 * f32::from(i) / f32::from(count.max(1));
                 PartNode { name: format!("{}.{i}", base.name), offset, ..base.clone() }
             })
             .collect(),
@@ -267,6 +271,10 @@ fn expand_node(node: &PartNode) -> Vec<PartNode> {
             [left, right]
         })
         .collect()
+}
+
+const fn unit() -> f32 {
+    1.0
 }
 
 #[cfg(test)]
@@ -309,8 +317,4 @@ mod tests {
         assert_eq!(e.root.children[0].children.len(), 2);
         assert!(e.node(&PartPath("torso/leg.2.r/spur.l".into())).is_some());
     }
-}
-
-fn unit() -> f32 {
-    1.0
 }

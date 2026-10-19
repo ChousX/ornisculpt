@@ -14,8 +14,9 @@ pub const MAX_CROWD_BONES: usize = 32;
 pub struct BoneId(pub u8);
 
 impl BoneId {
+    #[must_use]
     pub fn index(self) -> usize {
-        self.0 as usize
+        usize::from(self.0)
     }
 }
 
@@ -55,54 +56,62 @@ pub struct CrowdSkeleton {
 }
 
 impl Skeleton {
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.bones.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.bones.is_empty()
     }
 
-    pub fn get(&self, id: BoneId) -> &BoneDef {
-        &self.bones[id.index()]
+    #[must_use]
+    pub fn get(&self, id: BoneId) -> Option<&BoneDef> {
+        self.bones.get(id.index())
     }
 
+    #[must_use]
     pub fn find(&self, name: &str) -> Option<BoneId> {
-        self.bones.iter().position(|b| b.name == name).map(|i| BoneId(i as u8))
+        (0u8..).zip(&self.bones).find(|(_, b)| b.name == name).map(|(i, _)| BoneId(i))
     }
 
     pub fn children(&self, id: BoneId) -> impl Iterator<Item = BoneId> + '_ {
-        self.bones
-            .iter()
-            .enumerate()
-            .filter(move |(_, b)| b.parent == Some(id))
-            .map(|(i, _)| BoneId(i as u8))
+        (0u8..).zip(&self.bones).filter(move |(_, b)| b.parent == Some(id)).map(|(i, _)| BoneId(i))
     }
 
     /// The cached rest pose, or a fresh one if the bones changed since it was cached.
+    #[must_use]
     pub fn rest_model(&self) -> std::borrow::Cow<'_, [Affine3A]> {
         if self.rest_model.len() == self.bones.len() { self.rest_model.as_slice().into() } else { self.model_rest().into() }
     }
 
     /// Model-space rest transform of every bone (forward kinematics over `rest`).
+    #[must_use]
     pub fn model_rest(&self) -> Vec<Affine3A> {
+        self.model_from(&[])
+    }
+
+    /// Model-space transform of every bone for the local pose `local` (forward kinematics); bones
+    /// past the end of `local` keep their rest pose.
+    #[must_use]
+    pub fn model_from(&self, local: &[Transform]) -> Vec<Affine3A> {
         let mut out: Vec<Affine3A> = Vec::with_capacity(self.bones.len());
-        for b in &self.bones {
-            let local = b.rest.compute_affine();
-            out.push(match b.parent {
-                Some(p) => out[p.index()] * local,
-                None => local,
-            });
+        for (i, b) in self.bones.iter().enumerate() {
+            let l = local.get(i).unwrap_or(&b.rest).compute_affine();
+            let parent = b.parent.and_then(|p| out.get(p.index()));
+            out.push(parent.map_or(l, |m| *m * l));
         }
         out
     }
 
     /// Bones from `root` down to `tip`, inclusive. `None` if `tip` is not under `root`.
+    #[must_use]
     pub fn chain(&self, root: BoneId, tip: BoneId) -> Option<Vec<BoneId>> {
         let mut chain = vec![tip];
         let mut cur = tip;
         while cur != root {
-            cur = self.get(cur).parent?;
+            cur = self.get(cur)?.parent?;
             chain.push(cur);
         }
         chain.reverse();

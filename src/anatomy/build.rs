@@ -10,6 +10,7 @@ use super::{
     SpringChainDef, Tone,
 };
 use super::{AnatomyBuilder, AttachPoint, HardParams, PartAssets, PartBuild, PartNode};
+use crate::num::{Clamp, Idx};
 
 /// A fully resolved mob body: everything later stages (surface, motion, equip) consume.
 /// Immutable once built; shared behind an `Arc`.
@@ -33,6 +34,8 @@ pub struct Anatomy {
     /// Wing fold rigs: folded local rotations blended in by the pose.
     pub wings: Vec<WingRig>,
     pub look: Option<LookDef>,
+    /// Digits parts, for posing fingers and toes.
+    pub hands: Vec<super::HandDef>,
     pub joint_limits: Vec<(BoneId, JointLimit)>,
     /// Weight per bone and centre of mass (rest pose).
     pub mass: super::BodyMass,
@@ -64,6 +67,7 @@ pub struct BuiltPart {
 }
 
 impl Anatomy {
+    #[must_use]
     pub fn part(&self, path: &PartPath) -> Option<&BuiltPart> {
         self.parts.iter().find(|p| &p.path == path)
     }
@@ -76,18 +80,18 @@ impl Anatomy {
         self.skeleton.inverse_bind = model.iter().map(|m| Mat4::from(*m).inverse()).collect();
         self.skeleton.rest_model = model;
         let mut crowd = CrowdSkeleton { map: Vec::with_capacity(self.skeleton.len()), bones: Vec::new() };
-        for (i, bone) in self.skeleton.bones.iter().enumerate() {
-            let id = BoneId(i as u8);
+        for (id, bone) in (0u8..).map(BoneId).zip(&self.skeleton.bones) {
             // The crowd bone buffer holds MAX_CROWD_BONES per mob: past that, bones fold too.
             let room = crowd.bones.len() < MAX_CROWD_BONES;
             let kept = bone.parent.is_none()
-                || (room && self.parts[bone.part as usize].lod >= LodLevel::Near && !extra_crowd.contains(&id))
+                || (room && self.parts.get(bone.part.idx()).is_some_and(|p| p.lod >= LodLevel::Near) && !extra_crowd.contains(&id))
                 || (room && extra_crowd.contains(&id));
             let mapped = if kept {
                 crowd.bones.push(id);
-                crowd.bones.len() as u8 - 1
+                (crowd.bones.len() - 1).clamp_u8()
             } else {
-                crowd.map[bone.parent.expect("non-root").index()]
+                // Not kept, so not the root: fold into the parent's crowd bone.
+                bone.parent.and_then(|p| crowd.map.get(p.index())).copied().unwrap_or_default()
             };
             crowd.map.push(mapped);
         }
@@ -105,6 +109,10 @@ impl Anatomy {
 /// Pure function of its inputs: no RNG, no seed. Randomness (skin noise, coat variation) belongs
 /// to later stages, so identical bodies always share one anatomy and one base mesh.
 /// `assets` must contain every mesh the plan references (see [`referenced_assets`]).
+///
+/// # Errors
+///
+/// When the plan can't be built: a missing asset, a bone budget overrun, or an invalid part.
 pub fn build_anatomy(live: &BodyPlan, lod_rules: &PartLodRules, assets: &PartAssets) -> Result<Anatomy, AnatomyError> {
     let mut b = AnatomyBuilder::new(live.tone, *lod_rules, assets.clone());
     let root = AttachPoint { bone: None, model: Transform::IDENTITY };
@@ -113,6 +121,7 @@ pub fn build_anatomy(live: &BodyPlan, lod_rules: &PartLodRules, assets: &PartAss
 }
 
 /// Asset paths of every authored mesh a plan references (sculpts and mesh hard parts).
+#[must_use]
 pub fn referenced_assets(plan: &BodyPlan) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mesh_path = |h: &HardParams| match &h.kind {
@@ -126,11 +135,10 @@ pub fn referenced_assets(plan: &BodyPlan) -> Vec<String> {
             super::PartKind::Digits(d) => d.tip.as_ref().and_then(mesh_path),
             _ => None,
         };
-        if let Some(p) = path {
-            if !out.contains(&p) {
+        if let Some(p) = path
+            && !out.contains(&p) {
                 out.push(p);
             }
-        }
     });
     out
 }
@@ -139,7 +147,7 @@ fn walk(b: &mut AnatomyBuilder, node: &PartNode, path: PartPath, at: AttachPoint
     let cx = b.begin_part(node, path.clone())?;
     let slots = node.kind.build(b, at, &cx)?;
     b.set_axis(&slots.axis);
-    super::tone::apply_stamps(b, &node.kind, &node.stamps, &slots, &cx)?;
+    super::tone::apply_stamps(b, &node.kind, &node.stamps, &slots, &cx);
     b.seal_part();
     for child in &node.children {
         let child_path = path.child(&child.name);

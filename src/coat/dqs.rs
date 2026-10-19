@@ -1,6 +1,7 @@
-//! Dual quaternion skinning (Kavan, Collins, Žára & O'Sullivan, "Geometric Skinning with
-//! Approximate Dual Quaternion Blending", 2008), with scale handled by blending each joint's
-//! stretch linearly before the rigid blend. Linear blend skinning averages matrices, which
+//! Dual quaternion skinning, with scale blended linearly before the rigid blend.
+//!
+//! After Kavan, Collins, Žára & O'Sullivan, "Geometric Skinning with Approximate Dual Quaternion
+//! Blending", 2008: each joint's stretch is blended linearly before the rigid blend. Linear blend skinning averages matrices, which
 //! shrinks the limb at bent and twisted joints (the "candy wrapper"); blending the rigid parts as
 //! dual quaternions keeps its volume.
 //!
@@ -19,6 +20,7 @@ pub struct JointSplit {
 }
 
 impl JointSplit {
+    #[must_use]
     pub fn new(linear: Mat3, translation: Vec3) -> Self {
         // Gram–Schmidt on the columns: the nearest rotation for a rotation · scale.
         let c0 = linear.x_axis.normalize_or(Vec3::X);
@@ -30,12 +32,13 @@ impl JointSplit {
 
 fn mul(a: Vec4, b: Vec4) -> Vec4 {
     let (av, bv) = (a.truncate(), b.truncate());
-    (bv * a.w + av * b.w + av.cross(bv)).extend(a.w * b.w - av.dot(bv))
+    (bv * a.w + av * b.w + av.cross(bv)).extend(a.w.mul_add(b.w, -av.dot(bv)))
 }
 
 /// Skins a point and a normal by up to four joints.
+#[must_use]
 pub fn skin(joints: &[JointSplit], weights: &[f32], p: Vec3, n: Vec3) -> (Vec3, Vec3) {
-    let first = Vec4::from(joints[0].rotation);
+    let Some(first) = joints.first().map(|j| Vec4::from(j.rotation)) else { return (p, n) };
     let (mut real, mut dual, mut stretch) = (Vec4::ZERO, Vec4::ZERO, Mat3::ZERO);
     for (j, &w) in joints.iter().zip(weights) {
         let mut q = Vec4::from(j.rotation);
@@ -59,9 +62,10 @@ pub fn skin(joints: &[JointSplit], weights: &[f32], p: Vec3, n: Vec3) -> (Vec3, 
 
 /// Optimized-centre skinning (Le & Hodgins 2016): the blended rotation turns the vertex about its
 /// centre of rotation `cor`, which linear blending carries: `R·S·(p − cor) + LBS(cor)`.
+#[must_use]
 pub fn skin_cor(joints: &[(Mat3, Vec3)], weights: &[f32], p: Vec3, n: Vec3, cor: Vec3) -> (Vec3, Vec3) {
     let splits: Vec<JointSplit> = joints.iter().map(|(l, t)| JointSplit::new(*l, *t)).collect();
-    let first = Vec4::from(splits[0].rotation);
+    let Some(first) = splits.first().map(|j| Vec4::from(j.rotation)) else { return (p, n) };
     let (mut q, mut stretch) = (Vec4::ZERO, Mat3::ZERO);
     for (j, &w) in splits.iter().zip(weights) {
         let r = Vec4::from(j.rotation);
@@ -74,6 +78,7 @@ pub fn skin_cor(joints: &[(Mat3, Vec3)], weights: &[f32], p: Vec3, n: Vec3, cor:
 }
 
 /// Linear blend skinning, for comparison.
+#[must_use]
 pub fn skin_linear(joints: &[(Mat3, Vec3)], weights: &[f32], p: Vec3) -> Vec3 {
     joints.iter().zip(weights).map(|((l, t), w)| (*l * p + *t) * *w).sum()
 }

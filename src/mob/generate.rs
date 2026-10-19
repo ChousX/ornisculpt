@@ -12,6 +12,7 @@ use crate::anatomy::{
 };
 use crate::coat::{Coat, CoatExt, CoatLayer, CoatMeshes, CoatUniform, MobCoat, MobMaterial, annotate, build_coat_meshes};
 use crate::motion::{BakedMotion, Gait, bake_motion};
+use crate::num::Clamp;
 use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
@@ -26,8 +27,10 @@ pub const GENERATOR_VERSION: u32 = 1;
 pub struct BodyKey(pub u128);
 
 /// Hash of everything generation depends on, including the content of referenced authored meshes.
+///
 /// The seed only counts when some level meshes seed-dependent geometry (creases), so identical
 /// bodies normally share meshes.
+#[must_use]
 pub fn body_key(live: &BodyPlan, settings: &SurfaceSettings, seed: u64, assets: &PartAssets, coat: &Coat, outfit: &Outfit) -> BodyKey {
     let uses_seed = LodLevel::ALL.iter().any(|l| settings.get(*l).geometric_folds);
     let mut mesh_hashes: Vec<(&String, u64)> = assets.meshes.iter().map(|(p, m)| (p, m.hash)).collect();
@@ -85,13 +88,14 @@ fn extract_trimesh(mesh: &Mesh) -> Option<TriMesh> {
     };
     let indices: Vec<u32> = match mesh.indices() {
         Some(Indices::U32(i)) => i.clone(),
-        Some(Indices::U16(i)) => i.iter().map(|&x| x as u32).collect(),
-        None => (0..pos.len() as u32).collect(),
+        Some(Indices::U16(i)) => i.iter().map(|&x| u32::from(x)).collect(),
+        None => (0..pos.len().clamp_u32()).collect(),
     };
     Some(TriMesh::new(pos.iter().map(|v| Vec3::from_array(*v)).collect(), normals, indices))
 }
 
 /// Hot reload: regenerate mobs whose body plan or authored meshes changed on disk.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn reload_changed_assets(
     mut commands: Commands,
     mut plan_events: MessageReader<AssetEvent<BodyPlan>>,
@@ -195,6 +199,7 @@ pub struct SlotMaterials {
 }
 
 impl SlotMaterials {
+    #[must_use]
     pub fn get(&self, slot: MaterialSlot) -> Handle<MobMaterial> {
         match slot {
             MaterialSlot::Skin => self.skin.clone(),
@@ -208,8 +213,10 @@ impl SlotMaterials {
 
 impl GeneratedBody {
     /// Materials for a tier (`Hero` = Bevy skinning, coarser = crowd skinning).
+    #[must_use]
     pub fn materials_for(&self, level: LodLevel) -> &SlotMaterials {
-        &self.materials[usize::from(level != LodLevel::Hero)]
+        let [hero, crowd] = &self.materials;
+        if level == LodLevel::Hero { hero } else { crowd }
     }
 }
 
@@ -223,7 +230,8 @@ fn body_materials(
 ) -> [SlotMaterials; 2] {
     let skin_uniform = CoatUniform { cloth: outfit.palette(), ..coat.uniform(anatomy) };
     let hard = Coat::plain([0.85, 0.8, 0.68], 0.4);
-    let eye = Coat::plain([0.05, 0.04, 0.03], 0.1);
+    // Iris (base), white (secondary), pupil (accent); eyes without white show only the iris.
+    let eye = Coat { secondary: [0.86, 0.84, 0.8], accent: [0.01, 0.01, 0.01], ..Coat::plain([0.13, 0.075, 0.04], 0.1) };
     [false, true].map(|crowd| {
         let mut mat = |uniform: CoatUniform, roughness: f32, layer: CoatLayer| {
             // Thin wing surfaces let light through (a flipped diffuse lobe; the shader varies it).
@@ -267,6 +275,7 @@ pub struct GenCache {
 }
 
 impl GenCache {
+    #[must_use]
     pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
@@ -313,6 +322,7 @@ pub(super) fn request_on_undress(ev: On<Remove<MobOutfit>>, mut commands: Comman
 
 /// For each requested mob whose body asset is loaded: resolve its live body, then either reuse a
 /// cached/in-flight body or start a task (within budget).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn start_generation(
     mut commands: Commands,
     mut cache: ResMut<GenCache>,
@@ -342,20 +352,17 @@ pub(super) fn start_generation(
             },
             None => Coat::default(),
         };
-        let live = match live {
-            Some(l) => l.0.clone(),
-            None => {
-                let Some(plan) = plans.get(&mob.body) else { continue };
-                match apply_form(plan, form) {
-                    Ok(l) => {
-                        commands.entity(entity).insert(LiveBody(l.clone()));
-                        l
-                    }
-                    Err(e) => {
-                        error!("mob {entity}: {e}");
-                        commands.entity(entity).remove::<GenRequest>();
-                        continue;
-                    }
+        let live = if let Some(l) = live { l.0.clone() } else {
+            let Some(plan) = plans.get(&mob.body) else { continue };
+            match apply_form(plan, form) {
+                Ok(l) => {
+                    commands.entity(entity).insert(LiveBody(l.clone()));
+                    l
+                }
+                Err(e) => {
+                    error!("mob {entity}: {e}");
+                    commands.entity(entity).remove::<GenRequest>();
+                    continue;
                 }
             }
         };
@@ -386,12 +393,7 @@ pub(super) fn start_generation(
                     lod.cor = centres_of_rotation(lod);
                 }
                 let motion = bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len()));
-                let mut level = 0;
-                let coat_meshes = lods.each_ref().map(|lod| {
-                    let m = build_coat_meshes(&coat, &anatomy, lod, LodLevel::ALL[level]);
-                    level += 1;
-                    m
-                });
+                let coat_meshes = LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level));
                 Ok(GenOutput { anatomy, lods, motion, coat, coat_meshes, outfit })
             });
             cache.in_flight.insert(key, task);
@@ -411,7 +413,7 @@ pub(super) fn finish_generation(
     crowd_skin: Res<CrowdSkin>,
 ) {
     let mut done = Vec::new();
-    for (key, task) in cache.in_flight.iter_mut() {
+    for (key, task) in &mut cache.in_flight {
         if done.len() >= budget.max_completions_per_frame {
             break;
         }
@@ -431,9 +433,9 @@ pub(super) fn finish_generation(
         let skeleton = &out.anatomy.skeleton;
         let full = bindposes.add(SkinnedMeshInverseBindposes::from(skeleton.inverse_bind.clone()));
         let crowd = bindposes.add(SkinnedMeshInverseBindposes::from(
-            skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind[b.index()]).collect::<Vec<_>>(),
+            skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect::<Vec<_>>(),
         ));
-        let radius = out.lods[LodLevel::Far as usize].positions.iter().map(|p| p.length()).fold(0.1, f32::max);
+        let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
         // Hero meshes are Bevy-skinned; coarser levels are crowd-skinned.
         let mut level = 0;
         let lods = out.lods.each_ref().map(|data| {

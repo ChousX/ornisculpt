@@ -88,8 +88,7 @@ struct Orbit {
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
         match v[..] {
             [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
             _ => Self { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0) },
@@ -156,7 +155,7 @@ fn on_ready(
 
 /// Sets the preset's tone on the mob's live body. Returns whether anything changed.
 fn apply_tone(lives: &mut Query<&mut LiveBody>, mob: Entity, preset: usize) -> bool {
-    let (name, [muscle, fat, folds, landmarks]) = TONE_PRESETS[preset];
+    let Some(&(name, [muscle, fat, folds, landmarks])) = TONE_PRESETS.get(preset) else { return false };
     let Ok(mut live) = lives.get_mut(mob) else { return false };
     if name == "authored" {
         return false;
@@ -194,8 +193,9 @@ fn controls(
     }
     if keys.just_pressed(KeyCode::KeyT) {
         viewer.tone = (viewer.tone + 1) % TONE_PRESETS.len();
-        info!("tone preset: {}", TONE_PRESETS[viewer.tone].0);
-        if TONE_PRESETS[viewer.tone].0 == "authored" {
+        let name = TONE_PRESETS.get(viewer.tone).map_or("authored", |p| p.0);
+        info!("tone preset: {name}");
+        if name == "authored" {
             commands.entity(viewer.mob).remove::<LiveBody>().insert(GenRequest);
         } else if apply_tone(&mut lives, viewer.mob, viewer.tone) {
             commands.entity(viewer.mob).insert(GenRequest);
@@ -211,10 +211,10 @@ fn orbit_camera(
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     if buttons.pressed(MouseButton::Left) {
-        orbit.yaw -= motion.delta.x * 0.008;
-        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
+        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.3, 30.0);
+    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
@@ -224,9 +224,9 @@ fn orbit_camera(
 fn wiggle(viewer: Res<Viewer>, time: Res<Time>, mut joints: Query<(&MobJoint, &mut Transform)>) {
     let t = time.elapsed_secs();
     for (joint, mut tf) in &mut joints {
-        let i = joint.bone.0 as f32;
+        let i = f32::from(joint.bone.0);
         tf.rotation = if viewer.wiggle && joint.bone.0 > 0 {
-            joint.rest.rotation * Quat::from_rotation_x((t * 3.0 + i).sin() * 0.35)
+            joint.rest.rotation * Quat::from_rotation_x(f32::mul_add(t, 3.0, i).sin() * 0.35)
         } else {
             joint.rest.rotation
         };
@@ -246,13 +246,13 @@ fn draw_skeleton(
         return;
     }
     let a = &body.anatomy;
-    for (i, bone) in a.skeleton.bones.iter().enumerate() {
-        let Ok(g) = joints.get(skeleton.0[i]) else { continue };
+    for (bone, &joint) in a.skeleton.bones.iter().zip(&skeleton.0) {
+        let Ok(g) = joints.get(joint) else { continue };
         gizmos.line(g.translation(), g.transform_point(Vec3::Y * bone.length), Color::srgb(1.0, 0.85, 0.1));
         gizmos.sphere(Isometry3d::from_translation(g.translation()), 0.008, Color::srgb(1.0, 0.4, 0.1));
     }
     for socket in &a.sockets {
-        let Ok(g) = joints.get(skeleton.0[socket.bone.index()]) else { continue };
+        let Some(Ok(g)) = skeleton.0.get(socket.bone.index()).map(|&joint| joints.get(joint)) else { continue };
         gizmos.sphere(Isometry3d::from_translation(g.transform_point(socket.local.translation)), 0.02, Color::srgb(0.2, 0.8, 1.0));
     }
 }

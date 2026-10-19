@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
+use crate::num::Idx;
 use crate::anatomy::{Anatomy, BoneId, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 
@@ -52,11 +53,10 @@ struct CreaseJoint {
 
 impl Creases {
     #[inline]
-    fn displacement(&self, joints: impl Iterator<Item = usize>, p: Vec3A) -> f32 {
+    fn displacement<'a>(&self, joints: impl Iterator<Item = &'a CreaseJoint>, p: Vec3A) -> f32 {
         let mut mask = 0.0f32;
         let mut along = 0.0;
-        for j in joints {
-            let joint = &self.joints[j];
+        for joint in joints {
             let offset = p - joint.position;
             let m = (1.0 - offset.length() / joint.radius).max(0.0);
             if m > mask {
@@ -67,7 +67,7 @@ impl Creases {
         if mask <= 0.0 {
             return 0.0;
         }
-        let phase = along * self.frequency * std::f32::consts::TAU + self.wobble.sample(p.into()) * 2.0;
+        let phase = self.wobble.sample(p.into()).mul_add(2.0, along * self.frequency * std::f32::consts::TAU);
         let ridge = (1.0 - phase.sin().abs()).powi(4);
         self.amplitude * mask * mask * ridge
     }
@@ -162,9 +162,10 @@ impl BodyField {
         let (model, unbind) = if opts.spread {
             let pose = crate::anatomy::spread_pose(anatomy, &crate::anatomy::Spread::default());
             let mut model: Vec<Affine3A> = Vec::with_capacity(pose.len());
-            for (i, b) in anatomy.skeleton.bones.iter().enumerate() {
-                let l = pose[i].compute_affine();
-                model.push(b.parent.map_or(l, |p| model[p.index()] * l));
+            for (b, local) in anatomy.skeleton.bones.iter().zip(&pose) {
+                let l = local.compute_affine();
+                let parent = b.parent.and_then(|p| model.get(p.index()));
+                model.push(parent.map_or(l, |m| *m * l));
             }
             let unbind = rest.iter().zip(&model).map(|(r, s)| *r * s.inverse()).collect();
             (model, unbind)
@@ -172,7 +173,7 @@ impl BodyField {
             (rest, Vec::new())
         };
         let prim_part = primitive_parts(anatomy);
-        let body_tone = anatomy.parts.first().map(|p| p.tone).unwrap_or_default();
+        let body_tone = anatomy.parts.first().map_or_default(|p| p.tone);
         let fold_amp = body_tone.fold_noise.amplitude * body_tone.folds;
         let creases = (opts.geometric_folds && fold_amp > 0.0).then(|| {
             let wobble = NoiseSettings { amplitude: 1.0, frequency: body_tone.fold_noise.frequency * 0.5, ..body_tone.fold_noise };
@@ -181,14 +182,14 @@ impl BodyField {
                 .bones
                 .iter()
                 .enumerate()
-                .filter(|(_, b)| b.parent.is_some() && anatomy.parts[b.part as usize].lod >= opts.level)
-                .map(|(i, b)| {
-                    let parent = &model[b.parent.expect("filtered").index()];
-                    CreaseJoint {
-                        position: model[i].translation,
+                .filter(|(_, b)| anatomy.parts.get(b.part.idx()).is_some_and(|part| part.lod >= opts.level))
+                .filter_map(|(i, b)| {
+                    let parent = model.get(b.parent?.index())?;
+                    Some(CreaseJoint {
+                        position: model.get(i)?.translation,
                         axis: parent.matrix3.y_axis.normalize_or(Vec3A::Y),
                         radius: (b.length * 0.6).clamp(0.02, 0.15),
-                    }
+                    })
                 })
                 .collect();
             Creases {
@@ -202,18 +203,19 @@ impl BodyField {
 
         // A limb part, or a part growing straight from one (hands, toes, hooves), belongs to that limb.
         let limb_of = |part: usize| -> Option<u16> {
-            let p = &anatomy.parts[part];
+            let p = anatomy.parts.get(part)?;
             if p.role.is_some() {
-                return Some(part as u16);
+                return u16::try_from(part).ok();
             }
-            p.parent.filter(|q| anatomy.parts[*q as usize].role.is_some())
+            p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
         };
         let mut prims = Vec::new();
-        for (i, p) in anatomy.primitives.iter().enumerate() {
-            if anatomy.parts[prim_part[i] as usize].lod < opts.level || p.lod < opts.level {
+        for (p, &part) in anatomy.primitives.iter().zip(&prim_part) {
+            if anatomy.parts.get(part.idx()).is_none_or(|part| part.lod < opts.level) || p.lod < opts.level {
                 continue;
             }
-            let m = model[p.bone.index()] * p.local.compute_affine();
+            let Some(bone) = model.get(p.bone.index()) else { continue };
+            let m = *bone * p.local.compute_affine();
             let min_scale = (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
             let aabb = transform_aabb(&m, local_bounds(&p.shape)).grow(Vec3A::splat(p.blend + fold_pad));
             let shape = match &p.shape {
@@ -234,7 +236,7 @@ impl BodyField {
                 layer: p.layer,
                 region: p.region,
                 bone: p.bone,
-                limb: limb_of(prim_part[i] as usize),
+                limb: limb_of(part.idx()),
                 aabb,
             });
         }
@@ -250,59 +252,67 @@ impl BodyField {
     /// Distance to the smooth union of a subset of primitives (no creases). Indices are
     /// [`Anatomy::primitives`] indices, which match this field's own only at `Hero` level, where
     /// every primitive is present.
+    #[must_use]
     pub fn distance_among(&self, prims: std::ops::Range<usize>, p: Vec3A) -> f32 {
-        self.eval(prims.start.min(self.prims.len())..prims.end.min(self.prims.len()), 0..0, p).0
+        self.eval(self.subset(prims), std::iter::empty(), p).0
     }
 
     /// [`Field::surface_info`] over a subset of primitives (see [`distance_among`](Self::distance_among)).
+    #[must_use]
     pub fn surface_info_among(&self, prims: std::ops::Range<usize>, p: Vec3A) -> SurfaceInfo {
-        self.info(prims.start.min(self.prims.len())..prims.end.min(self.prims.len()), p)
+        self.info(self.subset(prims), p)
+    }
+
+    /// The primitives in `range`, clipped to those present.
+    fn subset(&self, range: std::ops::Range<usize>) -> std::slice::Iter<'_, PreparedPrim> {
+        let len = self.prims.len();
+        self.prims.get(range.start.min(len)..range.end.min(len)).unwrap_or_default().iter()
     }
 
     /// Restricts evaluation to primitives that can affect `region` (a meshing chunk).
     pub fn view(&self, region: Aabb3d) -> ChunkView<'_> {
-        let prims = (0..self.prims.len() as u32)
-            .filter(|&i| self.prims[i as usize].aabb.intersects(&region))
+        let prims = (0u32..)
+            .zip(&self.prims)
+            .filter(|(_, prim)| prim.aabb.intersects(&region))
+            .map(|(i, _)| i)
             .collect();
         let joints = self.creases.as_ref().map_or_else(Vec::new, |c| {
-            (0..c.joints.len() as u32)
-                .filter(|&i| {
-                    let j = &c.joints[i as usize];
+            (0u32..)
+                .zip(&c.joints)
+                .filter(|(_, j)| {
                     let closest = j.position.clamp(region.min, region.max);
                     closest.distance(j.position) < j.radius
                 })
+                .map(|(i, _)| i)
                 .collect()
         });
         ChunkView { field: self, prims, joints, bounds: region }
     }
 
-    pub fn primitive_count(&self) -> usize {
+    #[must_use]
+    pub const fn primitive_count(&self) -> usize {
         self.prims.len()
     }
 
     /// Smooth union over `indices`, plus creases from `joints`; returns the distance and the
     /// nearest union primitive.
     #[inline]
-    fn eval(
+    fn eval<'a, 'j>(
         &self,
-        indices: impl Iterator<Item = usize>,
-        joints: impl Iterator<Item = usize>,
+        prims: impl Iterator<Item = &'a PreparedPrim>,
+        joints: impl Iterator<Item = &'j CreaseJoint>,
         p: Vec3A,
-    ) -> (f32, Option<usize>) {
+    ) -> (f32, Option<&'a PreparedPrim>) {
         let mut d: Option<f32> = None;
         let mut raised = 0.0;
-        let mut nearest = None;
+        let mut nearest: Option<&PreparedPrim> = None;
         let mut best = f32::INFINITY;
-        for i in indices {
-            let prim = &self.prims[i];
+        for prim in prims {
             let (dl, blend) = prim.eval(p);
             match prim.op {
                 PrimOp::Union => {
                     // Two different limbs only meet, never blend.
-                    let apart = nearest.is_some_and(|n: usize| {
-                        let other = self.prims[n].limb;
-                        prim.limb.is_some() && other.is_some() && prim.limb != other
-                    });
+                    let apart = nearest.is_some_and(|n| prim.limb.is_some() && n.limb.is_some() && prim.limb != n.limb);
                     d = Some(match d {
                         None => dl,
                         Some(d) if apart => d.min(dl),
@@ -310,7 +320,7 @@ impl BodyField {
                     });
                     if dl < best {
                         best = dl;
-                        nearest = Some(i);
+                        nearest = Some(prim);
                     }
                 }
                 PrimOp::Subtract => {
@@ -322,27 +332,25 @@ impl BodyField {
                     if let PreparedShape::Simple(PrimShape::Ellipsoid { radii }) = &prim.shape {
                         let s = 1.0 - (prim.to_local.transform_point3a(p) / Vec3A::from(*radii)).length_squared();
                         if s > 0.0 {
-                            raised += height * prim.min_scale * s * s;
+                            raised = (height * prim.min_scale * s).mul_add(s, raised);
                         }
                     }
                 }
             }
         }
         let mut d = d.map_or(f32::MAX, |d| d - raised);
-        if let Some(c) = &self.creases {
-            if d.abs() < 0.03 {
+        if let Some(c) = &self.creases
+            && d.abs() < 0.03 {
                 d += c.displacement(joints, p);
             }
-        }
         (d, nearest)
     }
 
-    fn info(&self, indices: impl Iterator<Item = usize> + Clone, p: Vec3A) -> SurfaceInfo {
-        let (d, nearest) = self.eval(indices.clone(), std::iter::empty(), p);
-        let near_bone = nearest.map(|n| self.prims[n].bone);
+    fn info<'a>(&self, prims: impl Iterator<Item = &'a PreparedPrim> + Clone, p: Vec3A) -> SurfaceInfo {
+        let (d, near) = self.eval(prims.clone(), std::iter::empty(), p);
+        let near_bone = near.map(|n| n.bone);
         let mut influences = Influences::default();
-        for i in indices {
-            let prim = &self.prims[i];
+        for prim in prims {
             // Weights only from bones in line with the nearest one (its parents and children):
             // never a neighbouring finger, never the other leg.
             if prim.op != PrimOp::Union || near_bone.is_some_and(|b| !self.in_line(b, prim.bone)) {
@@ -350,11 +358,10 @@ impl BodyField {
             }
             let (dl, blend) = prim.eval(p);
             let gap = (dl - d).max(0.0);
-            let reach = blend * 2.0 + 1e-4;
+            let reach = f32::mul_add(blend, 2.0, 1e-4);
             let w = (1.0 - gap / reach).max(0.0);
             influences.add(prim.bone, w * w);
         }
-        let near = nearest.map(|i| &self.prims[i]);
         influences.normalize(near.map_or(BoneId(0), |n| n.bone));
         SurfaceInfo {
             influences,
@@ -365,11 +372,13 @@ impl BodyField {
 }
 
 /// Owning part index of every primitive (from the parts' primitive ranges).
-pub(crate) fn primitive_parts(anatomy: &Anatomy) -> Vec<u16> {
+pub fn primitive_parts(anatomy: &Anatomy) -> Vec<u16> {
     let mut out = vec![0u16; anatomy.primitives.len()];
-    for (pi, part) in anatomy.parts.iter().enumerate() {
+    for (pi, part) in (0u16..).zip(&anatomy.parts) {
         for i in part.primitives.clone() {
-            out[i as usize] = pi as u16;
+            if let Some(slot) = out.get_mut(i.idx()) {
+                *slot = pi;
+            }
         }
     }
     out
@@ -385,7 +394,8 @@ pub struct ChunkView<'a> {
 
 impl ChunkView<'_> {
     /// No primitive reaches this chunk; the mesher can skip it.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.prims.is_empty()
     }
 }
@@ -396,12 +406,12 @@ impl Field for BodyField {
     }
 
     fn distance(&self, p: Vec3A) -> f32 {
-        let joints = self.creases.as_ref().map_or(0, |c| c.joints.len());
-        self.eval(0..self.prims.len(), 0..joints, p).0
+        let joints = self.creases.as_ref().map_or(&[][..], |c| &c.joints);
+        self.eval(self.prims.iter(), joints.iter(), p).0
     }
 
     fn surface_info(&self, p: Vec3A) -> SurfaceInfo {
-        self.info(0..self.prims.len(), p)
+        self.info(self.prims.iter(), p)
     }
 }
 
@@ -411,11 +421,22 @@ impl Field for ChunkView<'_> {
     }
 
     fn distance(&self, p: Vec3A) -> f32 {
-        self.field.eval(self.prims.iter().map(|&i| i as usize), self.joints.iter().map(|&i| i as usize), p).0
+        self.field.eval(self.prims(), self.joints(), p).0
     }
 
     fn surface_info(&self, p: Vec3A) -> SurfaceInfo {
-        self.field.info(self.prims.iter().map(|&i| i as usize), p)
+        self.field.info(self.prims(), p)
+    }
+}
+
+impl<'a> ChunkView<'a> {
+    fn prims(&self) -> impl Iterator<Item = &'a PreparedPrim> + Clone + '_ {
+        self.prims.iter().filter_map(|&i| self.field.prims.get(i.idx()))
+    }
+
+    fn joints(&self) -> impl Iterator<Item = &'a CreaseJoint> + '_ {
+        let joints = self.field.creases.as_ref().map_or(&[][..], |c| &c.joints);
+        self.joints.iter().filter_map(move |&i| joints.get(i.idx()))
     }
 }
 
@@ -445,21 +466,50 @@ impl BodyField {
         if self.unbind.is_empty() {
             return;
         }
-        for i in 0..data.positions.len() {
-            let (joints, weights) = (data.joints[i], data.weights[i]);
+        let vertices = data.positions.iter_mut().zip(&data.joints).zip(&data.weights).enumerate();
+        for (i, ((position, joints), weights)) in vertices {
             let mut m = bevy::math::Mat3A::ZERO;
             let mut t = Vec3A::ZERO;
-            for k in 0..4 {
-                let Some(u) = self.unbind.get(joints[k] as usize) else { continue };
-                m += u.matrix3 * weights[k];
-                t += u.translation * weights[k];
+            for (&j, &w) in joints.iter().zip(weights) {
+                let Some(u) = self.unbind.get(j.idx()) else { continue };
+                m += u.matrix3 * w;
+                t += u.translation * w;
             }
             let blended = Affine3A { matrix3: m, translation: t };
-            data.positions[i] = blended.transform_point3(data.positions[i]);
+            *position = blended.transform_point3(*position);
             if let Some(n) = data.normals.get_mut(i) {
                 *n = (m * Vec3A::from(*n)).normalize_or(Vec3A::from(*n)).into();
             }
         }
+    }
+}
+
+impl BodyField {
+    /// Distance at `p` over a chunk view's primitives, and the nearest primitive's bone and limb.
+    pub(crate) fn probe(&self, view: &ChunkView, p: Vec3A) -> (f32, Option<(BoneId, Option<u16>)>) {
+        let (d, nearest) = self.eval(view.prims.iter().filter_map(|&i| self.prims.get(i.idx())), std::iter::empty(), p);
+        (d, nearest.map(|n| (n.bone, n.limb)))
+    }
+
+    /// Model transform of every bone in the pose the field was built in.
+    pub(crate) fn bone_model(&self) -> &[Affine3A] {
+        &self.bone_model
+    }
+}
+
+
+impl ChunkView<'_> {
+    /// This view restricted to a sub-region.
+    pub(crate) fn narrow(&self, region: Aabb3d) -> Self {
+        let field = self.field;
+        let prims = self
+            .prims
+            .iter()
+            .copied()
+            .filter(|&i| field.prims.get(i.idx()).is_some_and(|prim| prim.aabb.intersects(&region)))
+            .collect();
+        let joints = self.joints.clone();
+        ChunkView { field, prims, joints, bounds: region }
     }
 }
 
@@ -477,36 +527,12 @@ mod spread_tests {
         let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
         let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
         let arm = a.parts.iter().find(|p| p.role == Some(crate::anatomy::LimbRole::Manipulator)).unwrap();
-        let hand = (arm.bones.end - 1) as usize;
+        let hand = usize::from(arm.bones.end - 1);
         let rest = a.skeleton.model_rest()[hand].transform_point3(Vec3::Y * 0.02);
         let spread = field.unbind[hand].inverse().transform_point3(rest);
         assert!(spread.distance(rest) > 0.05, "the hand moved for meshing");
-        let mut data = crate::surface::BodyMeshData { positions: vec![spread], normals: vec![Vec3::X], joints: vec![[hand as u16, 0, 0, 0]], weights: vec![[1.0, 0.0, 0.0, 0.0]], ..Default::default() };
+        let mut data = crate::surface::BodyMeshData { positions: vec![spread], normals: vec![Vec3::X], joints: vec![[u16::try_from(hand).unwrap(), 0, 0, 0]], weights: vec![[1.0, 0.0, 0.0, 0.0]], ..Default::default() };
         field.unbind(&mut data);
         assert!(data.positions[0].distance(rest) < 1e-4, "{} vs {}", data.positions[0], rest);
-    }
-}
-
-impl BodyField {
-    /// Distance at `p` over a chunk view's primitives, and the nearest primitive's bone and limb.
-    pub(crate) fn probe(&self, view: &ChunkView, p: Vec3A) -> (f32, Option<(BoneId, Option<u16>)>) {
-        let (d, nearest) = self.eval(view.prims.iter().map(|&i| i as usize), std::iter::empty(), p);
-        (d, nearest.map(|i| (self.prims[i].bone, self.prims[i].limb)))
-    }
-
-    /// Model transform of every bone in the pose the field was built in.
-    pub(crate) fn bone_model(&self) -> &[Affine3A] {
-        &self.bone_model
-    }
-}
-
-
-impl<'a> ChunkView<'a> {
-    /// This view restricted to a sub-region.
-    pub(crate) fn narrow(&self, region: Aabb3d) -> ChunkView<'a> {
-        let field = self.field;
-        let prims = self.prims.iter().copied().filter(|&i| field.prims[i as usize].aabb.intersects(&region)).collect();
-        let joints = self.joints.clone();
-        ChunkView { field, prims, joints, bounds: region }
     }
 }

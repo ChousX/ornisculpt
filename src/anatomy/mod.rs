@@ -42,7 +42,7 @@ pub use path::PartPath;
 pub use plan::{AttachSlot, BodyPlan, PartNode, PartOffset, PartTone, Repeat, Tone};
 pub use primitive::{HardPart, PrimLayer, PrimOp, PrimShape, Primitive};
 pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, RegionTable, Side};
-pub use rig::{Clavicle, ClothFollow, LegInfo, LookDef, SpringChainDef};
+pub use rig::{Clavicle, ClothFollow, HandDef, LegInfo, LookDef, SpringChainDef};
 pub use spread::{Spread, spread_pose};
 pub use skeleton::{
     BoneDef, BoneId, CrowdSkeleton, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
@@ -94,6 +94,9 @@ pub enum AnatomyError {
     InvalidParams { path: PartPath, reason: String },
     #[error("part `{path}` needs mesh asset `{asset}`, which was not provided")]
     MissingAsset { path: PartPath, asset: String },
+    /// A builder invariant did not hold (a bug, reported instead of panicking).
+    #[error("internal error: {0}")]
+    Internal(&'static str),
 }
 
 #[cfg(test)]
@@ -200,7 +203,7 @@ mod tests {
         assert_eq!(a.legs.len(), 4);
         // Front legs rank 0, hind legs rank 1, on both sides.
         let mut pairs: Vec<_> = a.legs.iter().map(|l| (l.side, l.pair)).collect();
-        pairs.sort_by_key(|(s, p)| (*s as u8, *p));
+        pairs.sort_by_key(|(s, p)| (*s != Side::Left, *p));
         assert_eq!(
             pairs,
             [
@@ -244,7 +247,7 @@ mod tests {
         let live = apply_form(&quadruped(), &Form::default()).unwrap();
         let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
         let count = |s: RegionSelector| s.mask(&a).0.count_ones();
-        let total = a.regions.regions.len() as u32;
+        let total = u32::try_from(a.regions.regions.len()).unwrap();
         assert_eq!(count(RegionSelector::All), total);
         // Per leg: upper, lower, end, plus its toes (Digit) and claws (Hard).
         assert_eq!(count(RegionSelector::Role(LimbRole::Locomotor)), 4 * 5);

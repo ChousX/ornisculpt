@@ -75,7 +75,7 @@ impl FromWorld for PlaceholderAssets {
 /// Spawns a body's coat geometry (fur shells, feather cards) for one LOD level.
 fn spawn_coat_meshes(commands: &mut Commands, mob: Entity, body: &GeneratedBody, level: LodLevel, extra: impl Bundle + Clone) {
     let m = body.materials_for(level);
-    let c = &body.coat_meshes[level as usize];
+    let c = level.pick(&body.coat_meshes);
     for (mesh, material) in [(&c.shells, &m.shell), (&c.feathers, &m.feather)] {
         if let Some(mesh) = mesh {
             commands.spawn((
@@ -110,7 +110,7 @@ pub(super) fn attach_body(
         commands.init_resource::<PlaceholderAssets>();
         return;
     };
-    let with_placeholder: Vec<Entity> = placeholders.iter().map(|c| c.parent()).collect();
+    let with_placeholder: Vec<Entity> = placeholders.iter().map(ChildOf::parent).collect();
     for (mob, pend, tier, children, slot) in &pending {
         if is_lost(&cache, pend) {
             commands.entity(mob).remove::<GenPending>();
@@ -140,7 +140,7 @@ pub(super) fn attach_body(
         let shown = tier.map_or(LodLevel::Far, |t| t.0);
         for level in [LodLevel::Near, LodLevel::Far] {
             let visibility = if level == shown { Visibility::Inherited } else { Visibility::Hidden };
-            for (mat_slot, mesh) in &body.lods[level as usize].0 {
+            for (mat_slot, mesh) in &level.pick(&body.lods).0 {
                 commands.spawn((
                     MobVisual,
                     LodMesh(level),
@@ -180,16 +180,16 @@ pub(super) fn sync_hero_visuals(
             let Some(body) = bodies.get(&body.0) else { continue };
             let skeleton = &body.anatomy.skeleton;
             let mut joints: Vec<Entity> = Vec::with_capacity(skeleton.len());
-            for (i, bone) in skeleton.bones.iter().enumerate() {
-                let parent = bone.parent.map_or(mob, |p| joints[p.index()]);
-                let mut e = commands.spawn((bone.rest, MobJoint { mob, bone: BoneId(i as u8), rest: bone.rest }, ChildOf(parent)));
+            for (id, bone) in (0u8..).map(BoneId).zip(&skeleton.bones) {
+                let parent = bone.parent.and_then(|p| joints.get(p.index())).copied().unwrap_or(mob);
+                let mut e = commands.spawn((bone.rest, MobJoint { mob, bone: id, rest: bone.rest }, ChildOf(parent)));
                 if bone.parent.is_none() {
                     e.insert((MobVisual, HeroVisual));
                 }
                 joints.push(e.id());
             }
             let skin = SkinnedMesh { inverse_bindposes: body.full_bindposes.clone(), joints: joints.clone() };
-            for (slot, mesh) in &body.lods[LodLevel::Hero as usize].0 {
+            for (slot, mesh) in &LodLevel::Hero.pick(&body.lods).0 {
                 commands.spawn((
                     MobVisual,
                     HeroVisual,
@@ -200,7 +200,7 @@ pub(super) fn sync_hero_visuals(
                     ChildOf(mob),
                 ));
             }
-            spawn_coat_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin.clone()));
+            spawn_coat_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin));
             commands.entity(mob).insert(MobSkeleton(joints));
         } else if !hero && has_skeleton {
             for child in children.into_iter().flatten() {
@@ -225,7 +225,7 @@ pub(super) fn sync_part_entities(
         let Some(body) = bodies.get(&body.0) else { continue };
         let mut have: HashMap<PartPath, Entity> = existing
             .into_iter()
-            .flat_map(|p| p.iter())
+            .flat_map(RelationshipTarget::iter)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.path.clone(), e)))
             .collect();
         for built in body.anatomy.parts.iter().filter(|p| p.lod >= tier.0) {

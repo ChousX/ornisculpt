@@ -128,8 +128,11 @@ fn linear(c: [f32; 3]) -> Vec4 {
     Vec4::new(l.red, l.green, l.blue, 1.0)
 }
 
+/// A 64-bit mask as (low, high) words.
 fn split(mask: RegionMask) -> UVec2 {
-    UVec2::new(mask.0 as u32, (mask.0 >> 32) as u32)
+    let low = u32::try_from(mask.0 & u64::from(u32::MAX)).unwrap_or_default();
+    let high = u32::try_from(mask.0 >> 32).unwrap_or_default();
+    UVec2::new(low, high)
 }
 
 /// Coat parameters as the shaders see them (one covering of each kind; masks per kind).
@@ -141,7 +144,8 @@ pub struct CoatUniform {
     pub scale_mask: UVec2,
     pub fur_mask: UVec2,
     pub feather_mask: UVec2,
-    pub _pad: UVec2,
+    /// Padding to the uniform's 16-byte alignment.
+    pub pad: UVec2,
     /// size, relief, contrast, _
     pub scales: Vec4,
     /// length, density, thickness, tip
@@ -153,7 +157,7 @@ pub struct CoatUniform {
 }
 
 /// Region masks per covering kind on one anatomy (later coverings take regions from earlier).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoverageMasks {
     pub scales: RegionMask,
     pub fur: RegionMask,
@@ -161,6 +165,7 @@ pub struct CoverageMasks {
 }
 
 impl Coat {
+    #[must_use]
     pub fn coverage(&self, anatomy: &Anatomy) -> CoverageMasks {
         let mut m = CoverageMasks::default();
         for c in &self.coverings {
@@ -178,6 +183,7 @@ impl Coat {
         m
     }
 
+    #[must_use]
     pub fn scales(&self) -> Option<Scales> {
         self.coverings.iter().find_map(|c| match c.kind {
             CoveringKind::Scales(s) => Some(s),
@@ -185,6 +191,7 @@ impl Coat {
         })
     }
 
+    #[must_use]
     pub fn fur(&self) -> Option<Fur> {
         self.coverings.iter().find_map(|c| match c.kind {
             CoveringKind::Fur(f) => Some(f),
@@ -192,6 +199,7 @@ impl Coat {
         })
     }
 
+    #[must_use]
     pub fn feathers(&self) -> Option<Feathers> {
         self.coverings.iter().find_map(|c| match c.kind {
             CoveringKind::Feathers(f) => Some(f),
@@ -200,6 +208,7 @@ impl Coat {
     }
 
     /// The shader uniform for this coat on `anatomy`.
+    #[must_use]
     pub fn uniform(&self, anatomy: &Anatomy) -> CoatUniform {
         let masks = self.coverage(anatomy);
         let s = self.scales().unwrap_or_default();
@@ -212,7 +221,7 @@ impl Coat {
             scale_mask: split(masks.scales),
             fur_mask: split(masks.fur),
             feather_mask: split(masks.feathers),
-            _pad: UVec2::ZERO,
+            pad: UVec2::ZERO,
             scales: Vec4::new(s.size, s.relief, s.contrast, 0.0),
             fur: Vec4::new(f.length, f.density, f.thickness, f.tip),
             feathers: Vec4::new(fe.length, fe.width, fe.tip, 0.0),
@@ -221,8 +230,9 @@ impl Coat {
     }
 
     /// A plain coat in one colour (hard parts, eyes).
-    pub fn plain(color: [f32; 3], roughness: f32) -> Coat {
-        Coat { base: color, secondary: color, accent: color, roughness, coverings: Vec::new() }
+    #[must_use]
+    pub const fn plain(color: [f32; 3], roughness: f32) -> Self {
+        Self { base: color, secondary: color, accent: color, roughness, coverings: Vec::new() }
     }
 }
 
@@ -243,7 +253,7 @@ impl AssetLoader for CoatLoader {
     type Settings = ();
     type Error = CoatLoaderError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>) -> Result<Coat, Self::Error> {
+    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Coat, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         Ok(ron::de::from_bytes(&bytes)?)

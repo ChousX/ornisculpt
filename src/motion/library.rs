@@ -1,5 +1,6 @@
-//! Built-in cycles and a standard graph that works on any body: every cycle states what it fits,
-//! so a dog gets the quadruped gaits, a human the biped ones, and an action a body can't do
+//! Built-in cycles and a standard graph that works on any body.
+//!
+//! Every cycle states what it fits, so a dog gets the quadruped gaits, a human the biped ones, and an action a body can't do
 //! simply doesn't play.
 //!
 //! ```ignore
@@ -13,10 +14,11 @@ use super::cycle::{Channel as C, Curve, Cycle, FootPlan, Joint, LegSel, RootMoti
 use super::fit::{BodyFamily as F, Feature, Fit};
 use super::graph::{BodyMask, Condition, Layer, MotionGraph, Play};
 use super::gait::{BodyMotion, PhasePattern};
+use super::heft::StepShape;
 use crate::anatomy::Side;
 
 fn plan(pattern: PhasePattern, duty: f32, lift: f32, bob: f32, body: BodyMotion) -> FootPlan {
-    FootPlan { pattern, duty, lift, bob, body, shape: Default::default() }
+    FootPlan { pattern, duty, lift, bob, body, shape: StepShape::default() }
 }
 
 /// Arms swing against the opposite leg; the wave peaks (arm forward) as that foot lands.
@@ -25,6 +27,7 @@ fn arm_swing(degrees: f32) -> Track {
 }
 
 /// Gaits for every family. Speeds are leg lengths per second.
+#[must_use]
 pub fn gaits() -> Vec<Cycle> {
     let upright = || Fit::family(F::UprightBiped);
     let biped = || Fit::family(F::Biped);
@@ -82,6 +85,7 @@ pub fn gaits() -> Vec<Cycle> {
 }
 
 /// Looping idles, layered on top of everything.
+#[must_use]
 pub fn idles() -> Vec<Cycle> {
     vec![
         Cycle::idle("breathe", 3.6).track(T::Spine, C::Pitch, Curve::wave(1.5)).track(T::Root, C::Bob, Curve::wave(0.004)),
@@ -112,6 +116,7 @@ pub fn idles() -> Vec<Cycle> {
 }
 
 /// One-shot actions.
+#[must_use]
 pub fn actions() -> Vec<Cycle> {
     vec![
         Cycle::action("attack", 0.7)
@@ -160,6 +165,7 @@ pub fn actions() -> Vec<Cycle> {
 /// - `tail`: wagging while `happy` is set.
 /// - `wings`: flapping while `flying` is set.
 /// - `action`: one-shots on triggers `attack`, `shake`, `rear`, `wave`, `flare`.
+#[must_use]
 pub fn standard() -> MotionGraph {
     let mut g = MotionGraph::new()
         .param("happy", super::graph::ParamValue::Bool(false))

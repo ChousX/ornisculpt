@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 use super::cycle::{Cycle, CycleKind};
 use super::eval::{EvalInput, LayerPose, MaskWeights, MotionRig, evaluate};
 use super::graph::{
-    BodyMask, CCondition, CParamTest, CPlay, ComposedGraph, CycleSource, LayerMode, MotionGraph, ParamValue, Switch, compose,
+    BodyMask, CCondition, CLayer, CParamTest, CPlay, ComposedGraph, CycleSource, LayerMode, MotionGraph, ParamValue, Switch, compose,
 };
 use super::stages::leg_length;
 use super::{ActiveStep, CyclePose, ExternalRoot, GaitClock, GaitOverride, Locomotion, MotionEvent};
@@ -29,11 +29,13 @@ use crate::mob::{GeneratedBody, MobBody, MobSkeleton};
 pub struct MobMotion(pub Vec<Handle<MotionGraph>>);
 
 impl MobMotion {
+    #[must_use]
     pub fn new(graph: Handle<MotionGraph>) -> Self {
         Self(vec![graph])
     }
 
     /// Also runs `graph` (its layers merge with same-named layers, parameters are shared).
+    #[must_use]
     pub fn and(mut self, graph: Handle<MotionGraph>) -> Self {
         self.0.push(graph);
         self
@@ -81,25 +83,30 @@ impl MotionParams {
     }
 
     /// Builder form of [`set`](Self::set).
+    #[must_use]
     pub fn with(mut self, name: &str, value: f32) -> Self {
         self.set(name, value);
         self
     }
 
     /// Builder form of [`set_bool`](Self::set_bool).
+    #[must_use]
     pub fn with_bool(mut self, name: &str, value: bool) -> Self {
         self.set_bool(name, value);
         self
     }
 
+    #[must_use]
     pub fn float(&self, name: &str) -> Option<f32> {
         self.floats.get(name).copied()
     }
 
+    #[must_use]
     pub fn bool(&self, name: &str) -> Option<bool> {
         self.bools.get(name).copied()
     }
 
+    #[must_use]
     pub fn is_triggered(&self, name: &str) -> bool {
         self.triggers.contains_key(name)
     }
@@ -107,13 +114,13 @@ impl MotionParams {
 
 impl From<Handle<Cycle>> for CycleSource {
     fn from(h: Handle<Cycle>) -> Self {
-        CycleSource::Asset(h)
+        Self::Asset(h)
     }
 }
 
 impl From<Cycle> for CycleSource {
     fn from(c: Cycle) -> Self {
-        CycleSource::Inline(Arc::new(c))
+        Self::Inline(Arc::new(c))
     }
 }
 
@@ -142,32 +149,38 @@ impl PlayCycle {
         Self { cycle: cycle.into(), mask: BodyMask::All, mode: LayerMode::Override, weight: 1.0, blend: 0.2, speed: 1.0, root_motion: true }
     }
 
+    #[must_use]
     pub fn mask(mut self, mask: BodyMask) -> Self {
         self.mask = mask;
         self
     }
 
-    pub fn additive(mut self) -> Self {
+    #[must_use]
+    pub const fn additive(mut self) -> Self {
         self.mode = LayerMode::Additive;
         self
     }
 
-    pub fn weight(mut self, weight: f32) -> Self {
+    #[must_use]
+    pub const fn weight(mut self, weight: f32) -> Self {
         self.weight = weight;
         self
     }
 
-    pub fn blend(mut self, seconds: f32) -> Self {
+    #[must_use]
+    pub const fn blend(mut self, seconds: f32) -> Self {
         self.blend = seconds;
         self
     }
 
-    pub fn speed(mut self, speed: f32) -> Self {
+    #[must_use]
+    pub const fn speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
     }
 
-    pub fn without_root_motion(mut self) -> Self {
+    #[must_use]
+    pub const fn without_root_motion(mut self) -> Self {
         self.root_motion = false;
         self
     }
@@ -281,15 +294,35 @@ pub struct MotionRuntime {
 
 impl MotionRuntime {
     /// Whether anything is playing.
+    #[must_use]
     pub fn is_playing(&self) -> bool {
         !self.active.is_empty()
     }
 
     /// Current state name of a layer.
+    #[must_use]
     pub fn state(&self, layer: &str) -> Option<&str> {
         let g = self.graph.as_ref()?;
-        let i = g.layers.iter().position(|l| l.name == layer)?;
-        Some(&g.layers[i].states[self.layers.get(i)?.state].name)
+        let (i, l) = g.layers.iter().enumerate().find(|(_, l)| l.name == layer)?;
+        Some(&l.states.get(self.layers.get(i)?.state)?.name)
+    }
+
+    /// Whether composed cycle `i` fits this body, checked once (misfits are reported quietly:
+    /// one graph serves many bodies).
+    fn fits(&mut self, i: usize, cycles: &Assets<Cycle>, out: &mut Out) -> bool {
+        if let Some(f) = self.fits.get(i).copied().flatten() {
+            return f;
+        }
+        let (Some(rig), Some(cycle)) = (&self.rig, self.cycle(Src::Graph(i), cycles)) else { return false };
+        let misfits = cycle.fits.check(&rig.traits);
+        let ok = misfits.is_empty();
+        if !ok {
+            out.misfits.push((format!("cycle {} doesn't fit a {:?} body: {misfits:?}", cycle.name, rig.traits.family), false));
+        }
+        if let Some(slot) = self.fits.get_mut(i) {
+            *slot = Some(ok);
+        }
+        ok
     }
 
     fn cycle<'a>(&'a self, src: Src, cycles: &'a Assets<Cycle>) -> Option<&'a Cycle> {
@@ -307,25 +340,23 @@ impl MotionRuntime {
         }
         let empty = || LayerPose::identity(a.skeleton.len(), a.legs.len(), a.wings.len());
         let mut total = empty();
-        let mut i = 0;
-        while i < self.active.len() {
-            let layer = self.active[i].layer;
+        for group in self.active.chunk_by(|x, y| x.layer == y.layer) {
+            let Some(layer) = group.first().map(|act| act.layer) else { continue };
             let mut pose = empty();
-            while i < self.active.len() && self.active[i].layer == layer {
-                let act = self.active[i];
+            for act in group {
                 if let Some(cycle) = self.cycle(act.src, cycles) {
                     let input = EvalInput { anatomy: a, rig, t: act.t.unwrap_or(phase), leg_phases };
                     pose.accumulate(&evaluate(cycle, &input), act.weight);
                 }
-                i += 1;
             }
             let (mask, weight, additive) = match layer {
                 LayerRef::Graph(l) => {
                     let g = self.graph.as_ref()?;
-                    (&self.masks[l], g.layers[l].weight, g.layers[l].mode == LayerMode::Additive)
+                    let (Some(mask), Some(gl)) = (self.masks.get(l), g.layers.get(l)) else { continue };
+                    (mask, gl.weight, gl.mode == LayerMode::Additive)
                 }
                 LayerRef::Direct(d) => {
-                    let run = &self.direct[d];
+                    let Some(run) = self.direct.get(d) else { continue };
                     let Some(mask) = &run.mask else { continue };
                     (mask, run.play.weight * run.level, run.play.mode == LayerMode::Additive)
                 }
@@ -378,7 +409,7 @@ pub struct MotionCache {
 
 /// Binds runtimes to their (composed) graphs and bodies: only mobs whose graphs or body changed,
 /// or every mob when a graph or body asset did.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn prepare_motion(
     mut cache: ResMut<MotionCache>,
     mut graph_events: MessageReader<AssetEvent<MotionGraph>>,
@@ -403,7 +434,7 @@ pub(super) fn prepare_motion(
         }
     }
     let mut rebind = |(mut rt, motion, body): (Mut<MotionRuntime>, Option<&MobMotion>, &MobBody)| {
-        let key: Vec<AssetId<MotionGraph>> = motion.map_or(Vec::new(), |m| m.0.iter().map(|h| h.id()).collect());
+        let key: Vec<AssetId<MotionGraph>> = motion.map_or(Vec::new(), |m| m.0.iter().map(Handle::id).collect());
         if key != rt.key || graphs_changed || (rt.graph.is_none() && !key.is_empty()) {
             let composed = cache.composed(&key, &graphs);
             let same = match (&rt.graph, &composed) {
@@ -482,6 +513,9 @@ pub(super) struct Out {
     /// (message, loud): graph cycles that don't fit are expected (one graph serves many bodies),
     /// a direct `PlayCycle` that doesn't fit is a mistake.
     misfits: SmallVec<[(String, bool); 1]>,
+    /// Root displacement (mob space) and yaw (radians) this frame.
+    root: Vec3,
+    yaw: f32,
 }
 
 /// Advances every layer: parameters, transitions, time, root motion and events.
@@ -514,7 +548,7 @@ pub(super) fn update_motion(
         // The gait cycle's foot plan, copied only when it changes.
         let plan = rt.plan.and_then(|src| rt.cycle(src, &cycles)).and_then(|c| c.feet.as_ref().map(|p| (p, stride(c))));
         let same = match (&gait.0, plan) {
-            (Some((a, s)), Some((b, t))) => a == b && *s == t,
+            (Some((a, s)), Some((b, t))) => a == b && s.to_bits() == t.to_bits(),
             (None, None) => true,
             _ => false,
         };
@@ -580,6 +614,17 @@ fn root_delta(cycle: &Cycle, t0: f32, t1: f32, wrapped: bool) -> (Vec3, f32) {
     }
 }
 
+/// This frame's inputs, shared by every layer.
+struct Frame<'a> {
+    cycles: &'a Assets<Cycle>,
+    speed: f32,
+    dt: f32,
+    /// Root motion is authored in leg lengths.
+    leg: f32,
+    /// The gait clock wrapped this frame.
+    phase_wrapped: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn step(
     rt: &mut MotionRuntime,
@@ -592,196 +637,194 @@ fn step(
     cycles: &Assets<Cycle>,
     out: &mut Out,
 ) -> (Vec3, f32) {
-    let rt = &mut *rt;
     rt.active.clear();
     rt.plan = None;
-    let speed = loco.velocity.length() / leg;
-    let phase_wrapped = clock.phase < rt.last_phase;
+    let frame = Frame { cycles, speed: loco.velocity.length() / leg, dt, leg, phase_wrapped: clock.phase < rt.last_phase };
     rt.last_phase = clock.phase;
     for age in params.triggers.values_mut() {
         *age += dt;
     }
     params.triggers.retain(|_, age| *age <= TRIGGER_LIFETIME + dt);
-    let (mut root, mut yaw) = (Vec3::ZERO, 0.0);
-    let Some(rig) = rt.rig.clone() else { return (root, yaw) };
-
-    let fits = |rt: &mut MotionRuntime, i: usize, out: &mut Out| -> bool {
-        if let Some(f) = rt.fits.get(i).copied().flatten() {
-            return f;
-        }
-        let Some(cycle) = rt.cycle(Src::Graph(i), cycles) else { return false };
-        let misfits = cycle.fits.check(&rig.traits);
-        let ok = misfits.is_empty();
-        if !ok {
-            out.misfits.push((format!("cycle {} doesn't fit a {:?} body: {misfits:?}", cycle.name, rig.traits.family), false));
-        }
-        if let Some(slot) = rt.fits.get_mut(i) {
-            *slot = Some(ok);
-        }
-        ok
-    };
+    let Some(rig) = rt.rig.clone() else { return (Vec3::ZERO, 0.0) };
 
     if let Some(g) = rt.graph.clone() {
-        // Parameters: built-ins, then the mob's values.
-        for (i, (name, kind)) in g.params.iter().enumerate() {
-            rt.values[i] = match (name.as_str(), kind) {
-                ("speed", _) => speed,
-                ("moving", _) => f32::from(u8::from(speed > 0.05)),
-                ("turn", _) => loco.turn_rate,
-                (_, ParamValue::Float(_)) => params.float(name).unwrap_or(rt.values[i]),
-                (_, ParamValue::Bool(_)) => params.bool(name).map_or(rt.values[i], |b| f32::from(u8::from(b))),
-                (_, ParamValue::Trigger) => f32::from(u8::from(params.is_triggered(name))),
-            };
-        }
-
-        // Transitions: at most one per layer per frame.
+        update_params(rt, &g, params, loco, frame.speed);
+        take_transitions(rt, &g, params, cycles);
         for li in 0..g.layers.len() {
-            let layer = &g.layers[li];
-            let run = &rt.layers[li];
-            let finished = state_finished(&g, li, run, cycles);
-            let mut fire = None;
-            for (ti, t) in layer.transitions.iter().enumerate() {
-                if t.from.is_some_and(|f| f != run.state) {
-                    continue;
-                }
-                if t.from.is_none() && rt.layers[t.to_layer].state == t.to {
-                    continue;
-                }
-                if eval_condition(&t.when, &rt.values, finished) {
-                    fire = Some(ti);
-                    break;
-                }
-            }
-            if let Some(ti) = fire {
-                let t = &layer.transitions[ti];
-                consume_triggers(&t.when, &g, params);
-                if t.switch == Switch::AtEnd && !finished {
-                    rt.layers[li].pending = Some(ti);
-                } else {
-                    enter(rt, &g, li, ti);
-                }
-            }
+            advance_layer(rt, &g, li, &frame, out);
         }
+    }
+    play_direct(rt, play, &rig, &frame, out);
+    (out.root, out.yaw)
+}
 
-        // Advance time; collect what plays.
-        for li in 0..g.layers.len() {
-            let layer = &g.layers[li];
-            let run = rt.layers[li].clone();
-            let st = &layer.states[run.state];
-            let mut run2 = run.clone();
-            run2.elapsed += dt;
-            let mut wrapped = false;
-            // Fading-out state.
-            if let Some(f) = &mut run2.fade {
-                f.left -= dt;
-                if f.left <= 0.0 {
-                    run2.fade = None;
-                }
+/// Parameters: built-ins, then the mob's values.
+fn update_params(rt: &mut MotionRuntime, g: &ComposedGraph, params: &MotionParams, loco: &Locomotion, speed: f32) {
+    for ((name, kind), value) in g.params.iter().zip(&mut rt.values) {
+        *value = match (name.as_str(), kind) {
+            ("speed", _) => speed,
+            ("moving", _) => f32::from(u8::from(speed > 0.05)),
+            ("turn", _) => loco.turn_rate,
+            (_, ParamValue::Float(_)) => params.float(name).unwrap_or(*value),
+            (_, ParamValue::Bool(_)) => params.bool(name).map_or(*value, |b| f32::from(u8::from(b))),
+            (_, ParamValue::Trigger) => f32::from(u8::from(params.is_triggered(name))),
+        };
+    }
+}
+
+/// Transitions: at most one per layer per frame.
+fn take_transitions(rt: &mut MotionRuntime, g: &ComposedGraph, params: &mut MotionParams, cycles: &Assets<Cycle>) {
+    for (li, layer) in g.layers.iter().enumerate() {
+        let Some(run) = rt.layers.get(li) else { continue };
+        let finished = state_finished(g, li, run, cycles);
+        let state = run.state;
+        let fire = layer.transitions.iter().enumerate().find(|(_, t)| {
+            if t.from.is_some_and(|f| f != state) {
+                return false;
             }
-            if let Some(f) = run2.fade {
-                push_state(rt, &g, li, f.state, Some(f.t), f.gait, f.weight(), speed, &fits, out);
+            if t.from.is_none() && rt.layers.get(t.to_layer).is_some_and(|r| r.state == t.to) {
+                return false;
             }
-            let fade_in = 1.0 - run2.fade.map_or(0.0, |f| f.weight());
-            match &st.play {
-                CPlay::Empty => {}
-                CPlay::Cycle(c) => {
-                    let c = *c;
-                    if let Some(cycle) = rt.cycle(Src::Graph(c), cycles).cloned() {
-                        match cycles_per_second(&cycle, speed) {
-                            None => {
-                                wrapped = phase_wrapped;
-                                if fits(rt, c, out) {
-                                    if rt.plan.is_none() && cycle.feet.is_some() {
-                                        rt.plan = Some(Src::Graph(c));
-                                    }
-                                    rt.active.push(Active { src: Src::Graph(c), t: None, weight: fade_in, layer: LayerRef::Graph(li) });
-                                }
-                            }
-                            Some(rate) => {
-                                let t0 = run2.t;
-                                let mut t1 = t0 + rate * st.speed * dt;
-                                let action = !cycle.kind.loops();
-                                let hold = matches!(cycle.kind, CycleKind::Action { hold: true, .. });
-                                if action {
-                                    t1 = t1.min(1.0);
-                                    wrapped = t1 >= 1.0 && t0 < 1.0;
-                                } else if t1 >= 1.0 {
-                                    t1 = t1.fract();
-                                    wrapped = true;
-                                }
-                                if fits(rt, c, out) {
-                                    if t1 != t0 {
-                                        crossed(&cycle, t0, t1, out);
-                                    }
-                                    if layer.root_motion {
-                                        let (d, y) = root_delta(&cycle, t0, t1, wrapped && !action);
-                                        root += d * leg * fade_in * layer.weight;
-                                        yaw += y.to_radians() * fade_in * layer.weight;
-                                    }
-                                    let done = action && t0 >= 1.0;
-                                    if !done || hold {
-                                        rt.active.push(Active { src: Src::Graph(c), t: Some(t1), weight: fade_in, layer: LayerRef::Graph(li) });
-                                    }
-                                }
-                                run2.t = t1;
-                            }
-                        }
-                    }
+            eval_condition(&t.when, &rt.values, finished)
+        });
+        if let Some((ti, t)) = fire {
+            consume_triggers(&t.when, g, params);
+            if t.switch == Switch::AtEnd && !finished {
+                if let Some(run) = rt.layers.get_mut(li) {
+                    run.pending = Some(ti);
                 }
-                CPlay::Locomotion(gaits) => {
-                    wrapped = phase_wrapped;
-                    let choice = choose_gait(rt, gaits, speed, run2.gait, cycles, &fits, out);
-                    if choice != run2.gait {
-                        if let Some(old) = run2.gait {
-                            run2.fade = Some(Fade { state: run2.state, t: 0.0, gait: Some(old), left: 0.25, total: 0.25 });
-                        }
-                        run2.gait = choice;
-                    }
-                    if let Some(c) = choice {
-                        let weight = smooth(speed / 0.25) * (1.0 - run2.fade.map_or(0.0, |f| f.weight()));
-                        if rt.plan.is_none() && rt.cycle(Src::Graph(c), cycles).is_some_and(|cycle| cycle.feet.is_some()) {
-                            rt.plan = Some(Src::Graph(c));
-                        }
-                        rt.active.push(Active { src: Src::Graph(c), t: None, weight, layer: LayerRef::Graph(li) });
-                    }
-                }
-                CPlay::Blend { by, points } => {
-                    let v = rt.values[*by];
-                    let weights = blend_weights(points, v);
-                    // Shared normalised time at the weighted rate.
-                    let mut rate = 0.0;
-                    for (k, w) in weights.iter().enumerate() {
-                        if let Some(c) = rt.cycle(Src::Graph(points[k].1), cycles) {
-                            rate += w * cycles_per_second(c, speed).unwrap_or(0.0);
-                        }
-                    }
-                    let mut t1 = run2.t + rate * st.speed * dt;
-                    if t1 >= 1.0 {
-                        t1 = t1.fract();
-                        wrapped = true;
-                    }
-                    for (k, w) in weights.iter().enumerate() {
-                        let c = points[k].1;
-                        if *w > 0.0 && fits(rt, c, out) {
-                            let synced = rt.cycle(Src::Graph(c), cycles).is_some_and(|c| cycles_per_second(c, speed).is_none());
-                            let t = if synced { None } else { Some(t1) };
-                            rt.active.push(Active { src: Src::Graph(c), t, weight: w * fade_in, layer: LayerRef::Graph(li) });
-                        }
-                    }
-                    run2.t = t1;
-                }
-            }
-            rt.layers[li] = run2;
-            // A transition waiting for the end.
-            if wrapped || state_finished(&g, li, &rt.layers[li], cycles) {
-                if let Some(ti) = rt.layers[li].pending.take() {
-                    enter(rt, &g, li, ti);
-                }
+            } else {
+                enter(rt, g, li, ti);
             }
         }
     }
+}
 
-    // Direct play.
+/// Advances layer `li`'s fades and time, and collects what it plays.
+fn advance_layer(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, frame: &Frame, out: &mut Out) {
+    let Some(layer) = g.layers.get(li) else { return };
+    let Some(mut run) = rt.layers.get(li).cloned() else { return };
+    let Some(st) = layer.states.get(run.state) else { return };
+    let (speed, cycles) = (frame.speed, frame.cycles);
+    run.elapsed += frame.dt;
+    // Fading-out state.
+    if let Some(f) = &mut run.fade {
+        f.left -= frame.dt;
+        if f.left <= 0.0 {
+            run.fade = None;
+        }
+    }
+    if let Some(f) = run.fade {
+        push_state(rt, g, li, f.state, Some(f.t), f.gait, f.weight(), speed, cycles, out);
+    }
+    let fade_in = 1.0 - run.fade.map_or(0.0, |f| f.weight());
+    let wrapped = match &st.play {
+        CPlay::Empty => false,
+        CPlay::Cycle(c) => play_cycle(rt, (li, layer), *c, st.speed, &mut run, frame, out),
+        CPlay::Locomotion(gaits) => {
+            let choice = choose_gait(rt, gaits, speed, run.gait, cycles, out);
+            if choice != run.gait {
+                if let Some(old) = run.gait {
+                    run.fade = Some(Fade { state: run.state, t: 0.0, gait: Some(old), left: 0.25, total: 0.25 });
+                }
+                run.gait = choice;
+            }
+            if let Some(c) = choice {
+                let weight = smooth(speed / 0.25) * (1.0 - run.fade.map_or(0.0, |f| f.weight()));
+                if rt.plan.is_none() && rt.cycle(Src::Graph(c), cycles).is_some_and(|cycle| cycle.feet.is_some()) {
+                    rt.plan = Some(Src::Graph(c));
+                }
+                rt.active.push(Active { src: Src::Graph(c), t: None, weight, layer: LayerRef::Graph(li) });
+            }
+            frame.phase_wrapped
+        }
+        CPlay::Blend { by, points } => {
+            let weights = blend_weights(points, rt.values.get(*by).copied().unwrap_or_default());
+            // Shared normalised time at the weighted rate.
+            let rate: f32 = weights
+                .iter()
+                .zip(points)
+                .filter_map(|(w, &(_, c))| Some(w * cycles_per_second(rt.cycle(Src::Graph(c), cycles)?, speed).unwrap_or(0.0)))
+                .sum();
+            let mut t1 = f32::mul_add(rate * st.speed, frame.dt, run.t);
+            let wrapped = t1 >= 1.0;
+            if wrapped {
+                t1 = t1.fract();
+            }
+            for (&w, &(_, c)) in weights.iter().zip(points) {
+                if w > 0.0 && rt.fits(c, cycles, out) {
+                    let synced = rt.cycle(Src::Graph(c), cycles).is_some_and(|c| cycles_per_second(c, speed).is_none());
+                    let t = if synced { None } else { Some(t1) };
+                    rt.active.push(Active { src: Src::Graph(c), t, weight: w * fade_in, layer: LayerRef::Graph(li) });
+                }
+            }
+            run.t = t1;
+            wrapped
+        }
+    };
+    // A transition waiting for the end.
+    let take_pending = wrapped || state_finished(g, li, &run, cycles);
+    let pending = if take_pending { run.pending.take() } else { None };
+    if let Some(slot) = rt.layers.get_mut(li) {
+        *slot = run;
+    }
+    if let Some(ti) = pending {
+        enter(rt, g, li, ti);
+    }
+}
+
+/// A layer state playing one cycle; returns whether its time wrapped (or an action ended).
+fn play_cycle(
+    rt: &mut MotionRuntime,
+    (li, layer): (usize, &CLayer),
+    c: usize,
+    rate_scale: f32,
+    run: &mut LayerRun,
+    frame: &Frame,
+    out: &mut Out,
+) -> bool {
+    let fade_in = 1.0 - run.fade.map_or(0.0, |f| f.weight());
+    let Some(cycle) = rt.cycle(Src::Graph(c), frame.cycles).cloned() else { return false };
+    let Some(rate) = cycles_per_second(&cycle, frame.speed) else {
+        // Synced to the gait phase.
+        if rt.fits(c, frame.cycles, out) {
+            if rt.plan.is_none() && cycle.feet.is_some() {
+                rt.plan = Some(Src::Graph(c));
+            }
+            rt.active.push(Active { src: Src::Graph(c), t: None, weight: fade_in, layer: LayerRef::Graph(li) });
+        }
+        return frame.phase_wrapped;
+    };
+    let t0 = run.t;
+    let mut t1 = f32::mul_add(rate * rate_scale, frame.dt, t0);
+    let action = !cycle.kind.loops();
+    let hold = matches!(cycle.kind, CycleKind::Action { hold: true, .. });
+    let mut wrapped = false;
+    if action {
+        t1 = t1.min(1.0);
+        wrapped = t1 >= 1.0 && t0 < 1.0;
+    } else if t1 >= 1.0 {
+        t1 = t1.fract();
+        wrapped = true;
+    }
+    if rt.fits(c, frame.cycles, out) {
+        crossed(&cycle, t0, t1, out);
+        if layer.root_motion {
+            let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped && !action);
+            out.root += offset * frame.leg * fade_in * layer.weight;
+            out.yaw = (yaw.to_radians() * fade_in).mul_add(layer.weight, out.yaw);
+        }
+        let done = action && t0 >= 1.0;
+        if !done || hold {
+            rt.active.push(Active { src: Src::Graph(c), t: Some(t1), weight: fade_in, layer: LayerRef::Graph(li) });
+        }
+    }
+    run.t = t1;
+    wrapped
+}
+
+/// Direct play: starts, fades and advances [`PlayCycle`]s.
+fn play_direct(rt: &mut MotionRuntime, play: Option<(&PlayCycle, bool)>, rig: &MotionRig, frame: &Frame, out: &mut Out) {
     match play {
         Some((p, changed)) => {
             if changed || rt.direct.iter().all(|d| d.leaving) {
@@ -805,10 +848,10 @@ fn step(
             }
         }
     }
-    let mut finished = false;
+    let dt = frame.dt;
     for di in 0..rt.direct.len() {
-        let Some(cycle) = rt.direct[di].play.cycle.get(cycles).cloned() else { continue };
-        let d = &mut rt.direct[di];
+        let Some(d) = rt.direct.get_mut(di) else { continue };
+        let Some(cycle) = d.play.cycle.get(frame.cycles).cloned() else { continue };
         let fade = if d.play.blend <= 0.0 { f32::INFINITY } else { dt / d.play.blend };
         d.level = if d.leaving { d.level - fade } else { d.level + fade }.clamp(0.0, 1.0);
         if d.fits.is_none() {
@@ -819,41 +862,34 @@ fn step(
             d.fits = Some(misfits.is_empty());
         }
         let t0 = d.t;
-        let t = match cycles_per_second(&cycle, speed) {
-            None => None,
-            Some(rate) => {
-                let mut t1 = t0 + rate * d.play.speed * dt;
-                let action = !cycle.kind.loops();
-                let wrapped = !action && t1 >= 1.0;
-                if action {
-                    t1 = t1.min(1.0);
-                    if t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
-                        finished = true;
-                        d.leaving = true;
-                    }
-                } else {
-                    t1 = t1.fract();
+        let t = cycles_per_second(&cycle, frame.speed).map(|rate| {
+            let mut t1 = (rate * d.play.speed).mul_add(dt, t0);
+            let action = !cycle.kind.loops();
+            let wrapped = !action && t1 >= 1.0;
+            if action {
+                t1 = t1.min(1.0);
+                if t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
+                    out.finished = true;
+                    d.leaving = true;
                 }
-                if d.fits == Some(true) {
-                    if t1 != t0 {
-                        crossed(&cycle, t0, t1, out);
-                    }
-                    if d.play.root_motion {
-                        let (dr, y) = root_delta(&cycle, t0, t1, wrapped);
-                        root += dr * leg * d.level;
-                        yaw += y.to_radians() * d.level;
-                    }
-                }
-                d.t = t1;
-                Some(t1)
+            } else {
+                t1 = t1.fract();
             }
-        };
+            if d.fits == Some(true) {
+                crossed(&cycle, t0, t1, out);
+                if d.play.root_motion {
+                    let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped);
+                    out.root += offset * frame.leg * d.level;
+                    out.yaw = f32::mul_add(yaw.to_radians(), d.level, out.yaw);
+                }
+            }
+            d.t = t1;
+            t1
+        });
         d.elapsed += dt;
         if d.fits == Some(true) && d.level > 0.0 {
-            if t.is_none() {
-                if cycle.feet.is_some() {
-                    rt.plan = Some(Src::Direct(di));
-                }
+            if t.is_none() && cycle.feet.is_some() {
+                rt.plan = Some(Src::Direct(di));
             }
             rt.active.push(Active { src: Src::Direct(di), t, weight: 1.0, layer: LayerRef::Direct(di) });
         }
@@ -867,18 +903,16 @@ fn step(
         }
         for a in &mut rt.active {
             if let Src::Direct(i) = &mut a.src {
-                *i -= 1;
+                *i = i.saturating_sub(1);
             }
             if let LayerRef::Direct(i) = &mut a.layer {
-                *i -= 1;
+                *i = i.saturating_sub(1);
             }
         }
     }
-    out.finished = finished;
-    (root, yaw)
 }
 
-fn stride(cycle: &Cycle) -> f32 {
+const fn stride(cycle: &Cycle) -> f32 {
     match cycle.kind {
         CycleKind::Gait { stride, .. } => stride,
         _ => 1.0,
@@ -887,34 +921,32 @@ fn stride(cycle: &Cycle) -> f32 {
 
 fn smooth(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
+    x * x * 2.0f32.mul_add(-x, 3.0)
 }
 
-/// Linear weights between the two blend points around `v`.
-fn blend_weights(points: &[(f32, usize)], v: f32) -> SmallVec<[f32; 4]> {
-    let mut w: SmallVec<[f32; 4]> = SmallVec::from_elem(0.0, points.len());
-    if points.is_empty() {
-        return w;
-    }
-    let mut order: SmallVec<[usize; 4]> = (0..points.len()).collect();
-    order.sort_by(|a, b| points[*a].0.total_cmp(&points[*b].0));
-    let (first, last) = (order[0], order[order.len() - 1]);
-    if v <= points[first].0 {
-        w[first] = 1.0;
-    } else if v >= points[last].0 {
-        w[last] = 1.0;
-    } else {
-        for pair in order.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            if v >= points[a].0 && v <= points[b].0 {
-                let f = (v - points[a].0) / (points[b].0 - points[a].0).max(1e-6);
-                w[a] = 1.0 - f;
-                w[b] = f;
-                break;
+/// Linear weights between the two blend points around `value`.
+fn blend_weights(points: &[(f32, usize)], value: f32) -> SmallVec<[f32; 4]> {
+    let mut weights: SmallVec<[f32; 4]> = SmallVec::from_elem(0.0, points.len());
+    let mut order: SmallVec<[(usize, f32); 4]> = points.iter().map(|p| p.0).enumerate().collect();
+    order.sort_by(|x, y| x.1.total_cmp(&y.1));
+    let mut set = |i: usize, w: f32| {
+        if let Some(slot) = weights.get_mut(i) {
+            *slot = w;
+        }
+    };
+    match (order.first(), order.last()) {
+        (Some(&(first, lo)), _) if value <= lo => set(first, 1.0),
+        (_, Some(&(last, hi))) if value >= hi => set(last, 1.0),
+        _ => {
+            let around = order.array_windows().find(|&&[(_, lo), (_, hi)]| value >= lo && value <= hi);
+            if let Some(&[(below, lo), (above, hi)]) = around {
+                let f = (value - lo) / (hi - lo).max(1e-6);
+                set(below, 1.0 - f);
+                set(above, f);
             }
         }
     }
-    w
+    weights
 }
 
 /// The gait for `speed` among `gaits`, keeping the current one within a small margin.
@@ -924,24 +956,23 @@ fn choose_gait(
     speed: f32,
     current: Option<usize>,
     cycles: &Assets<Cycle>,
-    fits: &dyn Fn(&mut MotionRuntime, usize, &mut Out) -> bool,
     out: &mut Out,
 ) -> Option<usize> {
     let range = |rt: &MotionRuntime, c: usize| match rt.cycle(Src::Graph(c), cycles).map(|c| &c.kind) {
         Some(CycleKind::Gait { min_speed, max_speed, .. }) => Some((*min_speed, *max_speed)),
         _ => None,
     };
-    if let Some(c) = current {
-        if let Some((lo, hi)) = range(rt, c) {
-            if speed >= lo - 0.1 && speed < hi + 0.1 {
-                return Some(c);
-            }
-        }
+    if let Some(c) = current
+        && let Some((lo, hi)) = range(rt, c)
+        && speed >= lo - 0.1
+        && speed < hi + 0.1
+    {
+        return Some(c);
     }
     let mut best: Option<(usize, f32)> = None;
     for &c in gaits {
         let Some((lo, hi)) = range(rt, c) else { continue };
-        if !fits(rt, c, out) {
+        if !rt.fits(c, cycles, out) {
             continue;
         }
         let miss = if speed < lo { lo - speed } else if speed > hi { speed - hi } else { 0.0 };
@@ -962,33 +993,34 @@ fn push_state(
     gait: Option<usize>,
     weight: f32,
     speed: f32,
-    fits: &dyn Fn(&mut MotionRuntime, usize, &mut Out) -> bool,
+    cycles: &Assets<Cycle>,
     out: &mut Out,
 ) {
     if weight <= 0.0 {
         return;
     }
-    let list: SmallVec<[(usize, f32); 4]> = match &g.layers[li].states[state].play {
+    let Some(st) = g.layers.get(li).and_then(|l| l.states.get(state)) else { return };
+    let list: SmallVec<[(usize, f32); 4]> = match &st.play {
         CPlay::Empty => SmallVec::new(),
         CPlay::Cycle(c) => smallvec::smallvec![(*c, 1.0)],
         CPlay::Locomotion(_) => gait.map(|c| (c, smooth(speed / 0.25))).into_iter().collect(),
         CPlay::Blend { by, points } => {
-            let w = blend_weights(points, rt.values[*by]);
+            let w = blend_weights(points, rt.values.get(*by).copied().unwrap_or_default());
             points.iter().zip(w).map(|((_, c), w)| (*c, w)).collect()
         }
     };
     for (c, w) in list {
-        if w > 0.0 && fits(rt, c, out) {
+        if w > 0.0 && rt.fits(c, cycles, out) {
             rt.active.push(Active { src: Src::Graph(c), t, weight: weight * w, layer: LayerRef::Graph(li) });
         }
     }
 }
 
 fn state_finished(g: &ComposedGraph, li: usize, run: &LayerRun, cycles: &Assets<Cycle>) -> bool {
-    match &g.layers[li].states[run.state].play {
-        CPlay::Empty => true,
-        CPlay::Cycle(c) => g.cycles.get(*c).and_then(|s| s.get(cycles)).is_some_and(|c| !c.kind.loops() && run.t >= 1.0),
-        _ => false,
+    match g.layers.get(li).and_then(|l| l.states.get(run.state)).map(|s| &s.play) {
+        None | Some(CPlay::Empty) => true,
+        Some(CPlay::Cycle(c)) => g.cycles.get(*c).and_then(|s| s.get(cycles)).is_some_and(|c| !c.kind.loops() && run.t >= 1.0),
+        Some(CPlay::Locomotion(_) | CPlay::Blend { .. }) => false,
     }
 }
 
@@ -997,7 +1029,7 @@ fn eval_condition(c: &CCondition, values: &[f32], finished: bool) -> bool {
         CCondition::Always => true,
         CCondition::Finished => finished,
         CCondition::Param(i, test) => {
-            let v = values[*i];
+            let v = values.get(*i).copied().unwrap_or_default();
             match test {
                 CParamTest::Trigger => v > 0.5,
                 CParamTest::Bool(b) => (v > 0.5) == *b,
@@ -1013,7 +1045,9 @@ fn eval_condition(c: &CCondition, values: &[f32], finished: bool) -> bool {
 fn consume_triggers(c: &CCondition, g: &ComposedGraph, params: &mut MotionParams) {
     match c {
         CCondition::Param(i, CParamTest::Trigger) => {
-            params.triggers.remove(&g.params[*i].0);
+            if let Some((name, _)) = g.params.get(*i) {
+                params.triggers.remove(name);
+            }
         }
         CCondition::All(v) | CCondition::Any(v) => v.iter().for_each(|c| consume_triggers(c, g, params)),
         CCondition::Not(c) => consume_triggers(c, g, params),
@@ -1023,8 +1057,8 @@ fn consume_triggers(c: &CCondition, g: &ComposedGraph, params: &mut MotionParams
 
 /// Takes transition `ti` of layer `li`.
 fn enter(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, ti: usize) {
-    let t = &g.layers[li].transitions[ti];
-    let target = &mut rt.layers[t.to_layer];
+    let Some(t) = g.layers.get(li).and_then(|l| l.transitions.get(ti)) else { return };
+    let Some(target) = rt.layers.get_mut(t.to_layer) else { return };
     let (old_state, old_t, old_gait) = (target.state, target.t, target.gait);
     target.fade = (t.blend > 0.0).then_some(Fade { state: old_state, t: old_t, gait: old_gait, left: t.blend, total: t.blend });
     target.state = t.to;
@@ -1041,7 +1075,11 @@ fn enter(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, ti: usize) {
 
 fn clear_trigger_values(c: &CCondition, values: &mut [f32]) {
     match c {
-        CCondition::Param(i, CParamTest::Trigger) => values[*i] = 0.0,
+        CCondition::Param(i, CParamTest::Trigger) => {
+            if let Some(v) = values.get_mut(*i) {
+                *v = 0.0;
+            }
+        }
         CCondition::All(v) | CCondition::Any(v) => v.iter().for_each(|c| clear_trigger_values(c, values)),
         CCondition::Not(c) => clear_trigger_values(c, values),
         _ => {}

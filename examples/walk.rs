@@ -15,6 +15,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
+use ornisculpt::num::ToF32;
 use ornisculpt::mob::{Mob, TierCamera};
 use ornisculpt::motion::{Feet, MobIntent};
 
@@ -55,8 +56,7 @@ struct Orbit {
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
         match v[..] {
             [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
             _ => Self { yaw: 0.5, pitch: 0.4, distance: 9.0, target: Vec3::new(0.0, 0.4, 0.0) },
@@ -80,7 +80,7 @@ fn setup(
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
     ));
     for (i, path) in BODIES.iter().enumerate() {
-        let centre = Vec3::new(i as f32 * 4.0 - 8.0, 0.0, 0.0);
+        let centre = Vec3::new(i.to_f32().mul_add(4.0, -8.0), 0.0, 0.0);
         commands.spawn((
             Mob::new(assets.load(*path)),
             Walker { index: i, centre },
@@ -99,7 +99,7 @@ fn drive(
 ) {
     if keys.just_pressed(KeyCode::Tab) {
         demo.selected = (demo.selected + 1) % BODIES.len();
-        info!("driving {}", BODIES[demo.selected]);
+        info!("driving {}", BODIES.get(demo.selected).unwrap_or(&"?"));
     }
     if keys.just_pressed(KeyCode::KeyL) {
         demo.look = !demo.look;
@@ -128,10 +128,10 @@ fn drive(
             let to_centre = w.centre - tf.translation;
             let tangent = Vec3::new(-to_centre.z, 0.0, to_centre.x).normalize_or_zero();
             let pull = to_centre.normalize_or_zero() * (to_centre.length() - 1.5);
-            let pause = ((t * 0.2 + w.index as f32).sin() > 0.85) as u8 as f32;
+            let pause = f32::from(u8::from(f32::mul_add(t, 0.2, w.index.to_f32()).sin() > 0.85));
             (tangent * 0.8 + pull) * (1.0 - pause)
         };
-        intent.look_at = demo.look.then(|| cam.translation);
+        intent.look_at = demo.look.then_some(cam.translation);
     }
 }
 
@@ -155,10 +155,10 @@ fn orbit_camera(
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     if buttons.pressed(MouseButton::Left) {
-        orbit.yaw -= motion.delta.x * 0.008;
-        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
+        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 100.0);
+    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 100.0);
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);

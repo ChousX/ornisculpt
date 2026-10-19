@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::Anatomy;
+use super::{Anatomy, BoneId, MAX_BONES, MAX_CROWD_BONES, measure_mass};
 
 /// A test a built body must pass to be considered viable. Used for authoring feedback now and as
 /// the fitness gate for genetics later. Gait compatibility lives in the `motion` module, since it
@@ -10,7 +10,7 @@ pub trait ViabilityCheck: Send + Sync + 'static {
     fn check(&self, anatomy: &Anatomy) -> Viability;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Viability {
     Ok,
     Warn(String),
@@ -18,8 +18,9 @@ pub enum Viability {
 }
 
 impl Viability {
-    pub fn is_fail(&self) -> bool {
-        matches!(self, Viability::Fail(_))
+    #[must_use]
+    pub const fn is_fail(&self) -> bool {
+        matches!(self, Self::Fail(_))
     }
 }
 
@@ -30,6 +31,7 @@ pub struct ViabilityReport {
 }
 
 impl ViabilityReport {
+    #[must_use]
     pub fn viable(&self) -> bool {
         !self.results.iter().any(|(_, v)| v.is_fail())
     }
@@ -40,6 +42,7 @@ impl ViabilityReport {
 pub struct ViabilityChecks(pub Vec<Box<dyn ViabilityCheck>>);
 
 impl ViabilityChecks {
+    #[must_use]
     pub fn with_builtins() -> Self {
         Self(vec![
             Box::new(BoneBudget),
@@ -49,6 +52,7 @@ impl ViabilityChecks {
         ])
     }
 
+    #[must_use]
     pub fn run(&self, anatomy: &Anatomy) -> ViabilityReport {
         ViabilityReport {
             results: self.0.iter().map(|c| (c.name(), c.check(anatomy))).collect(),
@@ -65,11 +69,19 @@ impl ViabilityCheck for BoneBudget {
     }
 
     fn check(&self, anatomy: &Anatomy) -> Viability {
-        todo!("compare skeleton.len() / crowd.bones.len() to MAX_BONES / MAX_CROWD_BONES")
+        let (bones, crowd) = (anatomy.skeleton.len(), anatomy.skeleton.crowd.bones.len());
+        if bones > MAX_BONES {
+            Viability::Fail(format!("{bones} bones, budget {MAX_BONES}"))
+        } else if crowd > MAX_CROWD_BONES {
+            Viability::Fail(format!("{crowd} crowd bones, budget {MAX_CROWD_BONES}"))
+        } else {
+            Viability::Ok
+        }
     }
 }
 
-/// Every locomotor foot can reach the ground plane under the rest pose.
+/// Every locomotor foot can reach the ground (the lowest rest foot) with its leg fully straightened
+/// from the rest-pose hip.
 pub struct FeetReachGround {
     /// Allowed gap in metres.
     pub tolerance: f32,
@@ -87,7 +99,22 @@ impl ViabilityCheck for FeetReachGround {
     }
 
     fn check(&self, anatomy: &Anatomy) -> Viability {
-        todo!("legs: rest_foot.y within tolerance of the lowest foot")
+        let ground = anatomy.legs.iter().map(|l| l.rest_foot.y).fold(f32::INFINITY, f32::min);
+        let model = anatomy.skeleton.rest_model();
+        let at = |b: &BoneId| model.get(b.index()).map(|m| Vec3::from(m.translation));
+        let short: Vec<String> = anatomy
+            .legs
+            .iter()
+            .filter_map(|l| {
+                let joints: Vec<Vec3> = l.chain.iter().filter_map(at).collect();
+                let (&hip, &foot) = (joints.first()?, joints.last()?);
+                // Bone segments, then the foot bone down to its contact point.
+                let reach = joints.array_windows().map(|[a, b]| a.distance(*b)).sum::<f32>() + foot.distance(l.rest_foot);
+                let gap = hip.y - ground - reach;
+                (gap > self.tolerance).then(|| format!("{:?} leg {} is {gap:.3} m short", l.side, l.pair))
+            })
+            .collect();
+        if short.is_empty() { Viability::Ok } else { Viability::Fail(short.join("; ")) }
     }
 }
 
@@ -99,9 +126,45 @@ impl ViabilityCheck for StaticBalance {
         "static_balance"
     }
 
+    /// Needs three or more feet: one or two only balance in motion, so they always pass.
     fn check(&self, anatomy: &Anatomy) -> Viability {
-        todo!("approximate COM from primitive volumes; point-in-convex-hull of rest feet (xz)")
+        let feet: Vec<Vec2> = anatomy.legs.iter().map(|l| l.rest_foot.xz()).collect();
+        if feet.len() < 3 {
+            return Viability::Ok;
+        }
+        let centre = measure_mass(anatomy).centre.xz();
+        if convex_hull(feet).array_windows().all(|[a, b]| (*b - *a).perp_dot(centre - *a) >= 0.0) {
+            Viability::Ok
+        } else {
+            Viability::Fail(format!("centre of mass ({:.2}, {:.2}) is outside the feet", centre.x, centre.y))
+        }
     }
+}
+
+/// Convex hull, counter-clockwise and closed (the first point repeats at the end): Andrew's
+/// monotone chain.
+fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
+    /// Adds `p`, dropping the points it makes concave, but keeping at least `floor`.
+    fn extend(hull: &mut Vec<Vec2>, floor: usize, p: Vec2) {
+        while hull.len() >= floor + 2
+            && let [.., a, b] = hull.as_slice()
+            && (*b - *a).perp_dot(p - *a) <= 0.0
+        {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    points.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let mut hull: Vec<Vec2> = Vec::with_capacity(points.len() * 2);
+    // Lower hull left to right, then the upper hull back right to left.
+    for &p in &points {
+        extend(&mut hull, 0, p);
+    }
+    let floor = hull.len().saturating_sub(1);
+    for &p in points.iter().rev().skip(1) {
+        extend(&mut hull, floor, p);
+    }
+    hull
 }
 
 /// Non-adjacent parts don't interpenetrate at rest (e.g. legs through the belly).
@@ -112,7 +175,23 @@ impl ViabilityCheck for RestSelfIntersection {
         "rest_self_intersection"
     }
 
-    fn check(&self, anatomy: &Anatomy) -> Viability {
-        todo!("primitive AABB overlap between parts that are not parent/child")
+    fn check(&self, _anatomy: &Anatomy) -> Viability {
+        // Planned: primitive bounds overlapping between parts that are not parent and child.
+        Viability::Warn("rest_self_intersection is not implemented yet".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hull_contains_inner_points() {
+        let square = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y, Vec2::splat(0.5)];
+        let hull = convex_hull(square.to_vec());
+        assert_eq!(hull.len(), 5, "four corners, closed: {hull:?}");
+        let inside = |c: Vec2| hull.array_windows().all(|[a, b]| (*b - *a).perp_dot(c - *a) >= 0.0);
+        assert!(inside(Vec2::splat(0.5)));
+        assert!(!inside(Vec2::new(1.5, 0.5)));
     }
 }

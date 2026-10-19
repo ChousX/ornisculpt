@@ -18,6 +18,7 @@ use bevy::render::Extract;
 
 use super::crowd::{CrowdInstance, CrowdUploads, SLOT_BYTES};
 use crate::anatomy::MAX_CROWD_BONES;
+use crate::num::{Clamp, Idx, usize_to_u64};
 
 const WORKGROUP: u32 = 64;
 
@@ -36,12 +37,14 @@ impl MirroredBuffer {
         if self.mirror.len() < end {
             self.mirror.resize(end, 0);
         }
-        self.mirror[offset..end].copy_from_slice(bytes);
+        if let Some(dst) = self.mirror.get_mut(offset..end) {
+            dst.copy_from_slice(bytes);
+        }
         self.dirty = Some(self.dirty.map_or((offset, end), |(a, b)| (a.min(offset), b.max(end))));
     }
 
     fn flush(&mut self, label: &'static str, device: &RenderDevice, queue: &RenderQueue) {
-        let needed = self.mirror.len().max(256) as u64;
+        let needed = usize_to_u64(self.mirror.len().max(256));
         if self.buffer.as_ref().is_none_or(|b| b.size() < needed) {
             let size = needed.next_power_of_two();
             let buffer = device.create_buffer(&BufferDescriptor {
@@ -56,8 +59,10 @@ impl MirroredBuffer {
             self.buffer = Some(buffer);
             self.dirty = None;
         }
-        if let (Some(buffer), Some((a, b))) = (&self.buffer, self.dirty.take()) {
-            queue.write_buffer(buffer, a as u64, &self.mirror[a..b]);
+        if let (Some(buffer), Some((a, b))) = (&self.buffer, self.dirty.take())
+            && let Some(bytes) = self.mirror.get(a..b)
+        {
+            queue.write_buffer(buffer, usize_to_u64(a), bytes);
         }
     }
 }
@@ -120,10 +125,10 @@ pub(super) fn extract_crowd(uploads: Extract<Res<CrowdUploads>>, mut gpu: ResMut
 pub(super) fn prepare_crowd_buffers(mut gpu: ResMut<CrowdGpu>, device: Res<RenderDevice>, queue: Res<RenderQueue>) {
     let gpu = &mut *gpu;
     for (index, matrices) in gpu.pending_clips.drain(..) {
-        gpu.clips.write(index as usize * 64, bytemuck::cast_slice(&matrices));
+        gpu.clips.write(index.idx() * 64, bytemuck::cast_slice(&matrices));
     }
     for (slot, instance) in gpu.pending_instances.drain(..) {
-        gpu.instances.write(slot as usize * size_of::<CrowdInstance>(), bytemuck::bytes_of(&instance));
+        gpu.instances.write(slot.idx() * size_of::<CrowdInstance>(), bytemuck::bytes_of(&instance));
     }
     if gpu.clips.mirror.is_empty() {
         return;
@@ -144,7 +149,7 @@ pub(super) fn prepare_crowd_bind_group(
     let (Some(clips), Some(instances)) = (&gpu.clips.buffer, &gpu.instances.buffer) else { return };
     let Some(bones) = gpu.bones.and_then(|id| shader_buffers.get(id)) else { return };
     // Never dispatch past the bone buffer (it may lag a frame behind a resize).
-    gpu.dispatch_slots = gpu.slots.min((bones.buffer.size() / SLOT_BYTES) as u32);
+    gpu.dispatch_slots = gpu.slots.min((bones.buffer.size() / SLOT_BYTES).clamp_u32());
     let layout = pipeline_cache.get_bind_group_layout(&pipeline.layout);
     let bind_group = device.create_bind_group(
         "ornisculpt crowd blend",
@@ -167,7 +172,7 @@ pub(super) fn dispatch_crowd_blend(
     if gpu.dispatch_slots == 0 {
         return;
     }
-    let invocations = gpu.dispatch_slots * MAX_CROWD_BONES as u32;
+    let invocations = gpu.dispatch_slots * MAX_CROWD_BONES.clamp_u32();
     let mut pass = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor {
         label: Some("ornisculpt crowd blend"),
         timestamp_writes: None,

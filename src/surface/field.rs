@@ -62,17 +62,20 @@ impl Influences {
         if weight <= 0.0 {
             return;
         }
-        if let Some(i) = (0..4).find(|&i| self.weights[i] > 0.0 && self.bones[i] == bone) {
-            self.weights[i] += weight;
-        } else if weight > self.weights[3] {
-            self.bones[3] = bone;
-            self.weights[3] = weight;
+        let existing = self.bones.iter().zip(&mut self.weights).find(|(b, w)| **w > 0.0 && **b == bone);
+        if let Some((_, w)) = existing {
+            *w += weight;
+        } else if let ([.., lightest_bone], [.., lightest]) = (&mut self.bones, &mut self.weights)
+            && weight > *lightest
+        {
+            *lightest_bone = bone;
+            *lightest = weight;
         } else {
             return;
         }
         // Restore descending order (at most 4 elements).
         for i in (1..4).rev() {
-            if self.weights[i] > self.weights[i - 1] {
+            if self.weights.get(i) > self.weights.get(i - 1) {
                 self.weights.swap(i, i - 1);
                 self.bones.swap(i, i - 1);
             }
@@ -89,7 +92,8 @@ impl Influences {
         }
     }
 
-    pub fn primary(&self) -> BoneId {
+    #[must_use]
+    pub const fn primary(&self) -> BoneId {
         self.bones[0]
     }
 }

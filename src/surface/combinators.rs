@@ -37,7 +37,9 @@ pub struct Intersect<A, B> {
 
 impl<A: Field, B: Field> Field for Intersect<A, B> {
     fn bounds(&self) -> Aabb3d {
-        todo!("intersection of the two bounds")
+        let (a, b) = (self.a.bounds(), self.b.bounds());
+        let min = a.min.max(b.min);
+        Aabb3d { min, max: a.max.min(b.max).max(min) }
     }
 
     fn distance(&self, p: Vec3A) -> f32 {
@@ -68,6 +70,9 @@ impl<A: Field, B: Field> Field for Subtract<A, B> {
     }
 }
 
+/// How far outside the surface [`RegionClip`] holds samples outside its mask.
+const CLIP_GAP: f32 = 1e-3;
+
 /// Keeps the surface only where the inner field's region is in `mask`; elsewhere the field is
 /// pushed outward so no surface forms. Open edges are closed by the mesher's boundary.
 pub struct RegionClip<F> {
@@ -81,7 +86,9 @@ impl<F: Field> Field for RegionClip<F> {
     }
 
     fn distance(&self, p: Vec3A) -> f32 {
-        todo!("needs region per sample: cheap region lookup (dominant prim) rather than full surface_info")
+        // A full `surface_info` per sample; a cheaper dominant-primitive lookup would do.
+        let d = self.inner.distance(p);
+        if self.mask.contains(self.inner.surface_info(p).region) { d } else { d.abs().max(CLIP_GAP) }
     }
 
     fn surface_info(&self, p: Vec3A) -> SurfaceInfo {
@@ -97,7 +104,7 @@ pub struct Displace<F> {
 
 impl<F: Field> Field for Displace<F> {
     fn bounds(&self) -> Aabb3d {
-        todo!("inner bounds grown by noise amplitude")
+        self.inner.bounds().grow(Vec3A::splat(self.noise.amplitude().abs()))
     }
 
     fn distance(&self, p: Vec3A) -> f32 {

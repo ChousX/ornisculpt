@@ -52,10 +52,22 @@ pub struct LookDef {
 
 /// A shoulder-girdle bone between the torso and an arm. Arm raises past ~30° share part of their
 /// rotation with it, so the shoulder lifts the way a scapula does (see `motion`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clavicle {
     pub bone: BoneId,
     /// The arm's first bone (its shoulder joint), a child of `bone`.
     pub arm: BoneId,
     pub side: Side,
+}
+
+/// The digits of one Digits part (fingers on a hand, toes on a foot), for posing them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandDef {
+    pub side: Side,
+    /// Built mirrored: a sideways turn (spread) goes the other way.
+    pub mirrored: bool,
+    /// Each digit's bones, knuckle to tip, in build order (the thumb first when `thumb`).
+    pub digits: Vec<SmallVec<[BoneId; 4]>>,
+    /// The first digit is an opposable thumb.
+    pub thumb: bool,
 }

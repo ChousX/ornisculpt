@@ -315,6 +315,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     color = mix(body, coat.accent.rgb, smoothstep(0.8, 1.0, uv.y) * coat.feathers.z) * barbs * shaft;
 }
 
+@if(COAT_HARD && VERTEX_UVS_A) {
+    // Eyes: uv = (cosine from the eye's forward axis, 1 + how much white shows); other hard
+    // parts have zero uvs. Iris in base, white in secondary, pupil in accent. With no white the
+    // iris fills the eye round a wider pupil (most animals).
+    let soft = max(0.015, fwidth(in.uv.x));
+    if in.uv.y >= 1.0 {
+        let white = in.uv.y - 1.0;
+        let c = in.uv.x;
+        let iris_edge = mix(-1.0, 0.87, white);
+        let iris = smoothstep(iris_edge - soft, iris_edge + soft, c);
+        let across = clamp((c - iris_edge) / max(1.0 - iris_edge, 1e-3), 0.0, 1.0);
+        // Darker limbal ring at the rim, lighter toward the pupil.
+        let iris_color = coat.base.rgb * mix(0.55, 1.25, smoothstep(0.0, 0.6, across));
+        color = mix(coat.secondary.rgb, iris_color, iris);
+        let pupil_edge = mix(0.9, 0.984, white);
+        color = mix(color, coat.accent.rgb, smoothstep(pupil_edge - soft, pupil_edge + soft, c));
+        roughness = 0.05;
+    }
+}
+
 @if(COAT_CLOTH) {
     // Garments: palette colour with a faint weave that fades out before it can shimmer.
     let entry = coat.cloth[min(u32(scale_w + 0.5), 7u)];

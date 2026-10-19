@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use smallvec::SmallVec;
 
 use super::{Garment, Hang, MAX_GARMENTS, Outfit};
+use crate::num::{Clamp, Idx, Saturate, ToF32};
 use crate::anatomy::{
     Anatomy, AxisSample, BoneDef, BoneId, BuiltPart, ClothFollow, LodLevel, MAX_BONES, PartAssets, PartPath, PrimLayer,
     RegionId, SpringChainDef, TriMesh, frame_y_z, mirror_point, path_matches, relative, sample_axis,
@@ -41,7 +42,7 @@ impl Piece<'_> {
 
     fn span_t(&self, y: f32) -> f32 {
         let (a, b) = self.garment.span;
-        a + (b - a) * y.clamp(0.0, 1.0)
+        f32::mul_add(b - a, y.clamp(0.0, 1.0), a)
     }
 
     /// Marches from the part's axis toward `theta` to where the body ends. `y` beyond 0..1 on a
@@ -50,33 +51,32 @@ impl Piece<'_> {
     /// its own part's surface plus a bulge allowance: a torso ray running on into an arm root
     /// stops near the torso, and the arm emerges through the garment as through an armhole.
     fn surface(&self, field: &BodyField, y: f32, theta: f32, cap: bool) -> Option<SurfacePoint> {
-        let t = self.span_t(y);
-        let s = sample_axis(&self.part.axis, t)?;
-        let around = (s.model.rotation * Vec3::NEG_Z * theta.cos() + s.model.rotation * Vec3::X * theta.sin()).normalize();
-        let axis = s.model.rotation * Vec3::Y;
+        let sample = sample_axis(&self.part.axis, self.span_t(y))?;
+        let rotation = sample.model.rotation;
+        let around = (rotation * Vec3::NEG_Z * theta.cos() + rotation * Vec3::X * theta.sin()).normalize();
+        let axis = rotation * Vec3::Y;
         let over = if !cap { 0.0 } else if y < 0.0 { (-y).min(1.0) } else { (y - 1.0).clamp(0.0, 1.0) };
         let tip = if y < 0.0 { -axis } else { axis };
         let phi = over * std::f32::consts::FRAC_PI_2;
         let dir = (around * phi.cos() + tip * phi.sin()).normalize();
-        let origin = s.model.translation;
-        let at = |d: f32| Vec3A::from(self.stored(origin + dir * d));
-        let estimate = s.radius_toward(theta);
-        let limit = estimate * 3.0 + 0.05;
-        let own = self.part.primitives.start as usize..self.part.primitives.end as usize;
-        let d_full = exit(|d| field.distance(at(d)), limit);
-        let d_own = exit(|d| field.distance_among(own.clone(), at(d)), limit);
-        let allowance = estimate * self.garment.reach + 0.01;
-        let (d, own_only) = match (d_full, d_own) {
+        let origin = sample.model.translation;
+        let at = |dist: f32| Vec3A::from(self.stored(origin + dir * dist));
+        let estimate = sample.radius_toward(theta);
+        let limit = f32::mul_add(estimate, 3.0, 0.05);
+        let own = self.part.primitives.start.idx()..self.part.primitives.end.idx();
+        let d_full = exit(|dist| field.distance(at(dist)), limit);
+        let d_own = exit(|dist| field.distance_among(own.clone(), at(dist)), limit);
+        let allowance = f32::mul_add(estimate, self.garment.reach, 0.01);
+        let (dist, own_only) = match (d_full, d_own) {
             (Some(full), Some(mine)) if full > mine + allowance => (mine + allowance, true),
             (Some(full), _) => (full, false),
             (None, Some(mine)) => (mine, true),
             (None, None) => (estimate, false),
         };
-        let p = at(d);
+        let p = at(dist);
         let normal = if own_only {
-            let h = 1e-3;
-            let g = |o: Vec3A| field.distance_among(own.clone(), p + o) - field.distance_among(own.clone(), p - o);
-            Vec3A::new(g(Vec3A::X * h), g(Vec3A::Y * h), g(Vec3A::Z * h))
+            let grad = |o: Vec3A| field.distance_among(own.clone(), p + o) - field.distance_among(own.clone(), p - o);
+            Vec3A::new(grad(Vec3A::X * 1e-3), grad(Vec3A::Y * 1e-3), grad(Vec3A::Z * 1e-3))
         } else {
             field.gradient(p)
         };
@@ -106,7 +106,7 @@ fn exit(distance: impl Fn(f32) -> f32, limit: f32) -> Option<f32> {
     }
     let mut hi = d;
     for _ in 0..8 {
-        let mid = (lo + hi) * 0.5;
+        let mid = f32::midpoint(lo, hi);
         if distance(mid) < 0.0 { lo = mid } else { hi = mid }
     }
     Some(hi)
@@ -138,7 +138,7 @@ pub fn fit_outfit(mut anatomy: Anatomy, outfit: &Outfit, assets: &PartAssets) ->
         };
         let pattern = PartPath(garment.on.clone());
         for part in anatomy.parts.iter().filter(|p| !p.axis.is_empty() && path_matches(&pattern, &p.path)) {
-            let piece = Piece { part, garment, palette: gi.min(MAX_GARMENTS - 1) as u8 };
+            let piece = Piece { part, garment, palette: gi.min(MAX_GARMENTS - 1).clamp_u8() };
             let chains = garment.hang.and_then(|hang| {
                 let rig = hang_rig(&piece, &field, mesh, &hang, &model_rest, &anatomy, &mut new_bones)?;
                 for c in &rig {
@@ -162,7 +162,7 @@ pub fn fit_outfit(mut anatomy: Anatomy, outfit: &Outfit, assets: &PartAssets) ->
     if out.indices.is_empty() {
         return (anatomy, None);
     }
-    out.submeshes.push(Submesh { indices: 0..out.indices.len() as u32, slot: MaterialSlot::Cloth });
+    out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot: MaterialSlot::Cloth });
     (anatomy, Some(out))
 }
 
@@ -187,18 +187,16 @@ fn theta_of(p: Vec3) -> f32 {
 
 /// Chain angles: evenly around a full ring, or across the hanging vertices' angular range.
 fn chain_angles(mesh: &TriMesh, count: u8) -> Vec<f32> {
-    let n = count.max(1) as usize;
+    let n = usize::from(count.max(1)).to_f32();
     let mut angles: Vec<f32> = mesh.positions.iter().filter(|p| !(0.0..=1.0).contains(&p.y)).map(|p| theta_of(*p)).collect();
-    if angles.is_empty() {
-        return Vec::new();
-    }
     angles.sort_by(f32::total_cmp);
-    let biggest_gap = angles.windows(2).map(|w| w[1] - w[0]).fold(TAU - (angles[angles.len() - 1] - angles[0]), f32::max);
+    let (Some(&lo), Some(&hi)) = (angles.first(), angles.last()) else { return Vec::new() };
+    let biggest_gap = angles.array_windows().map(|[a, b]| b - a).fold(TAU - (hi - lo), f32::max);
+    let steps = 0..usize::from(count.max(1));
     if biggest_gap < 0.6 {
-        return (0..n).map(|k| k as f32 / n as f32 * TAU).collect();
+        return steps.map(|k| k.to_f32() / n * TAU).collect();
     }
-    let (lo, hi) = (angles[0], angles[angles.len() - 1]);
-    (0..n).map(|k| lo + (hi - lo) * (k as f32 + 0.5) / n as f32).collect()
+    steps.map(|k| lo + (hi - lo) * (k.to_f32() + 0.5) / n).collect()
 }
 
 /// Adds the spring-bone chains a hanging piece needs (appended to `new_bones`).
@@ -215,15 +213,17 @@ fn hang_rig(
     let first = anatomy.skeleton.len();
     let start = mesh.positions.iter().any(|p| p.y < 0.0);
     let (edge, along) = hang_edge(piece, start)?;
-    let segments = hang.segments.max(1) as usize;
+    let segments = usize::from(hang.segments.max(1));
     let angles = chain_angles(mesh, hang.chains);
     if first + new_bones.len() + angles.len() * segments > MAX_BONES {
         warn!("garment {}: not enough bones left for its hanging cloth; it stays rigid", piece.garment.name);
         return None;
     }
     let parent = edge.bone;
-    let parent_model = Transform::from_matrix(model_rest[parent.index()].into());
-    let seg_len = hang.length / segments as f32;
+    let parent_model = Transform::from_matrix((*model_rest.get(parent.index())?).into());
+    let region = anatomy.skeleton.get(parent)?.region;
+    let part = anatomy.parts.iter().position(|p| std::ptr::eq(p, piece.part)).unwrap_or(0).clamp_u16();
+    let seg_len = hang.length / segments.to_f32();
     let mut chains = Vec::new();
     for theta in angles {
         let surf = piece.surface(field, if start { 0.0 } else { 1.0 }, theta, false)?;
@@ -233,15 +233,16 @@ fn hang_rig(
         let mut bones = SmallVec::new();
         let mut prev: (BoneId, Transform) = (parent, parent_model);
         for j in 0..segments {
-            let model = Transform::from_translation(root + dir * seg_len * j as f32).with_rotation(frame_y_z(dir, radial));
-            let id = BoneId((first + new_bones.len()) as u8);
+            let model = Transform::from_translation(root + dir * seg_len * j.to_f32()).with_rotation(frame_y_z(dir, radial));
+            // Fits: the bone budget was checked above.
+            let id = BoneId(u8::try_from(first + new_bones.len()).ok()?);
             new_bones.push(BoneDef {
                 name: format!("cloth.{}.{}.{j}", piece.garment.name, chains.len()),
                 parent: Some(prev.0),
                 rest: relative(&prev.1, &model),
                 length: seg_len,
-                region: anatomy.skeleton.get(parent).region,
-                part: anatomy.parts.iter().position(|p| std::ptr::eq(p, piece.part)).unwrap_or(0) as u16,
+                region,
+                part,
             });
             bones.push(id);
             prev = (id, model);
@@ -253,63 +254,70 @@ fn hang_rig(
 
 /// Each chain follows the nearest leg's swing, fading with distance from that hip.
 fn follow_legs(chains: &[Chain], anatomy: &Anatomy, model_rest: &[bevy::math::Affine3A], weight: f32) -> Vec<ClothFollow> {
-    let hips: Vec<Vec3> = anatomy.legs.iter().map(|l| model_rest[l.chain[0].index()].translation.into()).collect();
-    let spread = hips.iter().map(|a| hips.iter().map(|b| a.distance(*b)).fold(0.0, f32::max)).fold(0.1, f32::max);
+    let hips: Vec<(usize, Vec3)> = anatomy
+        .legs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i, model_rest.get(l.chain.first()?.index())?.translation.into())))
+        .collect();
+    let spread = hips.iter().map(|(_, a)| hips.iter().map(|(_, b)| a.distance(*b)).fold(0.0, f32::max)).fold(0.1, f32::max);
     chains
         .iter()
         .filter_map(|c| {
-            let (leg, d) = hips.iter().enumerate().map(|(i, h)| (i, h.distance(c.root))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+            let (leg, d) = hips.iter().map(|(i, h)| (*i, h.distance(c.root))).min_by(|a, b| a.1.total_cmp(&b.1))?;
             let w = weight * (1.0 - d / spread).clamp(0.0, 1.0);
-            (w > 0.01).then_some(ClothFollow { root: *c.bones.first()?, leg: leg as u8, weight: w })
+            (w > 0.01).then_some(ClothFollow { root: *c.bones.first()?, leg: leg.clamp_u8(), weight: w })
         })
         .collect()
 }
 
-/// Skin influences for a hanging vertex: the two nearest chains, two segments each.
-fn hang_influences(chains: &[Chain], theta: f32, along: f32) -> ([u16; 4], [f32; 4]) {
+/// Skin influences for a hanging vertex: the two nearest chains, two segments each. `None`
+/// without chains.
+fn hang_influences(chains: &[Chain], theta: f32, along: f32) -> Option<([u16; 4], [f32; 4])> {
+    let (first, last) = (chains.first()?, chains.last()?);
     let n = chains.len();
-    let segs = chains[0].bones.len();
-    let ring = n > 1 && (chains[n - 1].theta - chains[0].theta) > TAU * (n as f32 - 1.5) / n as f32;
+    let segs = first.bones.len();
+    let ring = n > 1 && (last.theta - first.theta) > TAU * (n.to_f32() - 1.5) / n.to_f32();
     let (k0, k1, a) = if n == 1 {
         (0, 0, 0.0)
     } else if ring {
-        let step = TAU / n as f32;
-        let x = (theta.rem_euclid(TAU)) / step;
-        let k0 = x.floor() as usize % n;
+        let x = theta.rem_euclid(TAU) / (TAU / n.to_f32());
+        let k0 = x.floor().sat_usize() % n;
         (k0, (k0 + 1) % n, x.fract())
     } else {
-        let step = (chains[n - 1].theta - chains[0].theta) / (n - 1) as f32;
-        let x = ((theta - chains[0].theta) / step).clamp(0.0, (n - 1) as f32);
-        let k0 = (x.floor() as usize).min(n - 2);
-        (k0, k0 + 1, x - k0 as f32)
+        let step = (last.theta - first.theta) / (n - 1).to_f32();
+        let x = ((theta - first.theta) / step).clamp(0.0, (n - 1).to_f32());
+        let k0 = x.floor().sat_usize().min(n - 2);
+        (k0, k0 + 1, x - k0.to_f32())
     };
-    let u = (along * segs as f32).clamp(0.0, segs as f32 - 1e-3);
-    let (s0, f) = (u.floor() as usize, u.fract());
-    let s1 = (s0 + 1).min(segs - 1);
+    let seg_pos = (along * segs.to_f32()).clamp(0.0, segs.to_f32() - 1e-3);
+    let (s0, f) = (seg_pos.floor().sat_usize(), seg_pos.fract());
+    let s1 = (s0 + 1).min(segs.saturating_sub(1));
+    let segment = |chain: usize, seg: usize| chains.get(chain).and_then(|c| c.bones.get(seg)).copied();
     let mut acc: SmallVec<[(BoneId, f32); 4]> = SmallVec::new();
     for (bone, w) in [
-        (chains[k0].bones[s0], (1.0 - a) * (1.0 - f)),
-        (chains[k0].bones[s1], (1.0 - a) * f),
-        (chains[k1].bones[s0], a * (1.0 - f)),
-        (chains[k1].bones[s1], a * f),
+        (segment(k0, s0)?, (1.0 - a) * (1.0 - f)),
+        (segment(k0, s1)?, (1.0 - a) * f),
+        (segment(k1, s0)?, a * (1.0 - f)),
+        (segment(k1, s1)?, a * f),
     ] {
         match acc.iter_mut().find(|(b, _)| *b == bone) {
-            Some(e) => e.1 += w,
+            Some(entry) => entry.1 += w,
             None => acc.push((bone, w)),
         }
     }
     let mut joints = [0u16; 4];
     let mut weights = [0.0; 4];
-    for (i, (b, w)) in acc.iter().enumerate() {
-        joints[i] = b.0 as u16;
-        weights[i] = *w;
+    for ((joint, weight), (bone, w)) in joints.iter_mut().zip(&mut weights).zip(&acc) {
+        *joint = u16::from(bone.0);
+        *weight = *w;
     }
-    (joints, weights)
+    Some((joints, weights))
 }
 
 /// Wraps one piece's mesh onto its part and appends it to `out`.
 fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&[Chain]>, out: &mut BodyMeshData) {
-    let base = out.positions.len() as u32;
+    let base = out.positions.len().clamp_u32();
     let g = piece.garment;
     let start = out.positions.len();
     for p in &mesh.positions {
@@ -328,17 +336,17 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
             continue;
         };
         let at_edge = surf.position + surf.normal * height;
-        let (position, joints, weights) = match (hanging, g.hang, chains) {
+        let skin = (surf.info.bones.map(|b| u16::from(b.0)), surf.info.weights);
+        let (position, (joints, weights)) = match (hanging, g.hang, chains) {
             (true, Some(hang), Some(chains)) if !chains.is_empty() => {
                 let start_edge = p.y < 0.0;
                 let beyond = if start_edge { -p.y } else { p.y - 1.0 };
-                let (_, along) = hang_edge(piece, start_edge).unwrap_or((sample_axis(&piece.part.axis, 0.0).unwrap(), Vec3::NEG_Y));
+                let along = hang_edge(piece, start_edge).map_or(Vec3::NEG_Y, |(_, along)| along);
                 let (dir, radial) = drop_dir(piece, along, surf.normal, &hang);
                 let drop = beyond * hang.length;
-                let (j, w) = hang_influences(chains, theta, beyond);
-                (at_edge + dir * drop + radial * drop * hang.flare, j, w)
+                (at_edge + dir * drop + radial * drop * hang.flare, hang_influences(chains, theta, beyond).unwrap_or(skin))
             }
-            _ => (at_edge, surf.info.bones.map(|b| b.0 as u16), surf.info.weights),
+            _ => (at_edge, skin),
         };
         out.positions.push(position);
         out.normals.push(surf.normal);
@@ -350,7 +358,7 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
                 cavity: 0,
                 curvature: 128,
                 limb_t: 0,
-                primary_bone: BoneId(joints[0] as u8),
+                primary_bone: BoneId(joints[0].clamp_u8()),
                 layer: surf.layer,
             }
             .pack(),
@@ -358,8 +366,8 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
         out.cloth.push(piece.palette);
     }
     // Mirrored parts reflect positions, which flips winding.
-    for t in mesh.indices.chunks_exact(3) {
-        let [a, b, c] = [t[0], t[1], t[2]].map(|i| base + i);
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| base + i);
         out.indices.extend(if piece.part.mirrored { [a, c, b] } else { [a, b, c] });
     }
     recompute_normals(out, start);
@@ -367,23 +375,27 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
 
 /// Area-weighted vertex normals for vertices from `start` on (their triangles come last).
 fn recompute_normals(out: &mut BodyMeshData, start: usize) {
-    let mut acc = vec![Vec3::ZERO; out.positions.len() - start];
-    let first_tri = out.indices.iter().position(|i| *i as usize >= start).unwrap_or(out.indices.len()) / 3 * 3;
-    for t in out.indices[first_tri..].chunks_exact(3) {
-        let [a, b, c] = [t[0], t[1], t[2]].map(|i| i as usize);
-        let n = (out.positions[b] - out.positions[a]).cross(out.positions[c] - out.positions[a]);
+    let mut acc = vec![Vec3::ZERO; out.positions.len().saturating_sub(start)];
+    let first_tri = out.indices.iter().position(|i| i.idx() >= start).unwrap_or(out.indices.len()) / 3 * 3;
+    for &[a, b, c] in out.indices.get(first_tri..).unwrap_or_default().as_chunks::<3>().0 {
+        let (Some(&pa), Some(&pb), Some(&pc)) = (out.positions.get(a.idx()), out.positions.get(b.idx()), out.positions.get(c.idx())) else {
+            continue;
+        };
+        let n = (pb - pa).cross(pc - pa);
         for v in [a, b, c] {
-            acc[v - start] += n;
+            if let Some(sum) = v.idx().checked_sub(start).and_then(|k| acc.get_mut(k)) {
+                *sum += n;
+            }
         }
     }
-    for (i, n) in acc.into_iter().enumerate() {
-        let v = start + i;
-        out.normals[v] = n.normalize_or(out.normals[v]);
+    for (n, normal) in acc.into_iter().zip(out.normals.iter_mut().skip(start)) {
+        *normal = n.normalize_or(*normal);
     }
 }
 
 /// Cloth meshes per LOD from the hero fit: simplified and pushed out a little further at coarser
 /// levels (their body is coarser too), crowd tiers remapped to the crowd skeleton.
+#[must_use]
 pub fn garment_lods(hero: &BodyMeshData, anatomy: &Anatomy, settings: &SurfaceSettings) -> [BodyMeshData; 3] {
     LodLevel::ALL.map(|level| {
         let spec = settings.get(level);
@@ -392,7 +404,7 @@ pub fn garment_lods(hero: &BodyMeshData, anatomy: &Anatomy, settings: &SurfaceSe
         } else {
             let ratio = if level == LodLevel::Near { 0.5 } else { 0.25 };
             let mut m = simplify(hero, ratio, spec.max_error);
-            m.submeshes = vec![Submesh { indices: 0..m.indices.len() as u32, slot: MaterialSlot::Cloth }];
+            m.submeshes = vec![Submesh { indices: 0..m.indices.len().clamp_u32(), slot: MaterialSlot::Cloth }];
             let push = spec.mesh.voxel_size * 0.5;
             for (p, n) in m.positions.iter_mut().zip(&m.normals) {
                 *p += *n * push;
@@ -420,8 +432,8 @@ mod tests {
         let mut positions = Vec::new();
         for i in 0..=rows {
             for j in 0..cols {
-                let t = j as f32 / cols as f32 * TAU;
-                positions.push(Vec3::new(t.sin(), i as f32 / rows as f32, -t.cos()));
+                let t = j.to_f32() / cols.to_f32() * TAU;
+                positions.push(Vec3::new(t.sin(), i.to_f32() / rows.to_f32(), -t.cos()));
             }
         }
         let v = |i: u32, j: u32| i * cols + j % cols;

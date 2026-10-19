@@ -51,7 +51,7 @@ fn screen_px(cam: &GlobalTransform, proj: &Projection, viewport_h: f32, world_po
             radius * 2.0 / (depth * (p.fov * 0.5).tan() * 2.0) * viewport_h
         }
         Projection::Orthographic(o) => radius * 2.0 / o.area.height().max(1e-3) * viewport_h,
-        _ => viewport_h,
+        Projection::Custom(_) => viewport_h,
     }
 }
 
@@ -76,9 +76,8 @@ pub(super) fn choose_tiers(
             .map(|(t, p, h)| screen_px(t, p, *h, transform.translation(), radius))
             .fold(0.0, f32::max);
         let current = tier.map(|t| t.0);
-        let level = if let Some(f) = force {
-            f.0
-        } else {
+        let level = force.map_or_else(
+            || {
             // Hysteresis: thresholds shift against the current tier.
             let h = profile.hysteresis;
             let (hero, near) = match current {
@@ -93,7 +92,9 @@ pub(super) fn choose_tiers(
             } else {
                 LodLevel::Far
             }
-        };
+            },
+            |f| f.0,
+        );
         wanted.push((entity, level, px));
     }
 

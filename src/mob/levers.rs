@@ -81,6 +81,7 @@ pub(super) fn graft_part(ev: On<GraftPart>, mut commands: Commands, mut mobs: Qu
 }
 
 /// Applies [`BoneScales`] to joint scales. Translation/rotation are left to animation.
+#[allow(clippy::type_complexity)]
 pub(super) fn apply_bone_scales(
     bodies: Res<Assets<GeneratedBody>>,
     mobs: Query<(&BoneScales, &MobSkeleton, &MobBody), Or<(Changed<BoneScales>, Changed<MobSkeleton>)>>,
@@ -91,7 +92,7 @@ pub(super) fn apply_bone_scales(
         let bones = &body.anatomy.skeleton.bones;
         for &entity in &skeleton.0 {
             let Ok((joint, mut tf)) = joints.get_mut(entity) else { continue };
-            let parent = bones[joint.bone.index()].parent.map_or(Vec3::ONE, |p| scales.get(p));
+            let parent = bones.get(joint.bone.index()).and_then(|b| b.parent).map_or(Vec3::ONE, |p| scales.get(p));
             tf.scale = scales.get(joint.bone) / parent;
         }
     }

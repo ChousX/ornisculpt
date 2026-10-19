@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::VertexFormat;
 
 use crate::anatomy::{BoneId, PrimLayer, RegionId};
+use crate::num::{Clamp, Idx};
 
 /// Per-vertex Ornisculpt data, packed into two `u32`s on the GPU:
 /// - x: `region | cavity << 8 | curvature << 16 | limb_t << 24`
@@ -42,30 +43,31 @@ pub struct MobVertexData {
 }
 
 impl MobVertexData {
-    pub fn pack(&self) -> [u32; 2] {
+    #[must_use]
+    pub const fn pack(&self) -> [u32; 2] {
         let layer = match self.layer {
-            PrimLayer::Base => 0u32,
+            PrimLayer::Base => 0u8,
             PrimLayer::Muscle => 1,
             PrimLayer::Landmark => 2,
             PrimLayer::Fat => 3,
         };
         [
-            self.region.0 as u32
-                | (self.cavity as u32) << 8
-                | (self.curvature as u32) << 16
-                | (self.limb_t as u32) << 24,
-            self.primary_bone.0 as u32 | layer << 8,
+            u32::from_le_bytes([self.region.0, self.cavity, self.curvature, self.limb_t]),
+            u32::from_le_bytes([self.primary_bone.0, layer, 0, 0]),
         ]
     }
 
-    pub fn unpack([x, y]: [u32; 2]) -> Self {
+    #[must_use]
+    pub const fn unpack([x, y]: [u32; 2]) -> Self {
+        let [region, cavity, curvature, limb_t] = x.to_le_bytes();
+        let [bone, layer, _, _] = y.to_le_bytes();
         Self {
-            region: RegionId(x as u8),
-            cavity: (x >> 8) as u8,
-            curvature: (x >> 16) as u8,
-            limb_t: (x >> 24) as u8,
-            primary_bone: BoneId(y as u8),
-            layer: match (y >> 8) & 0xff {
+            region: RegionId(region),
+            cavity,
+            curvature,
+            limb_t,
+            primary_bone: BoneId(bone),
+            layer: match layer {
                 1 => PrimLayer::Muscle,
                 2 => PrimLayer::Landmark,
                 3 => PrimLayer::Fat,
@@ -76,7 +78,7 @@ impl MobVertexData {
 }
 
 /// Which material a range of indices uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MaterialSlot {
     /// SDF body: coat shading.
     Skin,
@@ -89,7 +91,7 @@ pub enum MaterialSlot {
     Wing,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Submesh {
     pub indices: Range<u32>,
     pub slot: MaterialSlot,
@@ -126,21 +128,25 @@ pub struct BodyMeshData {
 }
 
 impl BodyMeshData {
-    pub fn vertex_count(&self) -> usize {
+    #[must_use]
+    pub const fn vertex_count(&self) -> usize {
         self.positions.len()
     }
 
-    pub fn triangle_count(&self) -> usize {
+    #[must_use]
+    pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
 
     /// Builds a Bevy mesh with position, normal, joint index/weight and [`ATTRIBUTE_MOB_DATA`].
     /// Submeshes stay in one index buffer; the material system splits by range.
+    #[must_use]
     pub fn to_bevy_mesh(&self) -> Mesh {
         self.build_mesh(false)
     }
 
     /// Like [`to_bevy_mesh`](Self::to_bevy_mesh) but with joints under the crowd attribute names.
+    #[must_use]
     pub fn to_crowd_mesh(&self) -> Mesh {
         self.build_mesh(true)
     }
@@ -156,7 +162,7 @@ impl BodyMeshData {
         let n = self.positions.len();
         let cover = |i: usize| self.coverage.get(i).copied().unwrap_or([0.0; 3]);
         let w = |i: usize| match self.cloth.get(i) {
-            Some(&c) if c != NOT_CLOTH => c as f32,
+            Some(&c) if c != NOT_CLOTH => f32::from(c),
             _ => cover(i)[0],
         };
         let rest: Vec<[f32; 4]> = self.positions.iter().enumerate().map(|(i, p)| [p.x, p.y, p.z, w(i)]).collect();
@@ -188,56 +194,104 @@ impl BodyMeshData {
 
     /// One Bevy mesh per material slot (vertices compacted per slot), for renderers that bind one
     /// material per mesh.
+    #[must_use]
     pub fn to_bevy_meshes(&self) -> Vec<(MaterialSlot, Mesh)> {
         self.split_meshes(false)
     }
 
     /// [`to_bevy_meshes`](Self::to_bevy_meshes) for crowd rendering.
+    #[must_use]
     pub fn to_crowd_meshes(&self) -> Vec<(MaterialSlot, Mesh)> {
         self.split_meshes(true)
     }
 
     fn split_meshes(&self, crowd: bool) -> Vec<(MaterialSlot, Mesh)> {
         let mut slots: Vec<MaterialSlot> = self.submeshes.iter().map(|s| s.slot).collect();
-        slots.dedup();
-        slots.sort_by_key(|s| *s as u8);
+        slots.sort();
         slots.dedup();
         slots
             .into_iter()
             .map(|slot| {
                 let mut remap = vec![u32::MAX; self.positions.len()];
-                let mut part = BodyMeshData::default();
+                let mut part = Self::default();
                 for s in self.submeshes.iter().filter(|s| s.slot == slot) {
-                    for &i in &self.indices[s.indices.start as usize..s.indices.end as usize] {
-                        let r = &mut remap[i as usize];
-                        if *r == u32::MAX {
-                            *r = part.positions.len() as u32;
-                            let i = i as usize;
-                            part.positions.push(self.positions[i]);
-                            part.normals.push(self.normals[i]);
-                            part.joints.push(self.joints[i]);
-                            part.weights.push(self.weights[i]);
-                            part.mob_data.push(self.mob_data[i]);
-                            if let Some(uv) = self.uvs.get(i) {
-                                part.uvs.push(*uv);
-                            }
-                            if let Some(c) = self.coverage.get(i) {
-                                part.coverage.push(*c);
-                            }
-                            if let Some(f) = self.flow.get(i) {
-                                part.flow.push(*f);
-                            }
-                            if let Some(c) = self.cloth.get(i) {
-                                part.cloth.push(*c);
-                            }
+                    for tri in self.submesh_indices(s).as_chunks::<3>().0 {
+                        // Triangles with a vertex missing an attribute are dropped whole.
+                        if !tri.iter().all(|i| self.vertex(i.idx()).is_some()) {
+                            continue;
                         }
-                        part.indices.push(*r);
+                        for &i in tri {
+                            let i = i.idx();
+                            let (Some(r), Some(v)) = (remap.get_mut(i), self.vertex(i)) else { continue };
+                            if *r == u32::MAX {
+                                *r = part.positions.len().clamp_u32();
+                                part.push_vertex(v);
+                                if let Some(uv) = self.uvs.get(i) {
+                                    part.uvs.push(*uv);
+                                }
+                                if let Some(c) = self.coverage.get(i) {
+                                    part.coverage.push(*c);
+                                }
+                                if let Some(f) = self.flow.get(i) {
+                                    part.flow.push(*f);
+                                }
+                                if let Some(c) = self.cloth.get(i) {
+                                    part.cloth.push(*c);
+                                }
+                            }
+                            part.indices.push(*r);
+                        }
                     }
                 }
                 (slot, part.build_mesh(crowd))
             })
             .collect()
     }
+
+    /// The required attributes of vertex `i`, or `None` if any of them is missing.
+    #[must_use]
+    pub fn vertex(&self, i: usize) -> Option<Vertex> {
+        Some(Vertex {
+            position: *self.positions.get(i)?,
+            normal: *self.normals.get(i)?,
+            joints: *self.joints.get(i)?,
+            weights: *self.weights.get(i)?,
+            mob_data: *self.mob_data.get(i)?,
+        })
+    }
+
+    /// Appends the required attributes of one vertex.
+    pub fn push_vertex(&mut self, v: Vertex) {
+        self.positions.push(v.position);
+        self.normals.push(v.normal);
+        self.joints.push(v.joints);
+        self.weights.push(v.weights);
+        self.mob_data.push(v.mob_data);
+    }
+
+    /// The index buffer slice of a submesh; empty if its range lies outside the buffer.
+    #[must_use]
+    pub fn submesh_indices(&self, s: &Submesh) -> &[u32] {
+        self.indices.get(s.indices.start.idx()..s.indices.end.idx()).unwrap_or_default()
+    }
+
+    /// Triangles of every submesh in `slot`.
+    pub fn slot_triangles(&self, slot: MaterialSlot) -> impl Iterator<Item = &[u32; 3]> {
+        self.submeshes
+            .iter()
+            .filter(move |s| s.slot == slot)
+            .flat_map(|s| self.submesh_indices(s).as_chunks::<3>().0)
+    }
+}
+
+/// The attributes every [`BodyMeshData`] vertex has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vertex {
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub joints: [u16; 4],
+    pub weights: [f32; 4],
+    pub mob_data: [u32; 2],
 }
 
 #[cfg(test)]

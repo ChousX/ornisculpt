@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{AttachSlot, ChainParams, CrossSection, HardKind, LimbEnd, PartKind, PartNode};
+use crate::num::Saturate;
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lever {
@@ -93,24 +94,26 @@ pub enum LeverKind {
 }
 
 impl Lever {
-    pub fn kind(self) -> LeverKind {
-        use Lever::*;
+    #[must_use]
+    pub const fn kind(self) -> LeverKind {
         match self {
-            Pitch | Yaw | Roll | Position | Around | Curl | Belly | EyeLateral | Splay
-            | Webbing | Curve | Twist => LeverKind::Delta,
-            Segments | Count | Tines => LeverKind::Count,
+            Self::Pitch | Self::Yaw | Self::Roll | Self::Position | Self::Around | Self::Curl | Self::Belly | Self::EyeLateral | Self::Splay
+            | Self::Webbing | Self::Curve | Self::Twist => LeverKind::Delta,
+            Self::Segments | Self::Count | Self::Tines => LeverKind::Count,
             _ => LeverKind::Factor,
         }
     }
 
     /// Changes bone count or hard-part topology. Such mobs can't share a skeleton (and
     /// therefore baked motion) with unpatched mobs of the same body plan.
+    #[must_use]
     pub fn changes_topology(self) -> bool {
         self.kind() == LeverKind::Count
     }
 
     /// Value meaning "no change" for this lever's kind (not meaningful for `Count`).
-    pub fn identity(self) -> f32 {
+    #[must_use]
+    pub const fn identity(self) -> f32 {
         match self.kind() {
             LeverKind::Factor => 1.0,
             LeverKind::Delta | LeverKind::Count => 0.0,
@@ -139,34 +142,40 @@ const CHAIN: &[Lever] = &[
 impl PartKind {
     /// Levers specific to this kind (placement levers are always available; see
     /// [`PartNode::supports`]).
+    #[must_use]
     pub fn levers(&self) -> Vec<Lever> {
-        use Lever::*;
+        use Lever as L;
         let own: &[&[Lever]] = match self {
-            PartKind::Torso(_) => &[SURFACE, CHAIN, &[Arch, Belly]],
-            PartKind::Chain(_) => &[SURFACE, CHAIN],
-            PartKind::Head(_) => &[SURFACE, &[Skull, Snout, Jaw, EyeSpacing, EyeLateral]],
-            PartKind::Limb(_) => &[SURFACE, CHAIN, &[EndSize, Splay]],
-            PartKind::Digits(_) => &[SURFACE, CHAIN, &[Count, Spread, Webbing]],
-            PartKind::Mass(_) => &[SURFACE, &[Width, Height, Depth]],
-            PartKind::Hard(p) => match p.kind {
-                super::HardKind::Antler { .. } => &[&[Size, Curve, Twist, Tines]],
-                _ => &[&[Size, Curve, Twist]],
+            Self::Torso(_) => &[SURFACE, CHAIN, &[L::Arch, L::Belly]],
+            Self::Chain(_) => &[SURFACE, CHAIN],
+            Self::Head(_) => &[SURFACE, &[L::Skull, L::Snout, L::Jaw, L::EyeSpacing, L::EyeLateral]],
+            Self::Limb(_) => &[SURFACE, CHAIN, &[L::EndSize, L::Splay]],
+            Self::Digits(_) => &[SURFACE, CHAIN, &[L::Count, L::Spread, L::Webbing]],
+            Self::Mass(_) => &[SURFACE, &[L::Width, L::Height, L::Depth]],
+            Self::Hard(p) => match p.kind {
+                super::HardKind::Antler { .. } => &[&[L::Size, L::Curve, L::Twist, L::Tines]],
+                _ => &[&[L::Size, L::Curve, L::Twist]],
             },
-            PartKind::Sculpt(_) => &[&[Blend]],
-            PartKind::Wing(_) => &[&[Size]],
+            Self::Sculpt(_) => &[&[L::Blend]],
+            Self::Wing(_) => &[&[L::Size]],
         };
         own.iter().flat_map(|s| s.iter().copied()).collect()
     }
 }
 
 impl PartNode {
+    #[must_use]
     pub fn supports(&self, lever: Lever) -> bool {
         PLACEMENT.contains(&lever) || self.kind.levers().contains(&lever)
     }
 
     /// Applies one patch value according to [`Lever::kind`].
+    ///
+    /// # Errors
+    ///
+    /// When this part doesn't support `lever`, or `value` isn't finite.
     pub fn apply_lever(&mut self, lever: Lever, value: f32) -> Result<(), LeverError> {
-        use Lever::*;
+        use Lever as L;
         if !self.supports(lever) {
             return Err(LeverError::Unsupported(lever));
         }
@@ -174,41 +183,41 @@ impl PartNode {
             return Err(LeverError::OutOfRange { lever, value });
         }
         let f = value; // Factor or Delta, depending on the lever
-        let count = |min: u8, max: u8| (value.round() as i32).clamp(min as i32, max as i32) as u8;
+        let count = |min: u8, max: u8| value.round().clamp(f32::from(min), f32::from(max)).sat_u8();
         let unsupported = LeverError::Unsupported(lever);
 
         match lever {
-            Scale => scale_kind(&mut self.kind, f),
-            Pitch => self.offset.rotate_deg.x += f,
-            Yaw => self.offset.rotate_deg.y += f,
-            Roll => self.offset.rotate_deg.z += f,
-            Position => match &mut self.attach {
+            L::Scale => scale_kind(&mut self.kind, f),
+            L::Pitch => self.offset.rotate_deg.x += f,
+            L::Yaw => self.offset.rotate_deg.y += f,
+            L::Roll => self.offset.rotate_deg.z += f,
+            L::Position => match &mut self.attach {
                 AttachSlot::Along(t) | AttachSlot::Surface { t, .. } => *t = (*t + f).clamp(0.0, 1.0),
                 _ => return Err(unsupported),
             },
-            Around => match &mut self.attach {
+            L::Around => match &mut self.attach {
                 AttachSlot::Surface { around_deg, .. } => *around_deg += f,
                 _ => return Err(unsupported),
             },
-            Muscle => self.tone.muscle *= f,
-            Fat => self.tone.fat *= f,
-            Folds => self.tone.folds *= f,
-            Blend => match &mut self.kind {
+            L::Muscle => self.tone.muscle *= f,
+            L::Fat => self.tone.fat *= f,
+            L::Folds => self.tone.folds *= f,
+            L::Blend => match &mut self.kind {
                 PartKind::Mass(m) => m.blend *= f,
                 PartKind::Sculpt(s) => s.blend *= f,
                 PartKind::Head(h) => h.skull.blend *= f,
                 k => chain_mut(k).ok_or(unsupported)?.blend *= f,
             },
-            Length => chain_mut(&mut self.kind).ok_or(unsupported)?.length *= f,
-            Girth => chain_mut(&mut self.kind).ok_or(unsupported)?.radius.scale *= f,
-            Taper => {
+            L::Length => chain_mut(&mut self.kind).ok_or(unsupported)?.length *= f,
+            L::Girth => chain_mut(&mut self.kind).ok_or(unsupported)?.radius.scale *= f,
+            L::Taper => {
                 let c = chain_mut(&mut self.kind).ok_or(unsupported)?;
                 for (t, v) in &mut c.radius.curve {
-                    *v *= 1.0 + (f - 1.0) * *t;
+                    *v *= (f - 1.0).mul_add(*t, 1.0);
                 }
             }
-            Curl => chain_mut(&mut self.kind).ok_or(unsupported)?.curl += f,
-            Flatten => {
+            L::Curl => chain_mut(&mut self.kind).ok_or(unsupported)?.curl += f,
+            L::Flatten => {
                 let c = chain_mut(&mut self.kind).ok_or(unsupported)?;
                 c.radius.cross = match c.radius.cross {
                     CrossSection::Round => CrossSection::Ellipse { aspect: f },
@@ -217,72 +226,88 @@ impl PartNode {
                     CrossSection::Teardrop { aspect } => CrossSection::Teardrop { aspect: aspect * f },
                 };
             }
-            Segments => chain_mut(&mut self.kind).ok_or(unsupported)?.segments = count(1, 8),
-            Arch | Belly => {
-                let PartKind::Torso(t) = &mut self.kind else { return Err(unsupported) };
-                if lever == Arch {
-                    t.arch.iter_mut().for_each(|(_, h)| *h *= f);
-                } else {
-                    t.belly = (t.belly + f).clamp(0.0, 1.0);
-                }
-            }
-            Skull | Snout | Jaw | EyeSpacing | EyeLateral => {
-                let PartKind::Head(h) = &mut self.kind else { return Err(unsupported) };
-                match lever {
-                    Skull => h.skull.size *= f,
-                    Snout => h.snout *= f,
-                    Jaw => {
-                        if let Some(j) = &mut h.jaw {
-                            j.length *= f;
-                        }
-                    }
-                    EyeSpacing => h.eye_spacing *= f,
-                    _ => h.eye_lateral = (h.eye_lateral + f).clamp(0.0, 1.0),
-                }
-            }
-            EndSize | Splay => {
-                let PartKind::Limb(l) = &mut self.kind else { return Err(unsupported) };
-                if lever == Splay {
-                    l.splay_deg += f;
-                } else {
-                    scale_end(&mut l.end, f);
-                }
-            }
-            Count | Spread | Webbing => {
-                let PartKind::Digits(d) = &mut self.kind else { return Err(unsupported) };
-                match lever {
-                    Count => d.count = count(1, 6),
-                    Spread => d.spread_deg *= f,
-                    _ => d.webbing = (d.webbing + f).clamp(0.0, 1.0),
-                }
-            }
-            Width | Height | Depth => {
-                let PartKind::Mass(m) = &mut self.kind else { return Err(unsupported) };
-                match lever {
-                    Width => m.size.x *= f,
-                    Height => m.size.y *= f,
-                    _ => m.size.z *= f,
-                }
-            }
-            Size | Curve | Twist | Tines => {
-                let PartKind::Hard(h) = &mut self.kind else { return Err(unsupported) };
-                match lever {
-                    Size => h.size *= f,
-                    Curve => h.curve += f,
-                    Twist => h.twist += f,
-                    _ => match &mut h.kind {
-                        HardKind::Antler { tines } => *tines = count(1, 8),
-                        _ => return Err(unsupported),
-                    },
-                }
+            L::Segments => chain_mut(&mut self.kind).ok_or(unsupported)?.segments = count(1, 8),
+            L::Arch | L::Belly | L::Skull | L::Snout | L::Jaw | L::EyeSpacing | L::EyeLateral | L::EndSize | L::Splay
+            | L::Count | L::Spread | L::Webbing | L::Width | L::Height | L::Depth | L::Size | L::Curve | L::Twist | L::Tines => {
+                apply_kind_lever(&mut self.kind, lever, value)?;
             }
         }
         Ok(())
     }
 }
 
+/// The levers specific to one part kind (see [`PartKind::levers`]).
+fn apply_kind_lever(kind: &mut PartKind, lever: Lever, value: f32) -> Result<(), LeverError> {
+    use Lever as L;
+    let f = value;
+    let count = |min: u8, max: u8| value.round().clamp(f32::from(min), f32::from(max)).sat_u8();
+    let unsupported = LeverError::Unsupported(lever);
+    match lever {
+        L::Arch | L::Belly => {
+            let PartKind::Torso(t) = kind else { return Err(unsupported) };
+            if lever == L::Arch {
+                t.arch.iter_mut().for_each(|(_, h)| *h *= f);
+            } else {
+                t.belly = (t.belly + f).clamp(0.0, 1.0);
+            }
+        }
+        L::Skull | L::Snout | L::Jaw | L::EyeSpacing | L::EyeLateral => {
+            let PartKind::Head(h) = kind else { return Err(unsupported) };
+            match lever {
+                L::Skull => h.skull.size *= f,
+                L::Snout => h.snout *= f,
+                L::Jaw => {
+                    if let Some(j) = &mut h.jaw {
+                        j.length *= f;
+                    }
+                }
+                L::EyeSpacing => h.eye_spacing *= f,
+                _ => h.eye_lateral = (h.eye_lateral + f).clamp(0.0, 1.0),
+            }
+        }
+        L::EndSize | L::Splay => {
+            let PartKind::Limb(l) = kind else { return Err(unsupported) };
+            if lever == L::Splay {
+                l.splay_deg += f;
+            } else {
+                scale_end(&mut l.end, f);
+            }
+        }
+        L::Count | L::Spread | L::Webbing => {
+            let PartKind::Digits(d) = kind else { return Err(unsupported) };
+            match lever {
+                L::Count => d.count = count(1, 6),
+                L::Spread => d.spread_deg *= f,
+                _ => d.webbing = (d.webbing + f).clamp(0.0, 1.0),
+            }
+        }
+        L::Width | L::Height | L::Depth => {
+            let PartKind::Mass(m) = kind else { return Err(unsupported) };
+            match lever {
+                L::Width => m.size.x *= f,
+                L::Height => m.size.y *= f,
+                _ => m.size.z *= f,
+            }
+        }
+        L::Size | L::Curve | L::Twist | L::Tines => {
+            let PartKind::Hard(h) = kind else { return Err(unsupported) };
+            match lever {
+                L::Size => h.size *= f,
+                L::Curve => h.curve += f,
+                L::Twist => h.twist += f,
+                _ => match &mut h.kind {
+                    HardKind::Antler { tines } => *tines = count(1, 8),
+                    _ => return Err(unsupported),
+                },
+            }
+        }
+        _ => return Err(unsupported),
+    }
+    Ok(())
+}
+
 /// The chain inside chain-based part kinds.
-fn chain_mut(kind: &mut PartKind) -> Option<&mut ChainParams> {
+const fn chain_mut(kind: &mut PartKind) -> Option<&mut ChainParams> {
     match kind {
         PartKind::Torso(t) => Some(&mut t.chain),
         PartKind::Chain(c) => Some(&mut c.chain),

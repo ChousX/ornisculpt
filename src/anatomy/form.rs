@@ -42,6 +42,10 @@ pub enum FormError {
 
 /// Expands symmetry, then applies `form` (patches in order, then overall scale).
 /// The result is what a mob stores as its `LiveBody`.
+///
+/// # Errors
+///
+/// When a patch names no part, or its lever doesn't apply to the part.
 pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError> {
     let mut live = plan.expand_symmetry();
     for patch in &form.patches {
@@ -62,17 +66,17 @@ pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError> {
             return Err(FormError::UnknownPart(patch.part.clone()));
         }
     }
-    if form.overall_scale != 1.0 {
-        live.visit_mut(|_, node| {
-            let _ = node.apply_lever(super::Lever::Scale, form.overall_scale);
-            node.offset.translate *= form.overall_scale;
-        });
-    }
+    // Scaling by exactly 1 changes nothing, so there is no need to skip it.
+    live.visit_mut(|_, node| {
+        let _ = node.apply_lever(super::Lever::Scale, form.overall_scale);
+        node.offset.translate *= form.overall_scale;
+    });
     Ok(live)
 }
 
 /// `pattern` matches `path` if every segment equals the path's segment, either exactly or with
 /// its expansion suffixes (`.l`, `.r`, `.<n>`) removed.
+#[must_use]
 pub fn path_matches(pattern: &PartPath, path: &PartPath) -> bool {
     let (mut a, mut b) = (pattern.segments(), path.segments());
     loop {
@@ -85,7 +89,7 @@ pub fn path_matches(pattern: &PartPath, path: &PartPath) -> bool {
 }
 
 /// Like [`path_matches`], but `pattern` may also name an ancestor of `path`.
-pub(crate) fn path_prefix_matches(pattern: &PartPath, path: &PartPath) -> bool {
+pub fn path_prefix_matches(pattern: &PartPath, path: &PartPath) -> bool {
     let mut b = path.segments();
     for p in pattern.segments() {
         match b.next() {

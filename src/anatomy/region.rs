@@ -12,7 +12,7 @@ impl RegionId {
 }
 
 /// A surface region, emitted by the part that owns it.
-#[derive(Reflect, Clone, Debug, PartialEq)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq)]
 pub struct RegionDef {
     pub part: PartPath,
     pub kind: RegionKind,
@@ -56,11 +56,12 @@ pub enum Side {
 }
 
 impl Side {
-    pub fn mirrored(self) -> Side {
+    #[must_use]
+    pub const fn mirrored(self) -> Self {
         match self {
-            Side::Center => Side::Center,
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
+            Self::Center => Self::Center,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
         }
     }
 }
@@ -72,12 +73,13 @@ pub struct RegionTable {
 }
 
 impl RegionTable {
+    #[must_use]
     pub fn get(&self, id: RegionId) -> Option<&RegionDef> {
-        self.regions.get(id.0 as usize)
+        self.regions.get(usize::from(id.0))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (RegionId, &RegionDef)> {
-        self.regions.iter().enumerate().map(|(i, r)| (RegionId(i as u8), r))
+        (0u8..).zip(&self.regions).map(|(i, r)| (RegionId(i), r))
     }
 }
 
@@ -89,23 +91,28 @@ impl RegionMask {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self(u64::MAX);
 
-    pub fn with(self, id: RegionId) -> Self {
+    #[must_use]
+    pub const fn with(self, id: RegionId) -> Self {
         Self(self.0 | 1 << id.0)
     }
 
-    pub fn contains(self, id: RegionId) -> bool {
+    #[must_use]
+    pub const fn contains(self, id: RegionId) -> bool {
         self.0 & (1 << id.0) != 0
     }
 
-    pub fn union(self, other: Self) -> Self {
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    pub fn intersection(self, other: Self) -> Self {
+    #[must_use]
+    pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
-    pub fn complement(self) -> Self {
+    #[must_use]
+    pub const fn complement(self) -> Self {
         Self(!self.0)
     }
 }
@@ -123,15 +130,16 @@ pub enum RegionSelector {
     /// Regions of limbs with this role (and their descendants).
     Role(LimbRole),
     Side(Side),
-    And(Vec<RegionSelector>),
-    Or(Vec<RegionSelector>),
+    And(Vec<Self>),
+    Or(Vec<Self>),
     /// Complement of the union of the inner selectors (stands in for `Not`, which would need a
     /// `Box` that Bevy reflection cannot represent).
-    AllExcept(Vec<RegionSelector>),
+    AllExcept(Vec<Self>),
 }
 
 impl RegionSelector {
     /// Resolves to a mask for one built mob.
+    #[must_use]
     pub fn mask(&self, anatomy: &Anatomy) -> RegionMask {
         let mut mask = RegionMask::NONE;
         for (id, def) in anatomy.regions.iter() {
@@ -144,24 +152,24 @@ impl RegionSelector {
 
     fn matches(&self, def: &RegionDef, anatomy: &Anatomy) -> bool {
         match self {
-            RegionSelector::All => true,
-            RegionSelector::Kind(k) => def.kind == *k,
-            RegionSelector::Part(path) => super::form::path_prefix_matches(path, &def.part),
-            RegionSelector::Role(role) => {
+            Self::All => true,
+            Self::Kind(k) => def.kind == *k,
+            Self::Part(path) => super::form::path_prefix_matches(path, &def.part),
+            Self::Role(role) => {
                 // The region's part or any ancestor part has the role.
                 let mut part = anatomy.parts.iter().position(|p| p.path == def.part);
-                while let Some(i) = part {
-                    if anatomy.parts[i].role == Some(*role) {
+                while let Some(p) = part.and_then(|i| anatomy.parts.get(i)) {
+                    if p.role == Some(*role) {
                         return true;
                     }
-                    part = anatomy.parts[i].parent.map(|p| p as usize);
+                    part = p.parent.map(usize::from);
                 }
                 false
             }
-            RegionSelector::Side(s) => def.side == *s,
-            RegionSelector::And(all) => all.iter().all(|s| s.matches(def, anatomy)),
-            RegionSelector::Or(any) => any.iter().any(|s| s.matches(def, anatomy)),
-            RegionSelector::AllExcept(none) => !none.iter().any(|s| s.matches(def, anatomy)),
+            Self::Side(s) => def.side == *s,
+            Self::And(all) => all.iter().all(|s| s.matches(def, anatomy)),
+            Self::Or(any) => any.iter().any(|s| s.matches(def, anatomy)),
+            Self::AllExcept(none) => !none.iter().any(|s| s.matches(def, anatomy)),
         }
     }
 }

@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
+use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
 
 const BODIES: [&str; 6] = [
@@ -88,8 +89,7 @@ struct Orbit {
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
         match v[..] {
             [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
             _ => Self { yaw: 0.3, pitch: 0.35, distance: 13.0, target: Vec3::new(0.0, 0.6, 0.0) },
@@ -121,7 +121,7 @@ fn setup(
     // One graph for every body.
     let graph = graphs.add(library::standard());
     for (i, path) in BODIES.iter().enumerate() {
-        let centre = Vec3::new(i as f32 * 4.5 - 11.25, 0.0, 0.0);
+        let centre = Vec3::new(i.to_f32().mul_add(4.5, -11.25), 0.0, 0.0);
         commands.spawn((
             Mob::new(assets.load(*path)),
             MobMotion::new(graph.clone()),
@@ -136,11 +136,11 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut demo: ResMut<Demo>, mut mobs: Q
     *frame += 1;
     if keys.just_pressed(KeyCode::Space) {
         demo.speed = (demo.speed + 1) % SPEEDS.len();
-        info!("speed: {}", SPEEDS[demo.speed].0);
+        info!("speed: {}", SPEEDS.get(demo.speed).map_or("?", |s| s.0));
     }
     if keys.just_pressed(KeyCode::Tab) {
         demo.focus = Some(demo.focus.map_or(0, |f| (f + 1) % BODIES.len()));
-        info!("following {}", BODIES[demo.focus.unwrap_or(0)]);
+        info!("following {}", BODIES.get(demo.focus.unwrap_or(0)).unwrap_or(&"?"));
     }
     if keys.just_pressed(KeyCode::Escape) {
         demo.focus = None;
@@ -171,15 +171,15 @@ fn drive(
     for (w, tf, body, mut intent) in &mut walkers {
         let Some(b) = bodies.get(&body.0) else { continue };
         let legs = &b.anatomy.legs;
-        let leg = if legs.is_empty() { 0.5 } else { legs.iter().map(|l| l.length).sum::<f32>() / legs.len() as f32 };
+        let leg = if legs.is_empty() { 0.5 } else { legs.iter().map(|l| l.length).sum::<f32>() / legs.len().to_f32() };
         // Around a circle, pulled back onto it.
         let to_centre = w.centre - tf.translation;
         let tangent = Vec3::new(-to_centre.z, 0.0, to_centre.x).normalize_or_zero();
         let pull = to_centre.normalize_or_zero() * (to_centre.length() - 1.6);
-        let speed = SPEEDS[demo.speed].1 * leg;
+        let speed = SPEEDS.get(demo.speed).map_or(0.0, |s| s.1) * leg;
         intent.velocity = (tangent + pull * 0.5).normalize_or_zero() * speed;
         if speed == 0.0 {
-            intent.facing = Some(Dir3::new(Vec3::new((t * 0.1 + w.index as f32).sin(), 0.0, 1.0)).unwrap_or(Dir3::Z));
+            intent.facing = Some(Dir3::new(Vec3::new(f32::mul_add(t, 0.1, w.index.to_f32()).sin(), 0.0, 1.0)).unwrap_or(Dir3::Z));
         } else {
             intent.facing = None;
         }
@@ -196,15 +196,14 @@ fn orbit_camera(
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     if buttons.pressed(MouseButton::Left) {
-        orbit.yaw -= motion.delta.x * 0.008;
-        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
+        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 100.0);
-    if let Some(f) = demo.focus {
-        if let Some((_, tf)) = walkers.iter().find(|(w, _)| w.index == f) {
+    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 100.0);
+    if let Some(f) = demo.focus
+        && let Some((_, tf)) = walkers.iter().find(|(w, _)| w.index == f) {
             orbit.target = tf.translation + Vec3::Y * 0.6;
         }
-    }
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
@@ -214,7 +213,7 @@ fn orbit_camera(
 fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     // `ORNISCULPT_SHOT_FRAME=360` or several, `300,302,304` (saved as `<path>.<frame>.png`).
-    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or("360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| "360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
     let last = frames.iter().copied().max().unwrap_or(360);
     *frame += 1;
     if frames.contains(&*frame) {
@@ -241,7 +240,7 @@ fn frame_stats(time: Res<Time>, mut frames: Local<Vec<f32>>, mut since: Local<f3
     *since = 0.0;
     let mut sorted = std::mem::take(&mut *frames);
     sorted.sort_by(f32::total_cmp);
-    let at = |q: f32| sorted[((sorted.len() - 1) as f32 * q) as usize];
+    let at = |q: f32| sorted.get((sorted.len().saturating_sub(1).to_f32() * q).sat_usize()).copied().unwrap_or(0.0);
     let median = at(0.5);
     let hitches = sorted.iter().filter(|t| **t > median * 2.0).count();
     info!("frame ms: p50 {:.1} p95 {:.1} p99 {:.1} max {:.1}, {hitches} hitches in {} frames", median, at(0.95), at(0.99), at(1.0), sorted.len());

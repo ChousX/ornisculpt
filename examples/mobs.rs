@@ -15,8 +15,9 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
+use ornisculpt::num::{Saturate, ToF32, usize_to_u64};
 use ornisculpt::anatomy::{
-    AttachSlot, Form, FormPatch, HardKind, HardParams, Lever, PartKind, PartNode, PartPath,
+    AttachSlot, Form, FormPatch, HardKind, HardParams, Lever, LodLevel, PartKind, PartNode, PartPath,
 };
 use ornisculpt::mob::{
     BodyReady, BoneScale, BoneScales, GenCache, GeneratedBody, GraftPart, Mob, MobBody, MobSeed, MobTier, Part,
@@ -50,8 +51,7 @@ struct Orbit {
 impl Default for Orbit {
     fn default() -> Self {
         let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
         match v[..] {
             [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
             _ => Self { yaw: 0.6, pitch: 0.45, distance: 12.0, target: Vec3::ZERO },
@@ -81,40 +81,39 @@ fn setup(
     ));
 
     let body = assets.load("mobs/quadruped.body.ron");
-    let side = (count.0 as f32).sqrt().ceil() as usize;
+    let side = count.0.to_f32().sqrt().ceil().sat_usize();
     for i in 0..count.0 {
         // A handful of distinct builds, so the cache shares bodies between mobs.
         let variant = i % 4;
-        let k = variant as f32 / 3.0;
+        let k = variant.to_f32() / 3.0;
         let form = Form {
-            overall_scale: 0.85 + 0.3 * k,
+            overall_scale: 0.3f32.mul_add(k, 0.85),
             patches: vec![
-                FormPatch { part: PartPath("torso/limb.front".into()), lever: Lever::Length, value: 0.9 + 0.3 * k },
-                FormPatch { part: PartPath("torso/limb.hind".into()), lever: Lever::Length, value: 0.9 + 0.3 * k },
-                FormPatch { part: PartPath("torso".into()), lever: Lever::Girth, value: 1.2 - 0.3 * k },
+                FormPatch { part: PartPath("torso/limb.front".into()), lever: Lever::Length, value: 0.3f32.mul_add(k, 0.9) },
+                FormPatch { part: PartPath("torso/limb.hind".into()), lever: Lever::Length, value: 0.3f32.mul_add(k, 0.9) },
+                FormPatch { part: PartPath("torso".into()), lever: Lever::Girth, value: 0.3f32.mul_add(-k, 1.2) },
                 FormPatch { part: PartPath("torso".into()), lever: Lever::Muscle, value: 0.5 + k },
             ],
         };
-        let (x, z) = ((i % side) as f32, (i / side) as f32);
-        let offset = (side as f32 - 1.0) * 0.5 * 2.5;
+        let (x, z) = ((i % side).to_f32(), (i / side).to_f32());
+        let offset = (side.to_f32() - 1.0) * 0.5 * 2.5;
         commands.spawn((
             Mob::new(body.clone()),
             form,
-            MobSeed(i as u64),
+            MobSeed(usize_to_u64(i)),
             Index(i),
-            Transform::from_xyz(x * 2.5 - offset, 0.0, z * 2.5 - offset)
-                .with_rotation(Quat::from_rotation_y(i as f32 * 0.7)),
+            Transform::from_xyz(f32::mul_add(x, 2.5, -offset), 0.0, f32::mul_add(z, 2.5, -offset))
+                .with_rotation(Quat::from_rotation_y(i.to_f32() * 0.7)),
         ));
     }
     info!("controls: left-drag orbit, scroll zoom, S sever tail, H graft horns, L stretch necks, Q quality");
 }
 
 fn on_ready(ev: On<BodyReady>, mobs: Query<&Index>) {
-    if let Ok(i) = mobs.get(ev.entity) {
-        if i.0 == 0 {
+    if let Ok(i) = mobs.get(ev.entity)
+        && i.0 == 0 {
             info!("first body ready");
         }
-    }
 }
 
 fn controls(
@@ -141,7 +140,7 @@ fn controls(
     if pressed(KeyCode::KeyH) {
         let horn = PartNode {
             name: "horn".into(),
-            kind: PartKind::Hard(HardParams { kind: HardKind::Horn, size: 0.14, curve: 0.6, twist: 0.3 }),
+            kind: PartKind::Hard(HardParams { kind: HardKind::Horn, size: 0.14, curve: 0.6, twist: 0.3, ..default() }),
             attach: AttachSlot::Horn,
             offset: default(),
             mirror: true,
@@ -177,8 +176,11 @@ fn controls(
     }
     if keys.just_pressed(KeyCode::KeyQ) {
         *quality = (*quality + 1) % 3;
-        *profile = [QualityProfile::MEDIUM, QualityProfile::HIGH, QualityProfile::LOW][*quality].clone();
-        info!("quality: {}", ["medium", "high", "low"][*quality]);
+        let presets = [(QualityProfile::MEDIUM, "medium"), (QualityProfile::HIGH, "high"), (QualityProfile::LOW, "low")];
+        if let Some((preset, name)) = presets.get(*quality) {
+            *profile = preset.clone();
+            info!("quality: {name}");
+        }
     }
 }
 
@@ -190,10 +192,10 @@ fn orbit_camera(
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     if buttons.pressed(MouseButton::Left) {
-        orbit.yaw -= motion.delta.x * 0.008;
-        orbit.pitch = (orbit.pitch + motion.delta.y * 0.008).clamp(-1.4, 1.4);
+        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
+        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * (1.0 - scroll.delta.y * 0.1)).clamp(0.5, 200.0);
+    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 200.0);
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
@@ -212,10 +214,7 @@ fn report(
         return;
     }
     *next = time.elapsed_secs() + 2.0;
-    let mut counts = [0; 3];
-    for t in &tiers {
-        counts[t.0 as usize] += 1;
-    }
+    let counts = LodLevel::ALL.map(|level| tiers.iter().filter(|t| t.0 == level).count());
     info!(
         "{} mobs, {} part entities | {} bodies cached, {} generating | tiers hero/near/far = {:?}",
         mobs.iter().count(),

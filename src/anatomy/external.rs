@@ -14,6 +14,8 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::num::Idx;
+
 /// How an authored part is oriented where it attaches.
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Orient {
@@ -35,24 +37,33 @@ pub struct TriMesh {
 }
 
 impl TriMesh {
+    #[must_use]
     pub fn new(positions: Vec<Vec3>, normals: Vec<Vec3>, indices: Vec<u32>) -> Self {
         let mut bytes = Vec::with_capacity(positions.len() * 12 + indices.len() * 4);
-        positions.iter().for_each(|p| bytes.extend(p.to_array().map(f32::to_bits).iter().flat_map(|b| b.to_le_bytes())));
-        indices.iter().for_each(|i| bytes.extend(i.to_le_bytes()));
+        for p in &positions {
+            bytes.extend(p.to_array().map(f32::to_bits).iter().flat_map(|b| b.to_le_bytes()));
+        }
+        for i in &indices {
+            bytes.extend(i.to_le_bytes());
+        }
         Self { positions, normals, indices, hash: xxh3_64(&bytes) }
     }
 
     /// Volume enclosed by the mesh; negative if its triangles wind inward.
+    #[must_use]
     pub fn signed_volume(&self) -> f32 {
         self.indices
-            .chunks_exact(3)
-            .map(|t| {
-                let [a, b, c] = [0, 1, 2].map(|k| self.positions[t[k] as usize]);
-                a.dot(b.cross(c)) / 6.0
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter_map(|t| {
+                let [a, b, c] = t.map(|i| self.positions.get(i.idx()).copied());
+                Some(a?.dot(b?.cross(c?)) / 6.0)
             })
             .sum()
     }
 
+    #[must_use]
     pub fn bounds(&self) -> (Vec3, Vec3) {
         self.positions
             .iter()
@@ -73,15 +84,16 @@ pub struct SdfGrid {
 impl SdfGrid {
     /// Converts a watertight, consistently wound mesh (inward or outward). `resolution` = cells
     /// along the longest axis; 2 cells of padding.
+    #[must_use]
     pub fn from_mesh(mesh: &TriMesh, resolution: u16) -> Self {
         let (lo, hi) = mesh.bounds();
         let size = (hi - lo).max(Vec3::splat(1e-4));
-        let cell = size.max_element() / resolution.max(4) as f32;
+        let cell = size.max_element() / f32::from(resolution.max(4));
         let pad = Vec3::splat(cell * 2.0);
         let (lo, hi) = (lo - pad, hi + pad);
         let dims = ((hi - lo) / cell).ceil().as_uvec3().max(UVec3::splat(2));
         let origin = lo + Vec3::splat(cell * 0.5);
-        let mut queries = Vec::with_capacity((dims.x * dims.y * dims.z) as usize);
+        let mut queries = Vec::with_capacity((dims.x * dims.y * dims.z).idx());
         for z in 0..dims.z {
             for y in 0..dims.y {
                 for x in 0..dims.x {
@@ -89,11 +101,11 @@ impl SdfGrid {
                 }
             }
         }
-        let vertices: Vec<[f32; 3]> = mesh.positions.iter().map(|p| p.to_array()).collect();
+        let vertices: Vec<[f32; 3]> = mesh.positions.iter().map(Vec3::to_array).collect();
         // The sign method needs outward winding; accept either by checking the signed volume.
         let mut indices = mesh.indices.clone();
         if mesh.signed_volume() < 0.0 {
-            indices.chunks_exact_mut(3).for_each(|t| t.swap(1, 2));
+            indices.as_chunks_mut::<3>().0.iter_mut().for_each(|t| t.swap(1, 2));
         }
         let values = mesh_to_sdf::generate_sdf(
             &vertices,
@@ -106,30 +118,32 @@ impl SdfGrid {
         Self { origin, cell: Vec3::splat(cell), dims, values }
     }
 
+    #[must_use]
     pub fn bounds(&self) -> (Vec3, Vec3) {
         let half = self.cell * 0.5;
         (self.origin - half, self.origin + (self.dims.as_vec3() - Vec3::ONE) * self.cell + half)
     }
 
     fn at(&self, x: u32, y: u32, z: u32) -> f32 {
-        self.values[(x + self.dims.x * (y + self.dims.y * z)) as usize]
+        self.values.get((x + self.dims.x * (y + self.dims.y * z)).idx()).copied().unwrap_or_default()
     }
 
     /// Trilinear sample; outside the grid adds the distance to the grid box (stays conservative).
+    #[must_use]
     pub fn sample(&self, p: Vec3) -> f32 {
         let max = (self.dims - UVec3::ONE).as_vec3();
-        let g = (p - self.origin) / self.cell;
-        let gc = g.clamp(Vec3::ZERO, max);
-        let outside = ((g - gc) * self.cell).length();
-        let i = gc.floor().as_uvec3().min(self.dims - UVec3::splat(2));
-        let f = gc - i.as_vec3();
-        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-        let c = |dx, dy, dz| self.at(i.x + dx, i.y + dy, i.z + dz);
-        let x00 = lerp(c(0, 0, 0), c(1, 0, 0), f.x);
-        let x10 = lerp(c(0, 1, 0), c(1, 1, 0), f.x);
-        let x01 = lerp(c(0, 0, 1), c(1, 0, 1), f.x);
-        let x11 = lerp(c(0, 1, 1), c(1, 1, 1), f.x);
-        lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z) + outside
+        let at = (p - self.origin) / self.cell;
+        let clamped = at.clamp(Vec3::ZERO, max);
+        let outside = ((at - clamped) * self.cell).length();
+        let base = clamped.floor().as_uvec3().min(self.dims - UVec3::splat(2));
+        let frac = clamped - base.as_vec3();
+        let lerp = |lo: f32, hi: f32, t: f32| (hi - lo).mul_add(t, lo);
+        let corner = |dx, dy, dz| self.at(base.x + dx, base.y + dy, base.z + dz);
+        let x00 = lerp(corner(0, 0, 0), corner(1, 0, 0), frac.x);
+        let x10 = lerp(corner(0, 1, 0), corner(1, 1, 0), frac.x);
+        let x01 = lerp(corner(0, 0, 1), corner(1, 0, 1), frac.x);
+        let x11 = lerp(corner(0, 1, 1), corner(1, 1, 1), frac.x);
+        lerp(lerp(x00, x10, frac.y), lerp(x01, x11, frac.y), frac.z) + outside
     }
 }
 
@@ -138,19 +152,24 @@ impl SdfGrid {
 #[derive(Clone, Debug, Default)]
 pub struct PartAssets {
     pub meshes: HashMap<String, Arc<TriMesh>>,
-    sdfs: Arc<Mutex<HashMap<(u64, u16), Arc<SdfGrid>>>>,
+    sdfs: SdfCache,
 }
+
+/// Converted SDFs by (mesh hash, resolution).
+type SdfCache = Arc<Mutex<HashMap<(u64, u16), Arc<SdfGrid>>>>;
 
 impl PartAssets {
     pub fn insert(&mut self, path: impl Into<String>, mesh: Arc<TriMesh>) {
         self.meshes.insert(path.into(), mesh);
     }
 
+    #[must_use]
     pub fn mesh(&self, path: &str) -> Option<Arc<TriMesh>> {
         self.meshes.get(path).cloned()
     }
 
     /// The SDF of `path` at `resolution`, converting it if needed.
+    #[must_use]
     pub fn sdf(&self, path: &str, resolution: u16) -> Option<Arc<SdfGrid>> {
         let mesh = self.meshes.get(path)?;
         let key = (mesh.hash, resolution);
@@ -163,6 +182,7 @@ impl PartAssets {
     }
 
     /// A copy restricted to `paths`, sharing the SDF cache.
+    #[must_use]
     pub fn subset<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Self {
         let meshes = paths.into_iter().filter_map(|p| self.meshes.get(p).map(|m| (p.to_owned(), m.clone()))).collect();
         Self { meshes, sdfs: self.sdfs.clone() }
@@ -172,11 +192,12 @@ impl PartAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::num::ToF32;
 
     /// Closed unit cube centred at the origin.
     fn cube() -> TriMesh {
-        let p: Vec<Vec3> = (0..8)
-            .map(|i| Vec3::new((i & 1) as f32 - 0.5, ((i >> 1) & 1) as f32 - 0.5, ((i >> 2) & 1) as f32 - 0.5))
+        let p: Vec<Vec3> = (0u8..8)
+            .map(|i| Vec3::new(f32::from(i & 1) - 0.5, f32::from((i >> 1) & 1) - 0.5, f32::from((i >> 2) & 1) - 0.5))
             .collect();
         let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
         let indices = quads.iter().flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]]).collect();
@@ -187,22 +208,22 @@ mod tests {
     fn inward_wound_sphere_is_negative_inside() {
         // A 2k-triangle UV sphere wound inward (clockwise seen from outside).
         let (rings, sides) = (24u32, 48u32);
-        let mut p = vec![Vec3::Y];
+        let mut points = vec![Vec3::Y];
         for i in 1..rings {
-            let phi = std::f32::consts::PI * i as f32 / rings as f32;
+            let phi = std::f32::consts::PI * i.to_f32() / rings.to_f32();
             for j in 0..sides {
-                let a = std::f32::consts::TAU * j as f32 / sides as f32;
-                p.push(Vec3::new(phi.sin() * a.sin(), phi.cos(), phi.sin() * a.cos()));
+                let theta = std::f32::consts::TAU * j.to_f32() / sides.to_f32();
+                points.push(Vec3::new(phi.sin() * theta.sin(), phi.cos(), phi.sin() * theta.cos()));
             }
         }
-        p.push(Vec3::NEG_Y);
+        points.push(Vec3::NEG_Y);
         let ring = |i: u32, j: u32| 1 + (i - 1) * sides + j % sides;
         let mut idx = vec![];
         for j in 0..sides { idx.extend([0, ring(1, j + 1), ring(1, j)]); }
-        for i in 1..rings - 1 { for j in 0..sides { let (a, b, c, d) = (ring(i, j), ring(i, j + 1), ring(i + 1, j), ring(i + 1, j + 1)); idx.extend([a, b, c, b, d, c]); } }
-        let s = p.len() as u32 - 1;
-        for j in 0..sides { idx.extend([s, ring(rings - 1, j), ring(rings - 1, j + 1)]); }
-        let mesh = TriMesh::new(p, vec![], idx);
+        for i in 1..rings - 1 { for j in 0..sides { let (v00, v01, v10, v11) = (ring(i, j), ring(i, j + 1), ring(i + 1, j), ring(i + 1, j + 1)); idx.extend([v00, v01, v10, v01, v11, v10]); } }
+        let south = u32::try_from(points.len()).unwrap() - 1;
+        for j in 0..sides { idx.extend([south, ring(rings - 1, j), ring(rings - 1, j + 1)]); }
+        let mesh = TriMesh::new(points, vec![], idx);
         let t = std::time::Instant::now();
         let g = SdfGrid::from_mesh(&mesh, 40);
         eprintln!("{} cells in {:?}, centre {}", g.values.len(), t.elapsed(), g.sample(Vec3::ZERO));

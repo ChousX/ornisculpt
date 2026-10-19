@@ -78,8 +78,9 @@ pub enum CycleKind {
 }
 
 impl CycleKind {
-    pub fn loops(&self) -> bool {
-        !matches!(self, CycleKind::Action { .. })
+    #[must_use]
+    pub const fn loops(&self) -> bool {
+        !matches!(self, Self::Action { .. })
     }
 }
 
@@ -124,23 +125,27 @@ pub struct Track {
 }
 
 impl Track {
+    #[must_use]
     pub fn new(target: Target, channel: Channel, curve: Curve) -> Self {
         Self { target, channel, curve, ..default() }
     }
 
     /// Chains: the tip trails the root by `lag` of a cycle.
-    pub fn lag(mut self, lag: f32) -> Self {
+    #[must_use]
+    pub const fn lag(mut self, lag: f32) -> Self {
         self.lag = lag;
         self
     }
 
     /// Limbs: time by each leg's own gait phase.
-    pub fn per_leg(mut self) -> Self {
+    #[must_use]
+    pub const fn per_leg(mut self) -> Self {
         self.per_leg = true;
         self
     }
 
-    pub fn weight(mut self, weight: f32) -> Self {
+    #[must_use]
+    pub const fn weight(mut self, weight: f32) -> Self {
         self.weight = weight;
         self
     }
@@ -163,11 +168,12 @@ pub enum Sides {
 }
 
 impl Sides {
+    #[must_use]
     pub fn includes(self, side: Side) -> bool {
         match self {
-            Sides::Both => true,
-            Sides::Left => side != Side::Right,
-            Sides::Right => side != Side::Left,
+            Self::Both => true,
+            Self::Left => side != Side::Right,
+            Self::Right => side != Side::Left,
         }
     }
 }
@@ -264,37 +270,38 @@ pub enum Channel {
 
 impl Channel {
     /// Allowed value range (after `weight`).
-    pub fn range(self) -> (f32, f32) {
+    #[must_use]
+    pub const fn range(self) -> (f32, f32) {
         match self {
-            Channel::Bob | Channel::Sway | Channel::Surge => (-0.5, 0.5),
-            Channel::Pitch | Channel::Yaw | Channel::Roll => (-90.0, 90.0),
-            Channel::Open | Channel::Fold | Channel::Curl => (0.0, 1.0),
-            Channel::Perk => (-1.0, 1.0),
-            Channel::Flex(_) => (-120.0, 120.0),
-            Channel::FootLift | Channel::FootReach => (-0.6, 0.6),
-            Channel::Swing | Channel::Raise => (-150.0, 150.0),
-            Channel::Flap => (-90.0, 90.0),
-            Channel::Sweep => (-60.0, 60.0),
-            Channel::Spread => (-45.0, 45.0),
+            Self::Bob | Self::Sway | Self::Surge => (-0.5, 0.5),
+            Self::Pitch | Self::Yaw | Self::Roll | Self::Flap => (-90.0, 90.0),
+            Self::Open | Self::Fold | Self::Curl => (0.0, 1.0),
+            Self::Perk => (-1.0, 1.0),
+            Self::Flex(_) => (-120.0, 120.0),
+            Self::FootLift | Self::FootReach => (-0.6, 0.6),
+            Self::Swing | Self::Raise => (-150.0, 150.0),
+            Self::Sweep => (-60.0, 60.0),
+            Self::Spread => (-45.0, 45.0),
         }
     }
 }
 
 impl Target {
     /// Channels this target accepts.
-    pub fn accepts(self, channel: Channel) -> bool {
-        use Channel::*;
+    #[must_use]
+    pub const fn accepts(self, channel: Channel) -> bool {
+        use Channel as Ch;
         match self {
-            Target::Root => matches!(channel, Bob | Sway | Surge | Pitch | Yaw | Roll),
-            Target::Spine | Target::Neck | Target::Head | Target::Tail | Target::Antennae(_) => {
-                matches!(channel, Pitch | Yaw | Roll)
+            Self::Root => matches!(channel, Ch::Bob | Ch::Sway | Ch::Surge | Ch::Pitch | Ch::Yaw | Ch::Roll),
+            Self::Spine | Self::Neck | Self::Head | Self::Tail | Self::Antennae(_) => {
+                matches!(channel, Ch::Pitch | Ch::Yaw | Ch::Roll)
             }
-            Target::Jaw => matches!(channel, Open),
-            Target::Ears(_) => matches!(channel, Pitch | Yaw | Roll | Perk),
-            Target::Legs(_) => matches!(channel, Flex(Joint::Lower | Joint::Tip) | FootLift | FootReach),
-            Target::Arms(_) => matches!(channel, Flex(_) | Swing | Raise | Roll),
-            Target::Wings(_) => matches!(channel, Fold | Flap | Sweep | Roll),
-            Target::Digits(_) => matches!(channel, Curl | Spread),
+            Self::Jaw => matches!(channel, Ch::Open),
+            Self::Ears(_) => matches!(channel, Ch::Pitch | Ch::Yaw | Ch::Roll | Ch::Perk),
+            Self::Legs(_) => matches!(channel, Ch::Flex(Joint::Lower | Joint::Tip) | Ch::FootLift | Ch::FootReach),
+            Self::Arms(_) => matches!(channel, Ch::Flex(_) | Ch::Swing | Ch::Raise | Ch::Roll),
+            Self::Wings(_) => matches!(channel, Ch::Fold | Ch::Flap | Ch::Sweep | Ch::Roll),
+            Self::Digits(_) => matches!(channel, Ch::Curl | Ch::Spread),
         }
     }
 }
@@ -318,72 +325,79 @@ pub enum Curve {
 
 impl Default for Curve {
     fn default() -> Self {
-        Curve::Constant(0.0)
+        Self::Constant(0.0)
     }
 }
 
 impl Curve {
     /// A sine wave of `amplitude`.
-    pub fn wave(amplitude: f32) -> Self {
-        Curve::Wave { amplitude, phase: 0.0, offset: 0.0, harmonics: Vec::new() }
+    #[must_use]
+    pub const fn wave(amplitude: f32) -> Self {
+        Self::Wave { amplitude, phase: 0.0, offset: 0.0, harmonics: Vec::new() }
     }
 
     /// Smooth keys.
     pub fn keys(keys: impl IntoIterator<Item = (f32, f32)>) -> Self {
-        Curve::Keys { keys: keys.into_iter().collect(), smooth: true }
+        Self::Keys { keys: keys.into_iter().collect(), smooth: true }
     }
 
-    pub fn envelope(peak: f32, attack: f32, hold: f32, release: f32) -> Self {
-        Curve::Envelope { peak, attack, hold, release }
+    #[must_use]
+    pub const fn envelope(peak: f32, attack: f32, hold: f32, release: f32) -> Self {
+        Self::Envelope { peak, attack, hold, release }
     }
 
-    pub fn bump(peak: f32, from: f32, to: f32) -> Self {
-        Curve::Bump { peak, from, to }
+    #[must_use]
+    pub const fn bump(peak: f32, from: f32, to: f32) -> Self {
+        Self::Bump { peak, from, to }
     }
 
     /// Straight-line keys.
     pub fn linear(keys: impl IntoIterator<Item = (f32, f32)>) -> Self {
-        Curve::Keys { keys: keys.into_iter().collect(), smooth: false }
+        Self::Keys { keys: keys.into_iter().collect(), smooth: false }
     }
 
     /// Waves: shifts the wave by `phase` of a cycle.
-    pub fn phase(mut self, p: f32) -> Self {
-        if let Curve::Wave { phase, .. } = &mut self {
+    #[must_use]
+    pub const fn phase(mut self, p: f32) -> Self {
+        if let Self::Wave { phase, .. } = &mut self {
             *phase = p;
         }
         self
     }
 
     /// Waves: adds a constant.
-    pub fn offset(mut self, o: f32) -> Self {
-        if let Curve::Wave { offset, .. } = &mut self {
+    #[must_use]
+    pub const fn offset(mut self, o: f32) -> Self {
+        if let Self::Wave { offset, .. } = &mut self {
             *offset = o;
         }
         self
     }
 
     /// Waves: adds harmonic `n` at `amp` of the base amplitude.
+    #[must_use]
     pub fn harmonic(mut self, n: u8, amp: f32) -> Self {
-        if let Curve::Wave { harmonics, .. } = &mut self {
+        if let Self::Wave { harmonics, .. } = &mut self {
             harmonics.push((n, amp, 0.0));
         }
         self
     }
 
+    #[must_use]
     pub fn sample(&self, t: f32) -> f32 {
         match self {
-            Curve::Constant(v) => *v,
-            Curve::Wave { amplitude, phase, offset, harmonics } => {
+            Self::Constant(v) => *v,
+            Self::Wave { amplitude, phase, offset, harmonics } => {
                 let base = (TAU * (t + phase)).sin();
-                let extra: f32 = harmonics.iter().map(|(n, a, p)| a * (TAU * (*n as f32 * t + p)).sin()).sum();
+                let extra: f32 = harmonics.iter().map(|(n, a, p)| a * (TAU * (f32::from(*n) * t + p)).sin()).sum();
                 offset + amplitude * (base + extra)
             }
-            Curve::Keys { keys, smooth } => sample_keys(keys, t, *smooth),
-            Curve::Bump { peak, from, to } => {
+            Self::Keys { keys, smooth } => sample_keys(keys, t, *smooth),
+            Self::Bump { peak, from, to } => {
                 if t <= *from || t >= *to { 0.0 } else { peak * (PI * (t - from) / (to - from).max(1e-6)).sin() }
             }
-            Curve::Envelope { peak, attack, hold, release } => {
-                let ease = |x: f32| x * x * (3.0 - 2.0 * x);
+            Self::Envelope { peak, attack, hold, release } => {
+                let ease = |x: f32| x * x * 2.0f32.mul_add(-x, 3.0);
                 if t < *attack {
                     peak * ease((t / attack.max(1e-4)).clamp(0.0, 1.0))
                 } else if t < attack + hold {
@@ -399,45 +413,42 @@ impl Curve {
     /// Conservative bounds of the curve's values.
     fn bounds(&self) -> (f32, f32) {
         match self {
-            Curve::Constant(v) => (*v, *v),
-            Curve::Wave { amplitude, offset, harmonics, .. } => {
+            Self::Constant(v) => (*v, *v),
+            Self::Wave { amplitude, offset, harmonics, .. } => {
                 let a = amplitude.abs() * (1.0 + harmonics.iter().map(|h| h.1.abs()).sum::<f32>());
                 (offset - a, offset + a)
             }
-            Curve::Keys { keys, .. } => keys.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| (lo.min(k.1), hi.max(k.1))),
-            Curve::Envelope { peak, .. } => (peak.min(0.0), peak.max(0.0)),
-            Curve::Bump { peak, .. } => (peak.min(0.0), peak.max(0.0)),
+            Self::Keys { keys, .. } => keys.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| (lo.min(k.1), hi.max(k.1))),
+            Self::Envelope { peak, .. } | Self::Bump { peak, .. } => (peak.min(0.0), peak.max(0.0)),
         }
     }
 
     fn closes(&self) -> bool {
         match self {
-            Curve::Keys { keys, .. } => match (keys.first(), keys.last()) {
+            Self::Keys { keys, .. } => match (keys.first(), keys.last()) {
                 (Some(a), Some(b)) => (a.1 - b.1).abs() < 1e-3,
                 _ => true,
             },
-            Curve::Envelope { attack, hold, release, .. } => attack + hold + release <= 1.0 + 1e-4,
+            Self::Envelope { attack, hold, release, .. } => attack + hold + release <= 1.0 + 1e-4,
             _ => true,
         }
     }
 }
 
 fn sample_keys(keys: &[(f32, f32)], t: f32, smooth: bool) -> f32 {
-    let Some(first) = keys.first() else { return 0.0 };
-    if keys.len() == 1 || t <= first.0 {
+    let (Some(&first), Some(&last)) = (keys.first(), keys.last()) else { return 0.0 };
+    if t <= first.0 {
         return first.1;
     }
-    let last = keys[keys.len() - 1];
     if t >= last.0 {
         return last.1;
     }
-    let i = keys.iter().position(|k| k.0 > t).unwrap_or(keys.len() - 1);
-    let (a, b) = (keys[i - 1], keys[i]);
-    let mut f = (t - a.0) / (b.0 - a.0).max(1e-6);
+    let Some(&[from, to]) = keys.array_windows().find(|[_, next]| next.0 > t) else { return last.1 };
+    let mut f = (t - from.0) / (to.0 - from.0).max(1e-6);
     if smooth {
-        f = f * f * (3.0 - 2.0 * f);
+        f = f * f * 2.0f32.mul_add(-f, 3.0);
     }
-    a.1 + (b.1 - a.1) * f
+    f32::mul_add(to.1 - from.1, f, from.1)
 }
 
 /// A named moment (`at` = 0..1 of the cycle) delivered as a [`MotionEvent`](super::MotionEvent).
@@ -459,11 +470,13 @@ pub struct RootMotion {
 }
 
 impl RootMotion {
+    #[must_use]
     pub fn forward(curve: Curve) -> Self {
         Self { forward: curve, ..default() }
     }
 
     /// Displacement (leg lengths; side positive = left) and yaw (degrees) at `t`.
+    #[must_use]
     pub fn at(&self, t: f32) -> (Vec3, f32) {
         (Vec3::new(self.side.sample(t), self.up.sample(t), self.forward.sample(t)), self.yaw.sample(t))
     }
@@ -489,49 +502,58 @@ impl Cycle {
 
     /// A gait between `min_speed` and `max_speed` leg lengths per second, `stride` leg lengths per
     /// cycle, with a foot plan.
+    #[must_use]
     pub fn gait(name: &str, min_speed: f32, max_speed: f32, stride: f32, feet: FootPlan) -> Self {
         Self { feet: Some(feet), ..Self::new(name, CycleKind::Gait { min_speed, max_speed, stride }) }
     }
 
     /// A loop of `period_s` seconds.
+    #[must_use]
     pub fn idle(name: &str, period_s: f32) -> Self {
         Self::new(name, CycleKind::Idle { period_s })
     }
 
     /// A one-shot of `duration_s` seconds.
+    #[must_use]
     pub fn action(name: &str, duration_s: f32) -> Self {
         Self::new(name, CycleKind::Action { duration_s, hold: false })
     }
 
     /// Actions: keep the last pose until the state is left.
-    pub fn hold(mut self) -> Self {
+    #[must_use]
+    pub const fn hold(mut self) -> Self {
         if let CycleKind::Action { hold, .. } = &mut self.kind {
             *hold = true;
         }
         self
     }
 
+    #[must_use]
     pub fn fits(mut self, fit: Fit) -> Self {
         self.fits = fit;
         self
     }
 
+    #[must_use]
     pub fn track(mut self, target: Target, channel: Channel, curve: Curve) -> Self {
         self.tracks.push(Track { target, channel, curve, ..default() });
         self
     }
 
     /// Adds a fully specified track (lag, per-leg timing, weight).
+    #[must_use]
     pub fn with(mut self, track: Track) -> Self {
         self.tracks.push(track);
         self
     }
 
+    #[must_use]
     pub fn event(mut self, at: f32, name: &str) -> Self {
         self.events.push(CycleEvent { at, name: name.into() });
         self
     }
 
+    #[must_use]
     pub fn root(mut self, root: RootMotion) -> Self {
         self.root = Some(root);
         self
@@ -539,6 +561,7 @@ impl Cycle {
 
     /// Length of one cycle in seconds at `speed` leg lengths per second (gaits), or its fixed
     /// period/duration.
+    #[must_use]
     pub fn period(&self, speed: f32) -> f32 {
         match self.kind {
             CycleKind::Gait { stride, .. } => (stride / speed.max(0.05)).clamp(0.15, 4.0),
@@ -548,6 +571,10 @@ impl Cycle {
     }
 
     /// Checks every track's target/channel pair, value range and loop closure.
+    ///
+    /// # Errors
+    ///
+    /// Every problem found.
     pub fn validate(&self) -> Result<(), Vec<CycleError>> {
         let mut errors = Vec::new();
         match &self.kind {
@@ -564,11 +591,10 @@ impl Cycle {
             }
             _ => {}
         }
-        if let Some(f) = &self.feet {
-            if !(0.2..=0.9).contains(&f.duty) || !(0.0..=0.6).contains(&f.lift) || !(0.0..=0.2).contains(&f.bob) {
+        if let Some(f) = &self.feet
+            && (!(0.2..=0.9).contains(&f.duty) || !(0.0..=0.6).contains(&f.lift) || !(0.0..=0.2).contains(&f.bob)) {
                 errors.push(CycleError::Invalid("foot plan: duty 0.2..0.9, lift 0..0.6, bob 0..0.2".into()));
             }
-        }
         for (index, t) in self.tracks.iter().enumerate() {
             if !t.target.accepts(t.channel) {
                 errors.push(CycleError::BadChannel { index, target: t.target, channel: t.channel });
@@ -615,7 +641,7 @@ impl AssetLoader for CycleLoader {
     type Settings = ();
     type Error = CycleLoaderError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>) -> Result<Cycle, Self::Error> {
+    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Cycle, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let cycle: Cycle = ron::de::from_bytes(&bytes)?;

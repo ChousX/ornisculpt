@@ -19,11 +19,12 @@ use bytemuck::{Pod, Zeroable};
 use super::GeneratedBody;
 use crate::anatomy::MAX_CROWD_BONES;
 use crate::motion::{BAKE_FRAMES, BakedMotion};
+use crate::num::{Clamp, Saturate, ToF32, usize_to_u64};
 
 /// Bytes per bone matrix (column-major `mat4x4<f32>`).
 pub const BONE_BYTES: u64 = 64;
 /// Bytes per crowd slot in the bone buffer.
-pub const SLOT_BYTES: u64 = BONE_BYTES * MAX_CROWD_BONES as u64;
+pub const SLOT_BYTES: u64 = BONE_BYTES * usize_to_u64(MAX_CROWD_BONES);
 
 /// Which slot of the crowd bone buffer a mob uses (also its meshes' `MeshTag`).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +43,8 @@ pub struct CrowdInstance {
     pub weight_a: f32,
     pub weight_b: f32,
     pub weight_idle: f32,
-    pub _pad: u32,
+    /// Padding to 16 bytes.
+    pub pad: u32,
 }
 
 /// The last instance uploaded for a mob (to skip unchanged slots).
@@ -60,8 +62,9 @@ pub struct ClipLayout {
 
 impl ClipLayout {
     /// Blend instructions for gait `mode` at `phase`, blended toward idle by `idle_weight`.
+    #[must_use]
     pub fn instance(&self, motion: &BakedMotion, mode: usize, phase: f32, idle_weight: f32) -> CrowdInstance {
-        let frames = BAKE_FRAMES as u32;
+        let frames = BAKE_FRAMES.clamp_u32();
         let frame = |m: u32, f: u32| self.base + self.bones * (1 + m * frames + f);
         let idle_only = CrowdInstance {
             frame_a: self.base,
@@ -71,23 +74,24 @@ impl ClipLayout {
             weight_idle: 1.0,
             ..default()
         };
-        let Some(clip) = motion.clips.get(mode).filter(|_| (mode as u32) < self.modes) else { return idle_only };
+        let Some(clip) = motion.clips.get(mode) else { return idle_only };
+        let Some(mode) = u32::try_from(mode).ok().filter(|m| *m < self.modes) else { return idle_only };
         if idle_weight >= 1.0 {
             return idle_only;
         }
-        let f = (phase - clip.start_phase).rem_euclid(1.0) * frames as f32;
-        let (f0, t) = (f.floor() as u32 % frames, f.fract());
+        let at = (phase - clip.start_phase).rem_euclid(1.0) * frames.to_f32();
+        let (f0, t) = (at.floor().sat_u32() % frames, at.fract());
         let f1 = (f0 + 1) % frames;
         let moving = 1.0 - idle_weight;
         CrowdInstance {
-            frame_a: frame(mode as u32, f0),
-            frame_b: frame(mode as u32, f1),
+            frame_a: frame(mode, f0),
+            frame_b: frame(mode, f1),
             idle: self.base,
             bones: self.bones,
             weight_a: (1.0 - t) * moving,
             weight_b: t * moving,
             weight_idle: idle_weight,
-            _pad: 0,
+            pad: 0,
         }
     }
 }
@@ -114,7 +118,7 @@ impl FromWorld for CrowdSkin {
 /// GPU-only storage for `slots` slots of skin matrices (written by the compute pass).
 fn bone_buffer(slots: u32) -> ShaderBuffer {
     ShaderBuffer {
-        data: ShaderBufferData::Uninitialized(slots as u64 * SLOT_BYTES),
+        data: ShaderBufferData::Uninitialized(u64::from(slots) * SLOT_BYTES),
         label: "ornisculpt crowd bones".into(),
         buffer_usage: BufferUsages::STORAGE,
         asset_usage: RenderAssetUsages::RENDER_WORLD,
@@ -135,10 +139,12 @@ impl CrowdSkin {
     }
 
     /// Slots ever allocated.
-    pub fn high_water(&self) -> u32 {
+    #[must_use]
+    pub const fn high_water(&self) -> u32 {
         self.next
     }
 
+    #[must_use]
     pub fn layout(&self, body: AssetId<GeneratedBody>) -> Option<ClipLayout> {
         self.atlas.get(&body).copied()
     }
@@ -173,8 +179,8 @@ pub(super) fn register_clips(
         let AssetEvent::Added { id } = ev else { continue };
         let Some(body) = bodies.get(*id) else { continue };
         let m = &body.motion;
-        let bones = m.idle.len() as u32;
-        let mut data: Vec<[f32; 16]> = Vec::with_capacity(bones as usize * (1 + m.clips.len() * BAKE_FRAMES));
+        let bones = m.idle.len().clamp_u32();
+        let mut data: Vec<[f32; 16]> = Vec::with_capacity(m.idle.len() * (1 + m.clips.len() * BAKE_FRAMES));
         data.extend_from_slice(&m.idle);
         for clip in &m.clips {
             for frame in &clip.frames {
@@ -182,8 +188,8 @@ pub(super) fn register_clips(
             }
         }
         let base = skin.atlas_len;
-        skin.atlas_len += data.len() as u32;
-        skin.atlas.insert(*id, ClipLayout { base, bones, modes: m.clips.len() as u32 });
+        skin.atlas_len += data.len().clamp_u32();
+        skin.atlas.insert(*id, ClipLayout { base, bones, modes: m.clips.len().clamp_u32() });
         uploads.clips.push((base, Arc::new(data)));
     }
 }

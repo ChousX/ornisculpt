@@ -57,11 +57,14 @@ pub struct ActiveStep {
 
 impl ActiveStep {
     /// Leg `i`'s phase in its own step.
+    #[must_use]
     pub fn leg_phase(&self, phase: f32, legs: &[LegInfo], i: usize) -> f32 {
-        (phase + self.pattern.offset(&legs[i], i, legs)).rem_euclid(1.0)
+        let offset = legs.get(i).map_or(0.0, |leg| self.pattern.offset(leg, i, legs));
+        (phase + offset).rem_euclid(1.0)
     }
 
     /// The step time [`StepShape`]'s torso curves take: `0..0.5` stance, `0.5..1` swing.
+    #[must_use]
     pub fn shape_time(&self, p: f32) -> f32 {
         if p < self.duty { 0.5 * p / self.duty } else { 0.5 + 0.5 * (p - self.duty) / (1.0 - self.duty) }
     }
@@ -86,7 +89,7 @@ pub struct Foot {
 pub struct Feet(pub SmallVec<[Foot; 8]>);
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SpringBone {
+pub struct SpringBone {
     pub angle: Vec2,
     pub velocity: Vec2,
 }
@@ -125,7 +128,9 @@ pub struct MobPose {
 #[derive(Component, Clone, Debug, Default)]
 pub struct CyclePose(pub(crate) Option<LayerPose>);
 
-/// Frame time for motion, evened out. Frames are shown at an even rate but their measured deltas
+/// Frame time for motion, evened out.
+///
+/// Frames are shown at an even rate but their measured deltas
 /// alternate around it (about 15 and 19 ms at 60 Hz), so stepping poses by the raw delta makes
 /// everything judder at half the frame rate. This follows the average instead, and passes real
 /// hitches (well over the average) straight through so time isn't lost.
@@ -141,7 +146,7 @@ pub struct MotionTime {
 impl MotionTime {
     pub(crate) fn tick(&mut self, raw: f32) {
         let raw = raw.clamp(1e-4, 0.1);
-        self.average = if self.average <= 0.0 { raw } else { self.average + (raw.clamp(self.average * 0.5, self.average * 2.0) - self.average) * 0.05 };
+        self.average = if self.average <= 0.0 { raw } else { (raw.clamp(self.average * 0.5, self.average * 2.0) - self.average).mul_add(0.05, self.average) };
         self.dt = if raw > self.average * 1.8 { raw } else { self.average };
         self.elapsed += self.dt;
     }

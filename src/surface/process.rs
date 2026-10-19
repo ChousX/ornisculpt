@@ -6,7 +6,8 @@ use bevy::math::Vec3A;
 use bevy::prelude::*;
 
 use super::{BodyMeshData, Field, MaterialSlot, MobVertexData, NOT_CLOTH, RawMesh, Submesh};
-use crate::anatomy::Anatomy;
+use crate::anatomy::{Anatomy, BoneId};
+use crate::num::{Clamp, Idx, Saturate, ToF32};
 
 /// Merges vertices closer than `epsilon` (chunk seams), rebuilding indices and dropping
 /// triangles that became degenerate.
@@ -17,17 +18,17 @@ pub fn weld(mesh: &mut RawMesh, epsilon: f32) {
     let mut positions = Vec::with_capacity(mesh.positions.len());
     let mut normals = Vec::with_capacity(mesh.positions.len());
     for (i, p) in mesh.positions.iter().enumerate() {
-        let key = [(p.x * inv).round() as i64, (p.y * inv).round() as i64, (p.z * inv).round() as i64];
+        let key = (*p * inv).round().to_array().map(Saturate::sat_i64);
         let idx = *map.entry(key).or_insert_with(|| {
             positions.push(*p);
             normals.push(mesh.normals.get(i).copied().unwrap_or(Vec3::Y));
-            positions.len() as u32 - 1
+            positions.len().saturating_sub(1).clamp_u32()
         });
         remap.push(idx);
     }
     let mut indices = Vec::with_capacity(mesh.indices.len());
-    for tri in mesh.indices.chunks_exact(3) {
-        let [a, b, c] = [remap[tri[0] as usize], remap[tri[1] as usize], remap[tri[2] as usize]];
+    for &[a, b, c] in mesh.indices.as_chunks::<3>().0 {
+        let (Some(&a), Some(&b), Some(&c)) = (remap.get(a.idx()), remap.get(b.idx()), remap.get(c.idx())) else { continue };
         if a != b && b != c && a != c {
             indices.extend([a, b, c]);
         }
@@ -38,13 +39,12 @@ pub fn weld(mesh: &mut RawMesh, epsilon: f32) {
 /// Vertex neighbour lists from triangle edges.
 fn neighbours(vertex_count: usize, indices: &[u32]) -> Vec<Vec<u32>> {
     let mut n: Vec<Vec<u32>> = vec![Vec::new(); vertex_count];
-    for tri in indices.chunks_exact(3) {
-        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
-            if !n[a as usize].contains(&b) {
-                n[a as usize].push(b);
-            }
-            if !n[b as usize].contains(&a) {
-                n[b as usize].push(a);
+    for &[a, b, c] in indices.as_chunks::<3>().0 {
+        for (from, to) in [(a, b), (b, c), (c, a), (b, a), (c, b), (a, c)] {
+            if let Some(ns) = n.get_mut(from.idx())
+                && !ns.contains(&to)
+            {
+                ns.push(to);
             }
         }
     }
@@ -59,12 +59,12 @@ pub fn smooth(mesh: &mut RawMesh, iterations: u32) {
     let mut next = mesh.positions.clone();
     for _ in 0..iterations {
         for factor in [LAMBDA, MU] {
-            for (i, ns) in nb.iter().enumerate() {
+            for ((ns, out), &p) in nb.iter().zip(&mut next).zip(&mesh.positions) {
                 if ns.is_empty() {
                     continue;
                 }
-                let avg = ns.iter().map(|&j| mesh.positions[j as usize]).sum::<Vec3>() / ns.len() as f32;
-                next[i] = mesh.positions[i] + (avg - mesh.positions[i]) * factor;
+                let avg = ns.iter().filter_map(|&j| mesh.positions.get(j.idx())).sum::<Vec3>() / ns.len().to_f32();
+                *out = p + (avg - p) * factor;
             }
             std::mem::swap(&mut mesh.positions, &mut next);
         }
@@ -96,39 +96,45 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
         let info = field.surface_info(pa);
         let occluded = ((PROBE - field.distance(pa + normal * PROBE)) / PROBE).clamp(0.0, 1.0);
         let bone = info.influences.primary();
-        let def = anatomy.skeleton.get(bone);
-        let range = &anatomy.parts[def.part as usize].bones;
-        let span = (range.end - range.start).max(1) as f32;
-        let limb_t = ((bone.0 - range.start) as f32 + 0.5) / span;
+        // The bones of the part this bone belongs to (just this bone if that is unknown).
+        let range = anatomy
+            .skeleton
+            .get(bone)
+            .and_then(|def| anatomy.parts.get(def.part.idx()))
+            .map_or_else(|| bone.0..bone.0.saturating_add(1), |part| part.bones.clone());
+        let span = f32::from((range.end.saturating_sub(range.start)).max(1));
+        let limb_t = (f32::from(bone.0.saturating_sub(range.start)) + 0.5) / span;
         out.normals.push(normal.into());
-        out.joints.push(info.influences.bones.map(|b| b.0 as u16));
+        out.joints.push(info.influences.bones.map(|b| u16::from(b.0)));
         out.weights.push(info.influences.weights);
         out.mob_data.push(
             MobVertexData {
                 region: info.region,
-                cavity: (occluded * 255.0) as u8,
+                cavity: (occluded * 255.0).sat_u8(),
                 curvature: 128,
-                limb_t: (limb_t * 255.0) as u8,
+                limb_t: (limb_t * 255.0).sat_u8(),
                 primary_bone: bone,
                 layer: info.layer,
             }
             .pack(),
         );
     }
-    out.submeshes.push(Submesh { indices: 0..out.indices.len() as u32, slot: MaterialSlot::Skin });
+    out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot: MaterialSlot::Skin });
     out
 }
 
-/// meshoptimizer simplification to `target_ratio` of the triangles, within `max_error`
-/// (relative to mesh extents), then vertex-cache ordering and compaction. Applies to single-submesh
-/// data (call before merging hard parts).
+/// meshoptimizer simplification to `target_ratio` of the triangles, within `max_error`.
+///
+/// The error is relative to mesh extents; vertex-cache ordering and compaction follow. Applies to
+/// single-submesh data (call before merging hard parts).
+#[must_use]
 pub fn simplify(data: &BodyMeshData, target_ratio: f32, max_error: f32) -> BodyMeshData {
     let stride = std::mem::size_of::<Vec3>();
     let bytes = meshopt::typed_to_bytes(&data.positions);
     let Ok(adapter) = meshopt::VertexDataAdapter::new(bytes, stride, 0) else {
         return data.clone();
     };
-    let target = ((data.indices.len() as f32 * target_ratio) as usize / 3) * 3;
+    let target = ((data.indices.len().to_f32() * target_ratio).sat_usize() / 3) * 3;
     let simplified = meshopt::simplify(
         &data.indices,
         &adapter,
@@ -142,33 +148,35 @@ pub fn simplify(data: &BodyMeshData, target_ratio: f32, max_error: f32) -> BodyM
 }
 
 /// Keeps only vertices referenced by `indices`, in first-use order (good for vertex fetch).
+/// Triangles with a vertex out of range are dropped.
 fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
     let mut remap = vec![u32::MAX; data.positions.len()];
     let mut out = BodyMeshData::default();
-    for &i in indices {
-        let slot = &mut remap[i as usize];
-        if *slot == u32::MAX {
-            *slot = out.positions.len() as u32;
-            let i = i as usize;
-            out.positions.push(data.positions[i]);
-            out.normals.push(data.normals[i]);
-            out.joints.push(data.joints[i]);
-            out.weights.push(data.weights[i]);
-            out.mob_data.push(data.mob_data[i]);
-            if let Some(c) = data.coverage.get(i) {
-                out.coverage.push(*c);
-            }
-            if let Some(f) = data.flow.get(i) {
-                out.flow.push(*f);
-            }
-            if let Some(c) = data.cloth.get(i) {
-                out.cloth.push(*c);
-            }
+    for tri in indices.as_chunks::<3>().0 {
+        if !tri.iter().all(|i| data.vertex(i.idx()).is_some()) {
+            continue;
         }
-        out.indices.push(*slot);
+        for &i in tri {
+            let i = i.idx();
+            let (Some(slot), Some(v)) = (remap.get_mut(i), data.vertex(i)) else { continue };
+            if *slot == u32::MAX {
+                *slot = out.positions.len().clamp_u32();
+                out.push_vertex(v);
+                if let Some(c) = data.coverage.get(i) {
+                    out.coverage.push(*c);
+                }
+                if let Some(f) = data.flow.get(i) {
+                    out.flow.push(*f);
+                }
+                if let Some(c) = data.cloth.get(i) {
+                    out.cloth.push(*c);
+                }
+            }
+            out.indices.push(*slot);
+        }
     }
     let slot = data.submeshes.first().map_or(MaterialSlot::Skin, |s| s.slot);
-    out.submeshes.push(Submesh { indices: 0..out.indices.len() as u32, slot });
+    out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot });
     out
 }
 
@@ -176,53 +184,54 @@ fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
 /// (`anatomy.skeleton.crowd.map`), merging weights of folded bones.
 pub fn remap_to_crowd(data: &mut BodyMeshData, anatomy: &Anatomy) {
     let map = &anatomy.skeleton.crowd.map;
+    let crowd = |joint: u16| map.get(joint.idx()).copied().unwrap_or(0);
     for (joints, weights) in data.joints.iter_mut().zip(&mut data.weights) {
         let mut merged: [(u16, f32); 4] = [(0, 0.0); 4];
         let mut n = 0;
-        for k in 0..4 {
-            if weights[k] <= 0.0 {
+        for (&joint, &w) in joints.iter().zip(weights.iter()) {
+            if w <= 0.0 {
                 continue;
             }
-            let j = map[joints[k] as usize] as u16;
-            match merged[..n].iter_mut().find(|(mj, _)| *mj == j) {
-                Some(m) => m.1 += weights[k],
-                None => {
-                    merged[n] = (j, weights[k]);
-                    n += 1;
-                }
+            let j = u16::from(crowd(joint));
+            if let Some(m) = merged.iter_mut().take(n).find(|(mj, _)| *mj == j) {
+                m.1 += w;
+            } else if let Some(slot) = merged.get_mut(n) {
+                *slot = (j, w);
+                n += 1;
             }
         }
         if n == 0 {
-            merged[0] = (map[joints[0] as usize] as u16, 1.0);
+            merged[0] = (u16::from(crowd(joints[0])), 1.0);
         }
         *joints = merged.map(|m| m.0);
         *weights = merged.map(|m| m.1);
     }
     for d in &mut data.mob_data {
         let mut v = MobVertexData::unpack(*d);
-        v.primary_bone = crate::anatomy::BoneId(map[v.primary_bone.index()]);
+        v.primary_bone = BoneId(crowd(u16::from(v.primary_bone.0)));
         *d = v.pack();
     }
 }
 
 /// Appends `other` (e.g. hard parts) into `base`, offsetting indices and submesh ranges.
 pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
-    let vbase = base.positions.len() as u32;
-    let ibase = base.indices.len() as u32;
+    let base_len = base.positions.len();
+    let vbase = base_len.clamp_u32();
+    let ibase = base.indices.len().clamp_u32();
+    // Centres of rotation: a vertex without one rotates about itself (exactly linear blending).
+    if (!base.cor.is_empty() || !other.cor.is_empty()) && base.cor.len() != base_len {
+        base.cor.clone_from(&base.positions);
+    }
     base.positions.extend_from_slice(&other.positions);
     base.normals.extend_from_slice(&other.normals);
     base.joints.extend_from_slice(&other.joints);
     base.weights.extend_from_slice(&other.weights);
     base.mob_data.extend_from_slice(&other.mob_data);
     // Optional per-vertex channels: pad whichever side lacks them.
-    pad_extend(&mut base.uvs, &other.uvs, vbase as usize, other.positions.len(), [0.0; 2]);
-    pad_extend(&mut base.coverage, &other.coverage, vbase as usize, other.positions.len(), [0.0; 3]);
-    pad_extend(&mut base.flow, &other.flow, vbase as usize, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
-    // Centres of rotation: a vertex without one rotates about itself (exactly linear blending).
+    pad_extend(&mut base.uvs, &other.uvs, base_len, other.positions.len(), [0.0; 2]);
+    pad_extend(&mut base.coverage, &other.coverage, base_len, other.positions.len(), [0.0; 3]);
+    pad_extend(&mut base.flow, &other.flow, base_len, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
     if !base.cor.is_empty() || !other.cor.is_empty() {
-        if base.cor.len() != vbase as usize {
-            base.cor = base.positions[..vbase as usize].to_vec();
-        }
         if other.cor.len() == other.positions.len() {
             base.cor.extend_from_slice(&other.cor);
         } else {
@@ -230,7 +239,7 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
         }
     }
     if !base.cloth.is_empty() || !other.cloth.is_empty() {
-        base.cloth.resize(vbase as usize, NOT_CLOTH);
+        base.cloth.resize(base_len, NOT_CLOTH);
         if other.cloth.is_empty() {
             base.cloth.resize(base.positions.len(), NOT_CLOTH);
         } else {

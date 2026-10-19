@@ -106,8 +106,9 @@ impl Default for ChainParams {
 
 impl ChainParams {
     /// Length of each segment, root first; they sum to `length`.
+    #[must_use]
     pub fn segment_lengths(&self) -> Vec<f32> {
-        let n = self.segments.max(1) as usize;
+        let n = usize::from(self.segments.max(1));
         let total = self.length.max(0.005);
         let ratios: Vec<f32> = if self.ratios.len() == n && self.ratios.iter().all(|r| *r > 0.0) {
             self.ratios.clone()
@@ -215,6 +216,32 @@ pub struct HeadParams {
     pub eye_spacing: f32,
     /// Eye placement: `0.0` = forward-facing (predator), `1.0` = side-facing (prey).
     pub eye_lateral: f32,
+    /// A flat, primate face (nose, brow, cheekbones, lips, mandible and chin) in place of a
+    /// muzzle, with the ears on the sides of the head. `None` = an animal head.
+    pub face: Option<FaceParams>,
+}
+
+/// Facial features of a [`HeadParams::face`], each a fraction of the skull's size (`1.0` = a
+/// typical adult human).
+#[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct FaceParams {
+    /// How far the nose stands out from the face.
+    pub nose: f32,
+    /// Bony ridge over the eyes.
+    pub brow: f32,
+    pub cheekbones: f32,
+    pub lips: f32,
+    /// How far the chin juts forward and down.
+    pub chin: f32,
+    /// Width of the jaw at its angle (below the ears).
+    pub jaw_width: f32,
+}
+
+impl Default for FaceParams {
+    fn default() -> Self {
+        Self { nose: 1.0, brow: 1.0, cheekbones: 1.0, lips: 1.0, chin: 1.0, jaw_width: 1.0 }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -297,8 +324,9 @@ pub enum LimbEnd {
 
 impl LimbEnd {
     /// Ends that can hold tools.
-    pub fn grasps(self) -> bool {
-        matches!(self, LimbEnd::Hand { .. } | LimbEnd::Pincer { .. })
+    #[must_use]
+    pub const fn grasps(self) -> bool {
+        matches!(self, Self::Hand { .. } | Self::Pincer { .. })
     }
 }
 
@@ -391,6 +419,9 @@ pub struct HardParams {
     pub curve: f32,
     /// Spiral twist in turns (rams' horns, kudu horns).
     pub twist: f32,
+    /// Eyes: how much white shows round the iris, `0.0` = none (the iris fills the eye, as in
+    /// most animals) .. `1.0` = a human eye.
+    pub sclera: f32,
 }
 
 impl Default for HardParams {
@@ -400,6 +431,7 @@ impl Default for HardParams {
             size: 0.03,
             curve: 0.3,
             twist: 0.0,
+            sclera: 0.0,
         }
     }
 }
@@ -434,6 +466,6 @@ pub enum HardKind {
     },
 }
 
-fn one() -> f32 {
+const fn one() -> f32 {
     1.0
 }

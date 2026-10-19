@@ -5,35 +5,51 @@ use bevy::prelude::*;
 /// FABRIK: moves `joints` (root first, tip last) so the tip reaches `target` while the root stays
 /// fixed and segment lengths are kept. Starting from a bent pose keeps the bend plane.
 pub fn fabrik(joints: &mut [Vec3], target: Vec3, iterations: u32, tolerance: f32) {
-    let n = joints.len();
-    if n < 2 {
+    let lengths: Vec<f32> = joints.array_windows().map(|[a, b]| a.distance(*b)).collect();
+    let Some(&root) = joints.first() else { return };
+    if lengths.is_empty() {
         return;
     }
-    let lengths: Vec<f32> = joints.windows(2).map(|w| w[0].distance(w[1])).collect();
     let total: f32 = lengths.iter().sum();
-    let root = joints[0];
     if root.distance(target) >= total {
         // Out of reach: straighten toward the target.
-        let dir = (target - root).normalize_or(Vec3::NEG_Y);
-        for i in 1..n {
-            joints[i] = joints[i - 1] + dir * lengths[i - 1];
-        }
+        place_from_root(joints, &lengths, Some((target - root).normalize_or(Vec3::NEG_Y)));
         return;
     }
     for _ in 0..iterations {
-        joints[n - 1] = target;
-        for i in (0..n - 1).rev() {
-            let dir = (joints[i] - joints[i + 1]).normalize_or(Vec3::Y);
-            joints[i] = joints[i + 1] + dir * lengths[i];
+        place_from_tip(joints, &lengths, target);
+        if let Some(first) = joints.first_mut() {
+            *first = root;
         }
-        joints[0] = root;
-        for i in 1..n {
-            let dir = (joints[i] - joints[i - 1]).normalize_or(Vec3::NEG_Y);
-            joints[i] = joints[i - 1] + dir * lengths[i - 1];
-        }
-        if joints[n - 1].distance(target) < tolerance {
+        place_from_root(joints, &lengths, None);
+        if joints.last().is_some_and(|tip| tip.distance(target) < tolerance) {
             break;
         }
+    }
+}
+
+/// FABRIK's forward pass: each joint after the first moves to its segment length from the one
+/// before, along `dir` or else toward where it was.
+fn place_from_root(joints: &mut [Vec3], lengths: &[f32], dir: Option<Vec3>) {
+    let Some((first, rest)) = joints.split_first_mut() else { return };
+    let mut prev = *first;
+    for (joint, length) in rest.iter_mut().zip(lengths) {
+        let d = dir.unwrap_or_else(|| (*joint - prev).normalize_or(Vec3::NEG_Y));
+        *joint = prev + d * length;
+        prev = *joint;
+    }
+}
+
+/// FABRIK's backward pass: the tip goes to `target`, each joint before it to its segment length
+/// from the next.
+fn place_from_tip(joints: &mut [Vec3], lengths: &[f32], target: Vec3) {
+    let Some((tip, rest)) = joints.split_last_mut() else { return };
+    *tip = target;
+    let mut next = target;
+    for (joint, length) in rest.iter_mut().rev().zip(lengths.iter().rev()) {
+        let d = (*joint - next).normalize_or(Vec3::Y);
+        *joint = next + d * length;
+        next = *joint;
     }
 }
 
@@ -56,26 +72,27 @@ pub fn two_bone(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3) {
     let mut d = to.length();
     if d > soft {
         let span = full - soft;
-        d = soft + span * (1.0 - (-(d - soft) / span).exp());
+        d = span.mul_add(1.0 - (-(d - soft) / span).exp(), soft);
     }
     let d = d.clamp((l1 - l2).abs() + 1e-4, full - 1e-4);
-    let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
-    let out = (l1 * l1 - along * along).max(0.0).sqrt();
+    let along = d.mul_add(d, f32::mul_add(l2, -l2, l1 * l1)) / (2.0 * d);
+    let out = along.mul_add(-along, l1 * l1).max(0.0).sqrt();
     let side = (pole - axis * pole.dot(axis)).normalize_or(axis.any_orthonormal_vector());
     joints[1] = root + axis * along + side * out;
     joints[2] = root + axis * d;
 }
 
-/// Turns the interior joints about the root→tip line so the chain bends toward `pole` (knees
-/// forward, elbows back), keeping the shape of the chain; the first interior joint sets the side.
-/// Without this a leg whose solve starts near-straight can pick either side from one frame to
+/// Turns the interior joints about the root→tip line so the chain bends toward `pole`.
+///
+/// Knees go forward, elbows back; the chain keeps its shape and the first interior joint sets the
+/// side. Without this a leg whose solve starts near-straight can pick either side from one frame to
 /// the next, and the knee snaps across. A straight chain is left alone.
 pub fn orient_to_pole(joints: &mut [Vec3], pole: Vec3) {
     let n = joints.len();
+    let (Some(&root), Some(&first), Some(&tip)) = (joints.first(), joints.get(1), joints.last()) else { return };
     if n < 3 {
         return;
     }
-    let (root, tip) = (joints[0], joints[n - 1]);
     let axis = (tip - root).normalize_or_zero();
     let want = (pole - axis * pole.dot(axis)).normalize_or_zero();
     if axis == Vec3::ZERO || want == Vec3::ZERO {
@@ -86,15 +103,15 @@ pub fn orient_to_pole(joints: &mut [Vec3], pole: Vec3) {
         d - axis * d.dot(axis)
     };
     // The first joint (knee/elbow) sets the side; later joints (a hock bending back) ride along.
-    let bend = perpendicular(joints[1]);
-    let length: f32 = joints.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let bend = perpendicular(first);
+    let length: f32 = joints.array_windows().map(|[a, b]| a.distance(*b)).sum();
     if bend.length() < length * 1e-3 {
         return;
     }
     let bend = bend.normalize();
-    let rot = if bend.dot(want) < -0.9999 { Quat::from_axis_angle(axis, std::f32::consts::PI) } else { Quat::from_rotation_arc(bend, want) };
-    for j in &mut joints[1..n - 1] {
-        *j = root + rot * (*j - root);
+    let turn = if bend.dot(want) < -0.9999 { Quat::from_axis_angle(axis, std::f32::consts::PI) } else { Quat::from_rotation_arc(bend, want) };
+    for j in joints.iter_mut().skip(1).take(n - 2) {
+        *j = root + turn * (*j - root);
     }
 }
 

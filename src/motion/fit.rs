@@ -7,6 +7,7 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 
 use crate::anatomy::{Anatomy, BuiltPart, HardKind, LimbRole, Side, SocketKind, Stance};
+use crate::num::{Clamp, ToF32};
 
 /// How a body is laid out for moving. Proportions don't change the family: humans, goblins and
 /// elves are all `UprightBiped`; a dragon is a `Quadruped` with `Wings`.
@@ -69,45 +70,54 @@ impl Default for Fit {
 
 impl Fit {
     /// Fits any body.
+    #[must_use]
     pub fn any() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn family(family: BodyFamily) -> Self {
         Self { family: vec![family], ..Self::default() }
     }
 
+    #[must_use]
     pub fn or_family(mut self, family: BodyFamily) -> Self {
         self.family.push(family);
         self
     }
 
-    pub fn legs(mut self, legs: RangeInclusive<u8>) -> Self {
+    #[must_use]
+    pub const fn legs(mut self, legs: RangeInclusive<u8>) -> Self {
         self.legs = legs;
         self
     }
 
+    #[must_use]
     pub fn stance(mut self, stances: impl IntoIterator<Item = Stance>) -> Self {
         self.stance = stances.into_iter().collect();
         self
     }
 
+    #[must_use]
     pub fn needs(mut self, feature: Feature) -> Self {
         self.needs.push(feature);
         self
     }
 
+    #[must_use]
     pub fn excludes(mut self, feature: Feature) -> Self {
         self.excludes.push(feature);
         self
     }
 
-    pub fn size(mut self, leg_length: RangeInclusive<f32>) -> Self {
+    #[must_use]
+    pub const fn size(mut self, leg_length: RangeInclusive<f32>) -> Self {
         self.size = Some(leg_length);
         self
     }
 
     /// Every reason this body doesn't fit (empty = fits).
+    #[must_use]
     pub fn check(&self, body: &BodyTraits) -> Vec<Misfit> {
         let mut out = Vec::new();
         if !self.family.is_empty() && !self.family.contains(&body.family) {
@@ -116,18 +126,16 @@ impl Fit {
         if !self.legs.contains(&body.legs) {
             out.push(Misfit::Legs(body.legs));
         }
-        if !self.stance.is_empty() {
-            if let Some(s) = body.stances.iter().find(|s| !self.stance.contains(s)) {
+        if !self.stance.is_empty()
+            && let Some(s) = body.stances.iter().find(|s| !self.stance.contains(s)) {
                 out.push(Misfit::Stance(*s));
             }
-        }
         out.extend(self.needs.iter().filter(|f| !body.features.contains(f)).map(|f| Misfit::Missing(*f)));
         out.extend(self.excludes.iter().filter(|f| body.features.contains(f)).map(|f| Misfit::Excluded(*f)));
-        if let Some(size) = &self.size {
-            if !size.contains(&body.leg_length) {
+        if let Some(size) = &self.size
+            && !size.contains(&body.leg_length) {
                 out.push(Misfit::Size(body.leg_length));
             }
-        }
         out
     }
 }
@@ -155,15 +163,16 @@ pub struct BodyTraits {
 }
 
 impl BodyTraits {
+    #[must_use]
     pub fn of(a: &Anatomy) -> Self {
-        let legs = a.legs.len() as u8;
-        let leg_length = if a.legs.is_empty() { 0.5 } else { a.legs.iter().map(|l| l.length).sum::<f32>() / legs as f32 };
+        let legs = a.legs.len().clamp_u8();
+        let leg_length = if a.legs.is_empty() { 0.5 } else { a.legs.iter().map(|l| l.length).sum::<f32>() / a.legs.len().to_f32() };
         let model = a.skeleton.model_rest();
         let upright = match (a.spine.first(), a.spine.last()) {
-            (Some(first), Some(last)) => {
-                let d = model[last.index()].translation - model[first.index()].translation;
+            (Some(first), Some(last)) => model.get(last.index()).zip(model.get(first.index())).is_some_and(|(top, bottom)| {
+                let d = top.translation - bottom.translation;
                 d.y > 0.6 * d.length()
-            }
+            }),
             _ => false,
         };
         let family = match legs {
@@ -217,6 +226,7 @@ impl BodyTraits {
         Self { family, legs, stances, features, leg_length }
     }
 
+    #[must_use]
     pub fn has(&self, feature: Feature) -> bool {
         self.features.contains(&feature)
     }

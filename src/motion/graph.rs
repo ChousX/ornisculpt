@@ -97,7 +97,7 @@ pub enum LayerMode {
 }
 
 /// Which bones a layer may move.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum BodyMask {
     #[default]
     All,
@@ -162,7 +162,7 @@ impl Default for Transition {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum From {
     #[default]
     Any,
@@ -189,9 +189,9 @@ pub enum Condition {
     Float(String, Cmp, f32),
     /// The current state's action has finished.
     Finished,
-    All(Vec<Condition>),
-    Any(Vec<Condition>),
-    Not(Box<Condition>),
+    All(Vec<Self>),
+    Any(Vec<Self>),
+    Not(Box<Self>),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,12 +203,13 @@ pub enum Cmp {
 }
 
 impl Cmp {
+    #[must_use]
     pub fn test(self, a: f32, b: f32) -> bool {
         match self {
-            Cmp::Lt => a < b,
-            Cmp::Le => a <= b,
-            Cmp::Gt => a > b,
-            Cmp::Ge => a >= b,
+            Self::Lt => a < b,
+            Self::Le => a <= b,
+            Self::Gt => a > b,
+            Self::Ge => a >= b,
         }
     }
 }
@@ -218,21 +219,25 @@ impl Cmp {
 // ---------------------------------------------------------------------------------------------
 
 impl MotionGraph {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn param(mut self, name: &str, value: ParamValue) -> Self {
         self.params.push(Param { name: name.into(), value });
         self
     }
 
     /// Adds an inline cycle (referenced by its name).
+    #[must_use]
     pub fn cycle(mut self, cycle: Cycle) -> Self {
         self.cycles.push(cycle);
         self
     }
 
+    #[must_use]
     pub fn layer(mut self, layer: Layer) -> Self {
         self.layers.push(layer);
         self
@@ -240,27 +245,32 @@ impl MotionGraph {
 }
 
 impl Layer {
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self { name: name.into(), ..default() }
     }
 
+    #[must_use]
     pub fn mask(mut self, mask: BodyMask) -> Self {
         self.mask = mask;
         self
     }
 
-    pub fn additive(mut self) -> Self {
+    #[must_use]
+    pub const fn additive(mut self) -> Self {
         self.mode = LayerMode::Additive;
         self
     }
 
-    pub fn weight(mut self, weight: f32) -> Self {
+    #[must_use]
+    pub const fn weight(mut self, weight: f32) -> Self {
         self.weight = weight;
         self
     }
 
     /// Adds a state; the first state added is the entry unless [`entry`](Self::entry) says
     /// otherwise.
+    #[must_use]
     pub fn state(mut self, name: &str, play: Play) -> Self {
         if self.entry.is_empty() {
             self.entry = name.into();
@@ -269,12 +279,14 @@ impl Layer {
         self
     }
 
+    #[must_use]
     pub fn entry(mut self, name: &str) -> Self {
         self.entry = name.into();
         self
     }
 
     /// `from` → `to` when `when` holds, crossfading over `blend` seconds.
+    #[must_use]
     pub fn transition(mut self, from: &str, to: &str, when: Condition, blend: f32) -> Self {
         let from = if from == "*" { From::Any } else { From::State(from.into()) };
         self.transitions.push(Transition { from, to: to.into(), when, blend, switch: Switch::Immediate });
@@ -282,6 +294,7 @@ impl Layer {
     }
 
     /// Like [`transition`](Self::transition) with an explicit [`Switch`].
+    #[must_use]
     pub fn transition_with(mut self, from: &str, to: &str, when: Condition, blend: f32, switch: Switch) -> Self {
         self = self.transition(from, to, when, blend);
         if let Some(t) = self.transitions.last_mut() {
@@ -292,32 +305,43 @@ impl Layer {
 }
 
 impl Condition {
+    #[must_use]
     pub fn trigger(name: &str) -> Self {
-        Condition::Trigger(name.into())
+        Self::Trigger(name.into())
     }
 
+    #[must_use]
     pub fn is(name: &str, value: bool) -> Self {
-        Condition::Bool(name.into(), value)
+        Self::Bool(name.into(), value)
     }
 
+    #[must_use]
     pub fn above(name: &str, value: f32) -> Self {
-        Condition::Float(name.into(), Cmp::Gt, value)
+        Self::Float(name.into(), Cmp::Gt, value)
     }
 
+    #[must_use]
     pub fn below(name: &str, value: f32) -> Self {
-        Condition::Float(name.into(), Cmp::Lt, value)
+        Self::Float(name.into(), Cmp::Lt, value)
     }
 
-    pub fn and(self, other: Condition) -> Self {
-        Condition::All(vec![self, other])
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        Self::All(vec![self, other])
     }
 
-    pub fn or(self, other: Condition) -> Self {
-        Condition::Any(vec![self, other])
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self::Any(vec![self, other])
     }
 
-    pub fn not(self) -> Self {
-        Condition::Not(Box::new(self))
+}
+
+impl std::ops::Not for Condition {
+    type Output = Self;
+
+    fn not(self) -> Self {
+        Self::Not(Box::new(self))
     }
 }
 
@@ -333,10 +357,11 @@ pub enum CycleSource {
 }
 
 impl CycleSource {
+    #[must_use]
     pub fn get<'a>(&'a self, assets: &'a Assets<Cycle>) -> Option<&'a Cycle> {
         match self {
-            CycleSource::Inline(c) => Some(c),
-            CycleSource::Asset(h) => assets.get(h),
+            Self::Inline(c) => Some(c),
+            Self::Asset(h) => assets.get(h),
         }
     }
 }
@@ -362,9 +387,9 @@ pub enum CCondition {
     Always,
     Param(usize, CParamTest),
     Finished,
-    All(Vec<CCondition>),
-    Any(Vec<CCondition>),
-    Not(Box<CCondition>),
+    All(Vec<Self>),
+    Any(Vec<Self>),
+    Not(Box<Self>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -430,8 +455,8 @@ fn same_kind(a: ParamValue, b: ParamValue) -> bool {
     std::mem::discriminant(&a) == std::mem::discriminant(&b)
 }
 
-/// Merges `graphs` (in order) into one graph. See the module docs for the rules.
-pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
+/// Every graph's parameters after the built-ins, each name once.
+fn merge_params(graphs: &[&MotionGraph]) -> Result<Vec<(String, ParamValue)>, GraphError> {
     let mut params: Vec<(String, ParamValue)> = BUILTIN_PARAMS.iter().map(|(n, v)| (n.to_string(), *v)).collect();
     for g in graphs {
         for p in &g.params {
@@ -442,15 +467,19 @@ pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
             }
         }
     }
-    // Merge layers by name, ordered by `order`, then first appearance.
+    Ok(params)
+}
+
+/// Layers merged by name, ordered by `order`, then first appearance.
+fn merge_layers(graphs: &[&MotionGraph]) -> Result<Vec<Layer>, GraphError> {
     let mut merged: Vec<(i32, Layer)> = Vec::new();
     for g in graphs {
         for l in &g.layers {
             match merged.iter_mut().find(|(_, m)| m.name == l.name) {
                 Some((_, m)) => {
                     for s in &l.states {
-                        match m.states.iter().position(|x| x.name == s.name) {
-                            Some(i) if s.replace => m.states[i] = s.clone(),
+                        match m.states.iter_mut().find(|x| x.name == s.name) {
+                            Some(slot) if s.replace => *slot = s.clone(),
                             Some(_) => return Err(GraphError::DuplicateState { layer: l.name.clone(), state: s.name.clone() }),
                             None => m.states.push(s.clone()),
                         }
@@ -462,7 +491,31 @@ pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
         }
     }
     merged.sort_by_key(|(o, _)| *o);
-    let layers: Vec<Layer> = merged.into_iter().map(|(_, l)| l).collect();
+    Ok(merged.into_iter().map(|(_, l)| l).collect())
+}
+
+fn condition(c: &Condition, param: &dyn Fn(&str) -> Result<usize, GraphError>) -> Result<CCondition, GraphError> {
+    Ok(match c {
+        Condition::Always => CCondition::Always,
+        Condition::Trigger(n) => CCondition::Param(param(n)?, CParamTest::Trigger),
+        Condition::Bool(n, v) => CCondition::Param(param(n)?, CParamTest::Bool(*v)),
+        Condition::Float(n, cmp, v) => CCondition::Param(param(n)?, CParamTest::Float(*cmp, *v)),
+        Condition::Finished => CCondition::Finished,
+        Condition::All(v) => CCondition::All(v.iter().map(|c| condition(c, param)).collect::<Result<_, _>>()?),
+        Condition::Any(v) => CCondition::Any(v.iter().map(|c| condition(c, param)).collect::<Result<_, _>>()?),
+        Condition::Not(c) => CCondition::Not(Box::new(condition(c, param)?)),
+    })
+}
+
+/// Merges `graphs` (in order) into one graph. See the module docs for the rules.
+///
+/// # Errors
+///
+/// When a parameter changes type between graphs, a layer repeats a state without `replace`, an
+/// inline cycle is invalid, or a name (cycle, parameter, layer, state) isn't found.
+pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
+    let params = merge_params(graphs)?;
+    let layers = merge_layers(graphs)?;
 
     // Cycles: inline by name across all graphs, then loaded asset paths.
     let mut cycles: Vec<CycleSource> = Vec::new();
@@ -488,22 +541,6 @@ pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
     }
     let cycle = |name: &str| by_name.get(name).copied().ok_or_else(|| GraphError::MissingCycle(name.into()));
     let param = |name: &str| params.iter().position(|(n, _)| n == name).ok_or_else(|| GraphError::MissingParam(name.into()));
-
-    fn condition(
-        c: &Condition,
-        param: &dyn Fn(&str) -> Result<usize, GraphError>,
-    ) -> Result<CCondition, GraphError> {
-        Ok(match c {
-            Condition::Always => CCondition::Always,
-            Condition::Trigger(n) => CCondition::Param(param(n)?, CParamTest::Trigger),
-            Condition::Bool(n, v) => CCondition::Param(param(n)?, CParamTest::Bool(*v)),
-            Condition::Float(n, cmp, v) => CCondition::Param(param(n)?, CParamTest::Float(*cmp, *v)),
-            Condition::Finished => CCondition::Finished,
-            Condition::All(v) => CCondition::All(v.iter().map(|c| condition(c, param)).collect::<Result<_, _>>()?),
-            Condition::Any(v) => CCondition::Any(v.iter().map(|c| condition(c, param)).collect::<Result<_, _>>()?),
-            Condition::Not(c) => CCondition::Not(Box::new(condition(c, param)?)),
-        })
-    }
 
     let state_index = |layer: &Layer, name: &str| {
         layer
@@ -535,8 +572,9 @@ pub fn compose(graphs: &[&MotionGraph]) -> Result<ComposedGraph, GraphError> {
             };
             let (to_layer, to) = match t.to.split_once('/') {
                 Some((ln, sn)) => {
-                    let li2 = layers.iter().position(|x| x.name == ln).ok_or_else(|| GraphError::MissingLayer(ln.into()))?;
-                    (li2, state_index(&layers[li2], sn)?)
+                    let (li2, target) =
+                        layers.iter().enumerate().find(|(_, x)| x.name == ln).ok_or_else(|| GraphError::MissingLayer(ln.into()))?;
+                    (li2, state_index(target, sn)?)
                 }
                 None => (li, state_index(l, &t.to)?),
             };
@@ -580,7 +618,7 @@ impl AssetLoader for GraphLoader {
     type Settings = ();
     type Error = GraphLoaderError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), ctx: &mut LoadContext<'_>) -> Result<MotionGraph, Self::Error> {
+    async fn load(&self, reader: &mut dyn Reader, (): &(), ctx: &mut LoadContext<'_>) -> Result<MotionGraph, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let mut graph: MotionGraph = ron::de::from_bytes(&bytes)?;

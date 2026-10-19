@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::BodyMeshData;
+use crate::num::{Idx, Saturate};
 
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
@@ -56,8 +57,8 @@ fn similarity(p: &Weights, v: &Weights) -> f32 {
             if vk == 0.0 {
                 continue;
             }
-            let e = pj * vk - pk * vj;
-            sim += pj * pk * vj * vk * (-(e * e) / s2).exp();
+            let e = f32::mul_add(pk, -vj, pj * vk);
+            sim = (pj * pk * vj * vk).mul_add((-(e * e) / s2).exp(), sim);
         }
     }
     sim
@@ -69,100 +70,110 @@ struct Tri {
     weights: Weights,
 }
 
-/// Centre of rotation for every vertex. Vertices on one bone (where it doesn't matter) and those
-/// with no similar surface get their own position, which skins them exactly as linear blending.
+/// Every unordered pair of bones in `w`, smaller first.
+fn bone_pairs(w: &Weights) -> impl Iterator<Item = (u16, u16)> + '_ {
+    w.iter().enumerate().flat_map(move |(x, &(a, _))| w.iter().skip(x + 1).map(move |&(b, _)| (a.min(b), a.max(b))))
+}
+
+/// Centre of rotation for every vertex.
+///
+/// Vertices on one bone (where it doesn't matter) and those with no similar surface get their own
+/// position, which skins them exactly as linear blending (as do all of a worker's vertices,
+/// should it panic).
+#[must_use]
 pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
-    let n = mesh.positions.len();
-    let weights: Vec<Weights> = (0..n).map(|i| sparse(mesh.joints[i], mesh.weights[i])).collect();
+    let weights: Vec<Weights> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| sparse(*j, *w)).collect();
     let tris: Vec<Tri> = mesh
         .indices
-        .chunks_exact(3)
-        .map(|t| {
-            let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
-            let (pa, pb, pc) = (mesh.positions[a], mesh.positions[b], mesh.positions[c]);
-            let mut w = Weights::new();
-            for &(bone, x) in weights[a].iter().chain(&weights[b]).chain(&weights[c]) {
-                match w.iter_mut().find(|(j, _)| *j == bone) {
-                    Some(e) => e.1 += x / 3.0,
-                    None => w.push((bone, x / 3.0)),
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .filter_map(|tri| {
+            let [a, b, c] = tri.map(Idx::idx);
+            let (pa, pb, pc) = (*mesh.positions.get(a)?, *mesh.positions.get(b)?, *mesh.positions.get(c)?);
+            let mut sum = Weights::new();
+            for &(bone, weight) in weights.get(a)?.iter().chain(weights.get(b)?).chain(weights.get(c)?) {
+                match sum.iter_mut().find(|(j, _)| *j == bone) {
+                    Some(entry) => entry.1 += weight / 3.0,
+                    None => sum.push((bone, weight / 3.0)),
                 }
             }
-            Tri { centre: (pa + pb + pc) / 3.0, area: (pb - pa).cross(pc - pa).length() * 0.5, weights: w }
+            Some(Tri { centre: (pa + pb + pc) / 3.0, area: (pb - pa).cross(pc - pa).length() * 0.5, weights: sum })
         })
         .collect();
     let mut buckets: HashMap<(u16, u16), Vec<u32>> = HashMap::new();
-    for (i, t) in tris.iter().enumerate() {
-        for (x, &(a, _)) in t.weights.iter().enumerate() {
-            for &(b, _) in &t.weights[x + 1..] {
-                buckets.entry((a.min(b), a.max(b))).or_default().push(i as u32);
-            }
+    for (i, tri) in (0u32..).zip(&tris) {
+        for pair in bone_pairs(&tri.weights) {
+            buckets.entry(pair).or_default().push(i);
         }
     }
 
     // One centre per distinct (quantized) weight vector.
     let key = |w: &Weights| {
-        let mut k: smallvec::SmallVec<[(u16, u16); 4]> = w.iter().map(|(b, x)| (*b, (x * 256.0).round() as u16)).filter(|e| e.1 > 0).collect();
-        k.sort_unstable();
-        k
+        let mut quantized: smallvec::SmallVec<[(u16, u16); 4]> =
+            w.iter().map(|(b, x)| (*b, (x * 256.0).round().sat_u16())).filter(|e| e.1 > 0).collect();
+        quantized.sort_unstable();
+        quantized
     };
     let mut slot_of: HashMap<smallvec::SmallVec<[(u16, u16); 4]>, usize> = HashMap::new();
-    let mut slots: Vec<usize> = Vec::with_capacity(n);
+    let mut slots: Vec<usize> = Vec::with_capacity(weights.len());
     let mut uniques: Vec<usize> = Vec::new();
     for (i, w) in weights.iter().enumerate() {
         let next = uniques.len();
-        let s = *slot_of.entry(key(w)).or_insert_with(|| {
+        let slot = *slot_of.entry(key(w)).or_insert_with(|| {
             uniques.push(i);
             next
         });
-        slots.push(s);
+        slots.push(slot);
     }
 
-    let centre_for = |w: &Weights, stamp: &mut Vec<u32>, round: u32| -> Option<Vec3> {
+    let centre_for = |w: &Weights, stamp: &mut [u32], round: u32| -> Option<Vec3> {
         if w.len() < 2 {
             return None;
         }
         let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
-        for (x, &(a, _)) in w.iter().enumerate() {
-            for &(b, _) in &w[x + 1..] {
-                let Some(list) = buckets.get(&(a.min(b), a.max(b))) else { continue };
-                for &t in list {
-                    if stamp[t as usize] == round {
-                        continue;
-                    }
-                    stamp[t as usize] = round;
-                    let tri = &tris[t as usize];
-                    let s = similarity(w, &tri.weights) * tri.area;
-                    num += tri.centre * s;
-                    den += s;
+        for pair in bone_pairs(w) {
+            let Some(list) = buckets.get(&pair) else { continue };
+            for &t in list {
+                let (Some(seen), Some(tri)) = (stamp.get_mut(t.idx()), tris.get(t.idx())) else { continue };
+                if *seen == round {
+                    continue;
                 }
+                *seen = round;
+                let contribution = similarity(w, &tri.weights) * tri.area;
+                num += tri.centre * contribution;
+                den += contribution;
             }
         }
         (den > 1e-12).then(|| num / den)
     };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(uniques.len().max(1));
+    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get).min(uniques.len().max(1));
     let per_unique: Vec<Option<Vec3>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads)
-            .map(|t| {
-                let (uniques, weights, centre_for, count) = (&uniques, &weights, &centre_for, tris.len());
-                scope.spawn(move || {
-                    let mut stamp = vec![u32::MAX; count];
-                    let mut out = Vec::new();
-                    for (u, &i) in uniques.iter().enumerate().skip(t).step_by(threads) {
-                        out.push((u, centre_for(&weights[i], &mut stamp, u as u32)));
-                    }
-                    out
-                })
-            })
-            .collect();
+        let mut handles = Vec::with_capacity(threads);
+        for worker in 0..threads {
+            let (uniques, weights, centre_for, count) = (&uniques, &weights, &centre_for, tris.len());
+            handles.push(scope.spawn(move || {
+                let mut stamp = vec![u32::MAX; count];
+                let mut out = Vec::new();
+                for (u, &i) in (0u32..).zip(uniques).skip(worker).step_by(threads) {
+                    let centre = weights.get(i).and_then(|w| centre_for(w, &mut stamp, u));
+                    out.push((u, centre));
+                }
+                out
+            }));
+        }
         let mut all = vec![None; uniques.len()];
-        for h in handles {
-            for (u, c) in h.join().expect("centre of rotation thread panicked") {
-                all[u] = c;
+        for handle in handles {
+            for (u, centre) in handle.join().unwrap_or_default() {
+                if let Some(slot) = all.get_mut(u.idx()) {
+                    *slot = centre;
+                }
             }
         }
         all
     });
-    (0..n).map(|i| per_unique[slots[i]].unwrap_or(mesh.positions[i])).collect()
+    let centre = |i: usize| slots.get(i).and_then(|&s| per_unique.get(s).copied().flatten());
+    mesh.positions.iter().enumerate().map(|(i, p)| centre(i).unwrap_or(*p)).collect()
 }
 
 #[cfg(test)]

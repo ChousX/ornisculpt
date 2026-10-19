@@ -8,6 +8,7 @@ pub mod coat;
 pub mod equip;
 pub mod mob;
 pub mod motion;
+pub mod num;
 pub mod random;
 pub mod surface;
 

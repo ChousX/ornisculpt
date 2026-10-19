@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::builder::{frame_y_z, mirror_transform};
 use super::{
-    AnatomyBuilder, AnatomyError, AttachSlot, BuildCx, ChainRole, LimbRole, LodLevel, PartKind, PartSlots,
+    AnatomyBuilder, AttachSlot, AxisSample, BuildCx, ChainRole, LimbRole, LodLevel, PartKind, PartSlots,
     PrimLayer, PrimOp, PrimShape, Tone,
 };
 
@@ -63,27 +63,27 @@ pub enum StampKind {
 
 impl StampKind {
     fn intensity(self, tone: &Tone) -> f32 {
-        let bony = tone.landmarks * (1.0 - 0.6 * tone.fat.min(1.0));
+        let bony = tone.landmarks * 0.6f32.mul_add(-tone.fat.min(1.0), 1.0);
         match self {
-            StampKind::Muscle => tone.muscle * 1.6,
-            StampKind::Fat => tone.fat * 1.5,
-            StampKind::Landmark | StampKind::Hollow => bony,
+            Self::Muscle => tone.muscle * 1.6,
+            Self::Fat => tone.fat * 1.5,
+            Self::Landmark | Self::Hollow => bony,
         }
     }
 
-    fn layer(self) -> PrimLayer {
+    const fn layer(self) -> PrimLayer {
         match self {
-            StampKind::Muscle => PrimLayer::Muscle,
-            StampKind::Fat => PrimLayer::Fat,
-            StampKind::Landmark | StampKind::Hollow => PrimLayer::Landmark,
+            Self::Muscle => PrimLayer::Muscle,
+            Self::Fat => PrimLayer::Fat,
+            Self::Landmark | Self::Hollow => PrimLayer::Landmark,
         }
     }
 
-    fn lod(self) -> LodLevel {
+    const fn lod(self) -> LodLevel {
         match self {
-            StampKind::Muscle => LodLevel::Near,
-            StampKind::Fat => LodLevel::Far,
-            StampKind::Landmark | StampKind::Hollow => LodLevel::Hero,
+            Self::Muscle => LodLevel::Near,
+            Self::Fat => LodLevel::Far,
+            Self::Landmark | Self::Hollow => LodLevel::Hero,
         }
     }
 }
@@ -128,7 +128,7 @@ fn place(at: StampAt, mirrored: bool, slots: &PartSlots) -> Option<Placement> {
         }
         StampAt::Slot { slot, offset } => {
             let p = slots.resolve(slot)?;
-            let radius = slots.skull.map_or_else(|| slots.axis.first().map_or(0.05, |s| s.min_radius()), |s| s.radii.min_element());
+            let radius = slots.skull.map_or_else(|| slots.axis.first().map_or(0.05, AxisSample::min_radius), |s| s.radii.min_element());
             let mut m = p.model * Transform::from_translation(offset * radius);
             if mirrored {
                 m = mirror_transform(m);
@@ -145,16 +145,16 @@ fn place(at: StampAt, mirrored: bool, slots: &PartSlots) -> Option<Placement> {
 }
 
 /// Emits a part's stamps. Called after the part's own shapes, before its children.
-pub(crate) fn apply_stamps(
+pub fn apply_stamps(
     b: &mut AnatomyBuilder,
     kind: &PartKind,
     set: &StampSet,
     slots: &PartSlots,
     cx: &BuildCx,
-) -> Result<(), AnatomyError> {
+) {
     let defaults;
     let stamps: &[Stamp] = match set {
-        StampSet::None => return Ok(()),
+        StampSet::None => return,
         StampSet::Custom(s) => s,
         StampSet::Default => {
             // A torso standing up (bipeds) has a human back, not a quadruped's haunch and flank.
@@ -171,12 +171,23 @@ pub(crate) fn apply_stamps(
                 continue;
             }
             // Fat depots spread as well as deepen.
-            let spread = if stamp.kind == StampKind::Fat { 1.0 + 0.5 * cx.tone.fat.min(2.0) } else { 1.0 };
+            let spread = if stamp.kind == StampKind::Fat { 0.5f32.mul_add(cx.tone.fat.min(2.0), 1.0) } else { 1.0 };
             let radii = stamp.size * p.radius * spread;
+            let region = b.bone_region(p.bone);
+            // A hollow on a slot (eye socket) is a real cut: what sits in the slot lies below the
+            // surface and must show through, which a displacement of `push` can't reach.
+            if stamp.kind == StampKind::Hollow && matches!(stamp.at, StampAt::Slot { .. }) {
+                let centre = p.point + p.normal * (radii.z - push);
+                let model = Transform::from_translation(centre).with_rotation(frame_y_z(p.along, p.normal));
+                // Softened edges, but never wider than the cut itself: a wide blend round a small cut
+                // (a nostril) carves the skin around it into islands.
+                let blend = (0.2f32.mul_add(cx.tone.fat.min(1.5), 0.2) * p.radius).min(radii.min_element());
+                b.primitive_at(p.bone, PrimShape::Ellipsoid { radii }, model, blend, PrimOp::Subtract, stamp.kind.layer(), region, stamp.kind.lod());
+                continue;
+            }
             // Muscles/fat/landmarks raise the surface by `push` at the centre; hollows sink it.
             let height = if stamp.kind == StampKind::Hollow { -push } else { push };
             let model = Transform::from_translation(p.point).with_rotation(frame_y_z(p.along, p.normal));
-            let region = b.bone_region(p.bone);
             b.primitive_at(
                 p.bone,
                 PrimShape::Ellipsoid { radii },
@@ -189,7 +200,6 @@ pub(crate) fn apply_stamps(
             );
         }
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -205,86 +215,89 @@ fn skull(dir: [f32; 3], kind: StampKind, size: [f32; 3], depth: f32) -> Stamp {
 }
 
 /// The built-in stamp table for a part.
+#[must_use]
 pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
-    use StampKind::*;
+    use StampKind as K;
     match kind {
         PartKind::Torso(_) => {
             let mut s = vec![
-                surf(0.86, 150.0, Muscle, [0.45, 0.55, 0.35], 0.10, true), // chest
-                surf(0.90, 110.0, Muscle, [0.40, 0.45, 0.35], 0.10, true), // shoulder mass
-                surf(0.84, 55.0, Landmark, [0.25, 0.45, 0.15], 0.06, true), // shoulder blade
-                surf(0.12, 75.0, Muscle, [0.50, 0.60, 0.40], 0.12, true),  // haunch
-                surf(0.20, 45.0, Landmark, [0.15, 0.15, 0.12], 0.06, true), // hip point
-                surf(0.60, 110.0, Landmark, [0.50, 0.70, 0.30], 0.04, true), // ribcage
-                surf(0.35, 105.0, Hollow, [0.35, 0.60, 0.30], 0.025, true), // flank hollow
-                surf(0.45, 180.0, Fat, [0.60, 0.90, 0.50], 0.12, false),   // belly
-                surf(0.10, 60.0, Fat, [0.50, 0.50, 0.40], 0.06, true),     // rump
-                surf(0.55, 100.0, Fat, [0.55, 0.90, 0.45], 0.08, true),    // flank
+                surf(0.86, 150.0, K::Muscle, [0.45, 0.55, 0.35], 0.10, true), // chest
+                surf(0.90, 110.0, K::Muscle, [0.40, 0.45, 0.35], 0.10, true), // shoulder mass
+                surf(0.84, 55.0, K::Landmark, [0.25, 0.45, 0.15], 0.06, true), // shoulder blade
+                surf(0.12, 75.0, K::Muscle, [0.50, 0.60, 0.40], 0.12, true),  // haunch
+                surf(0.20, 45.0, K::Landmark, [0.15, 0.15, 0.12], 0.06, true), // hip point
+                surf(0.60, 110.0, K::Landmark, [0.50, 0.70, 0.30], 0.04, true), // ribcage
+                surf(0.35, 105.0, K::Hollow, [0.35, 0.60, 0.30], 0.025, true), // flank hollow
+                surf(0.45, 180.0, K::Fat, [0.60, 0.90, 0.50], 0.12, false),   // belly
+                surf(0.10, 60.0, K::Fat, [0.50, 0.50, 0.40], 0.06, true),     // rump
+                surf(0.55, 100.0, K::Fat, [0.55, 0.90, 0.45], 0.08, true),    // flank
             ];
             // Spine ridge.
-            s.extend((0..5).map(|i| surf(0.15 + 0.15 * i as f32, 0.0, Landmark, [0.08, 0.18, 0.08], 0.04, false)));
+            s.extend((0u8..5).map(|i| surf(0.15f32.mul_add(f32::from(i), 0.15), 0.0, K::Landmark, [0.08, 0.18, 0.08], 0.04, false)));
             s
         }
         PartKind::Chain(c) => match c.role {
             ChainRole::Neck => vec![
-                surf(0.50, 115.0, Muscle, [0.30, 1.60, 0.30], 0.10, true), // side neck muscle
-                surf(0.35, 0.0, Muscle, [0.40, 1.40, 0.30], 0.08, false),  // nape
-                surf(0.60, 180.0, Fat, [0.45, 1.20, 0.40], 0.10, false),   // throat / dewlap
+                surf(0.50, 115.0, K::Muscle, [0.30, 1.60, 0.30], 0.10, true), // side neck muscle
+                surf(0.35, 0.0, K::Muscle, [0.40, 1.40, 0.30], 0.08, false),  // nape
+                surf(0.60, 180.0, K::Fat, [0.45, 1.20, 0.40], 0.10, false),   // throat / dewlap
             ],
-            ChainRole::Tail => vec![surf(0.06, 0.0, Muscle, [0.60, 1.00, 0.40], 0.08, false)],
-            ChainRole::Trunk => vec![surf(0.3, 180.0, Muscle, [0.4, 2.0, 0.3], 0.06, false)],
+            ChainRole::Tail => vec![surf(0.06, 0.0, K::Muscle, [0.60, 1.00, 0.40], 0.08, false)],
+            ChainRole::Trunk => vec![surf(0.3, 180.0, K::Muscle, [0.4, 2.0, 0.3], 0.06, false)],
             _ => vec![],
         },
         PartKind::Limb(l) => {
             if matches!(l.role, LimbRole::Display | LimbRole::Swimmer) {
                 return vec![];
             }
-            let n = l.chain.segments.max(1) as f32;
+            let segments = l.chain.segments.max(1);
+            let n = f32::from(segments);
             let seg = |i: f32, f: f32| ((i + f) / n).min(1.0);
             // Limb frame: around 0 = posterior, 180 = anterior, 90 = medial, 270 = lateral.
             let mut s = vec![
                 // Flat, and short enough to stay within the limb's taper: a straight ellipsoid running on
                 // toward a narrower joint stands proud of it and hangs like a pouch.
-                surf(seg(0.0, 0.45), 180.0, Muscle, [0.60, 1.80, 0.30], 0.05, false), // front of upper
-                surf(seg(0.0, 0.45), 0.0, Muscle, [0.60, 1.80, 0.30], 0.04, false),   // back of upper
-                surf(seg(0.0, 0.40), 270.0, Muscle, [0.50, 1.70, 0.30], 0.035, false), // outer upper
-                surf(seg(0.0, 0.25), 300.0, Fat, [0.55, 0.90, 0.45], 0.08, false),    // thigh / upper-arm fat
+                surf(seg(0.0, 0.45), 180.0, K::Muscle, [0.60, 1.80, 0.30], 0.05, false), // front of upper
+                surf(seg(0.0, 0.45), 0.0, K::Muscle, [0.60, 1.80, 0.30], 0.04, false),   // back of upper
+                surf(seg(0.0, 0.40), 270.0, K::Muscle, [0.50, 1.70, 0.30], 0.035, false), // outer upper
+                surf(seg(0.0, 0.25), 300.0, K::Fat, [0.55, 0.90, 0.45], 0.08, false),    // thigh / upper-arm fat
             ];
             if n >= 2.0 {
                 s.extend([
-                    surf(seg(1.0, 0.30), 0.0, Muscle, [0.50, 1.30, 0.30], 0.07, false),   // calf / forearm
-                    surf(seg(1.0, 0.35), 180.0, Muscle, [0.35, 1.60, 0.30], 0.04, false), // shin
+                    surf(seg(1.0, 0.30), 0.0, K::Muscle, [0.50, 1.30, 0.30], 0.07, false),   // calf / forearm
+                    surf(seg(1.0, 0.35), 180.0, K::Muscle, [0.35, 1.60, 0.30], 0.04, false), // shin
                 ]);
             }
-            for j in 1..(n as usize).min(3) {
-                let t = seg(j as f32, 0.0);
-                s.push(surf(t, 90.0, Landmark, [0.30, 0.40, 0.20], 0.04, false)); // inner condyle
-                s.push(surf(t, 270.0, Landmark, [0.30, 0.40, 0.20], 0.04, false)); // outer condyle
+            for j in 1..segments.min(3) {
+                let t = seg(f32::from(j), 0.0);
+                s.push(surf(t, 90.0, K::Landmark, [0.30, 0.40, 0.20], 0.04, false)); // inner condyle
+                s.push(surf(t, 270.0, K::Landmark, [0.30, 0.40, 0.20], 0.04, false)); // outer condyle
             }
             s
         }
+        PartKind::Head(h) if h.face.is_some() => face_stamps(),
         PartKind::Head(_) => vec![
-            skull([0.45, 0.75, -0.55], Landmark, [0.50, 0.35, 0.25], 0.10), // brow
-            skull([0.85, 0.45, 0.10], Landmark, [0.30, 0.50, 0.25], 0.08),  // cheekbone
-            skull([0.80, 0.10, 0.55], Muscle, [0.35, 0.50, 0.30], 0.10),    // jaw muscle
-            skull([0.80, 0.20, -0.45], Hollow, [0.35, 0.40, 0.30], 0.06),   // temple
+            skull([0.45, 0.75, -0.55], K::Landmark, [0.50, 0.35, 0.25], 0.10), // brow
+            skull([0.85, 0.45, 0.10], K::Landmark, [0.30, 0.50, 0.25], 0.08),  // cheekbone
+            skull([0.80, 0.10, 0.55], K::Muscle, [0.35, 0.50, 0.30], 0.10),    // jaw muscle
+            skull([0.80, 0.20, -0.45], K::Hollow, [0.35, 0.40, 0.30], 0.06),   // temple
             Stamp {
                 at: StampAt::Skull { dir: Vec3::new(0.0, -0.2, -1.0) },
-                kind: Landmark,
+                kind: K::Landmark,
                 size: Vec3::new(0.15, 0.70, 0.15),
                 depth: 0.05,
                 mirror: false,
             }, // crown ridge
             Stamp {
                 at: StampAt::Slot { slot: AttachSlot::Eye, offset: Vec3::ZERO },
-                kind: Hollow,
+                kind: K::Hollow,
                 size: Vec3::splat(0.45),
                 depth: 0.12,
                 mirror: true,
             }, // eye socket
             Stamp {
                 at: StampAt::Slot { slot: AttachSlot::Nose, offset: Vec3::new(0.25, -0.1, 0.0) },
-                kind: Hollow,
+                kind: K::Hollow,
                 size: Vec3::new(0.12, 0.15, 0.12),
                 depth: 0.06,
                 mirror: true,
@@ -294,18 +307,46 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
     }
 }
 
-/// Stamps for a torso that stands upright (pelvis at `t = 0`, shoulders at `t = 1`; around 0 =
-/// back, 90 = left, 180 = belly): a human back and chest instead of a quadruped's haunch, flank
-/// and ribcage, which on an upright body read as a band round the waist and a shelf of rump.
-pub fn upright_torso_stamps() -> Vec<Stamp> {
-    use StampKind::*;
+/// Stamps for a head with a face: it carries its own brow; the rest is softer than on a muzzle,
+/// the sockets just shade the eyes, and the nostrils open under the nose tip.
+fn face_stamps() -> Vec<Stamp> {
+    use StampKind as K;
     vec![
-        surf(0.80, 150.0, Muscle, [0.70, 0.55, 0.40], 0.07, true), // chest (pectorals)
-        surf(0.92, 100.0, Muscle, [0.30, 0.30, 0.30], 0.05, true), // top of the shoulder
-        surf(0.80, 35.0, Landmark, [0.28, 0.40, 0.15], 0.03, true), // shoulder blade
-        surf(0.50, 15.0, Muscle, [0.16, 1.60, 0.20], 0.05, true),  // the ridges either side of the spine
-        surf(0.10, 30.0, Muscle, [0.65, 0.65, 0.50], 0.08, true),  // buttock
-        surf(0.40, 180.0, Fat, [0.55, 0.70, 0.45], 0.08, false),   // belly
-        surf(0.30, 95.0, Fat, [0.40, 0.60, 0.35], 0.04, true),     // hip / love handle
+        skull([0.85, 0.45, 0.25], K::Landmark, [0.25, 0.40, 0.20], 0.05), // cheekbone
+        skull([0.85, 0.05, 0.75], K::Muscle, [0.30, 0.35, 0.30], 0.06),   // jaw muscle
+        skull([0.85, 0.30, -0.45], K::Hollow, [0.30, 0.35, 0.30], 0.03),  // temple
+        Stamp {
+            at: StampAt::Slot { slot: AttachSlot::Eye, offset: Vec3::ZERO },
+            kind: K::Hollow,
+            // Almond opening: (across, up-down, depth into the head) in skull radii.
+            size: Vec3::new(0.16, 0.08, 0.2),
+            depth: 0.05,
+            mirror: true,
+        }, // eye socket
+        Stamp {
+            at: StampAt::Slot { slot: AttachSlot::Nose, offset: Vec3::new(0.12, -0.1, 0.1) },
+            kind: K::Hollow,
+            size: Vec3::new(0.06, 0.08, 0.05),
+            depth: 0.04,
+            mirror: true,
+        }, // nostril
+    ]
+}
+
+/// Stamps for a torso that stands upright.
+///
+/// Pelvis at `t = 0`, shoulders at `t = 1`; around 0 = back, 90 = left, 180 = belly. A human back and chest instead of a quadruped's haunch, flank
+/// and ribcage, which on an upright body read as a band round the waist and a shelf of rump.
+#[must_use]
+pub fn upright_torso_stamps() -> Vec<Stamp> {
+    use StampKind as K;
+    vec![
+        surf(0.80, 150.0, K::Muscle, [0.70, 0.55, 0.40], 0.07, true), // chest (pectorals)
+        surf(0.92, 100.0, K::Muscle, [0.30, 0.30, 0.30], 0.05, true), // top of the shoulder
+        surf(0.80, 35.0, K::Landmark, [0.28, 0.40, 0.15], 0.03, true), // shoulder blade
+        surf(0.50, 15.0, K::Muscle, [0.16, 1.60, 0.20], 0.05, true),  // the ridges either side of the spine
+        surf(0.10, 30.0, K::Muscle, [0.65, 0.65, 0.50], 0.08, true),  // buttock
+        surf(0.40, 180.0, K::Fat, [0.55, 0.70, 0.45], 0.08, false),   // belly
+        surf(0.30, 95.0, K::Fat, [0.40, 0.60, 0.35], 0.04, true),     // hip / love handle
     ]
 }

@@ -7,6 +7,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::{Anatomy, BoneId, LimbRole};
+use crate::num::Idx;
 
 /// How far the meshing pose spreads the body.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,19 +28,12 @@ impl Default for Spread {
 pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
     let bones = &a.skeleton.bones;
     let mut local: Vec<Transform> = bones.iter().map(|b| b.rest).collect();
-    let model = |local: &[Transform]| -> Vec<Affine3A> {
-        let mut out: Vec<Affine3A> = Vec::with_capacity(local.len());
-        for (i, b) in bones.iter().enumerate() {
-            let l = local[i].compute_affine();
-            out.push(b.parent.map_or(l, |p| out[p.index()] * l));
-        }
-        out
-    };
+    let model = |local: &[Transform]| a.skeleton.model_from(local);
     let rot = |m: &Affine3A| Quat::from_mat3a(&m.matrix3).normalize();
     // A model-space rotation about a bone's own position.
     let turn = |local: &mut [Transform], world: &[Affine3A], b: BoneId, q: Quat| {
-        let parent = bones[b.index()].parent.map_or(Quat::IDENTITY, |p| rot(&world[p.index()]));
-        let l = &mut local[b.index()];
+        let parent = bones.get(b.index()).and_then(|def| def.parent).and_then(|p| world.get(p.index())).map_or(Quat::IDENTITY, rot);
+        let Some(l) = local.get_mut(b.index()) else { return };
         l.rotation = (parent.inverse() * q * parent * l.rotation).normalize();
     };
 
@@ -47,13 +41,13 @@ pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
     let world = model(&local);
     let arms: Vec<usize> = a.parts.iter().enumerate().filter(|(_, p)| matches!(p.role, Some(LimbRole::Manipulator | LimbRole::Both))).map(|(i, _)| i).collect();
     for &pi in &arms {
-        let p = &a.parts[pi];
+        let Some(p) = a.parts.get(pi) else { continue };
         if p.bones.start >= p.bones.end {
             continue;
         }
         // The arm's shoulder joint (past its clavicle, if it has one).
-        let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or(BoneId(p.bones.start), |c| c.arm);
-        let m = &world[root.index()];
+        let shoulder = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or(BoneId(p.bones.start), |c| c.arm);
+        let Some(m) = world.get(shoulder.index()) else { continue };
         let side = m.translation.x;
         if side.abs() < 1e-3 {
             continue;
@@ -66,22 +60,22 @@ pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
         }
         let out = Vec3A::X * side.signum();
         let axis = dir.cross(out).normalize_or(Vec3A::Z * side.signum());
-        turn(&mut local, &world, root, Quat::from_axis_angle(axis.into(), want - from_down));
+        turn(&mut local, &world, shoulder, Quat::from_axis_angle(axis.into(), want - from_down));
     }
 
     // Fingers: fan each away from the hand's middle direction.
     let world = model(&local);
     for p in &a.parts {
-        if !p.parent.is_some_and(|q| arms.contains(&(q as usize))) {
+        if !p.parent.is_some_and(|q| arms.contains(&q.idx())) {
             continue;
         }
         let range = p.bones.clone();
         let roots: Vec<BoneId> =
-            range.clone().map(BoneId).filter(|b| bones[b.index()].parent.is_none_or(|q| !range.contains(&q.0)) && bones[b.index()].name.starts_with("digit")).collect();
+            range.clone().map(BoneId).filter(|b| bones.get(b.index()).is_some_and(|def| def.parent.is_none_or(|q| !range.contains(&q.0)) && def.name.starts_with("digit"))).collect();
         if roots.len() < 2 {
             continue;
         }
-        let dirs: Vec<Vec3A> = roots.iter().map(|b| (world[b.index()].matrix3 * Vec3A::Y).normalize_or(Vec3A::NEG_Y)).collect();
+        let dirs: Vec<Vec3A> = roots.iter().map(|b| world.get(b.index()).map_or(Vec3A::NEG_Y, |m| (m.matrix3 * Vec3A::Y).normalize_or(Vec3A::NEG_Y))).collect();
         let middle = dirs.iter().copied().sum::<Vec3A>().normalize_or(Vec3A::NEG_Y);
         for (b, d) in roots.iter().zip(&dirs) {
             let axis = middle.cross(*d);
@@ -120,7 +114,7 @@ mod tests {
         let spread = model(&a, &spread_pose(&a, &Spread::default()));
         let rest = a.skeleton.model_rest();
         for p in a.parts.iter().filter(|p| p.role == Some(LimbRole::Manipulator)) {
-            let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or(p.bones.start as usize, |c| c.arm.index());
+            let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or_else(|| usize::from(p.bones.start), |c| c.arm.index());
             let angle = (spread[root].matrix3 * Vec3A::Y).angle_between(Vec3A::NEG_Y).to_degrees();
             let out = (spread[root].matrix3 * Vec3A::Y).x * rest[root].translation.x.signum();
             assert!(angle > 44.0 && out > 0.0, "{}: {angle:.1}° from down, outward {out:.2}", p.path.0);

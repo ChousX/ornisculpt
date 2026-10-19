@@ -23,14 +23,17 @@
                         // Head ≈ 1/7.5 of stature: ~0.21 tall, 0.15 wide, 0.19 deep.
                         kind: Head((
                             skull: (shape: Ellipsoid, size: (0.075, 0.1, 0.09)),
-                            snout: 0.04,
+                            snout: 0.0,
                             jaw: Some((segments: 1, length: 0.08)),
                             eye_spacing: 0.42,
+                            // A modest nose: the default (1.0) reads as a beak in profile at this size.
+                            face: Some((nose: 0.7)),
                         )),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.016)), attach: Eye, mirror: true),
-                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.06, radius: (curve: [(0.0, 0.6), (0.5, 1.0), (1.0, 0.3)], scale: 0.026, cross: Flat(aspect: 3.0)), blend: 0.01))), attach: Ear, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.012, sclera: 1.0)), attach: Eye, mirror: true),
+                            // Ears: rigid flaps flat on the sides of the head, ~6 cm tall.
+                            (name: "ear", kind: Mass((shape: Flap, size: (0.016, 0.027, 0.03), blend: 0.004)), attach: Ear, mirror: true),
                         ],
                     ),
                 ],
@@ -47,7 +50,7 @@
                     bends: [(14.0, 0.0), (-28.0, 0.0)],
                 )),
                 attach: Surface(t: 0.04, around_deg: 120.0),
-                offset: (translate: (0.0, -0.05, 0.0)),
+                offset: (translate: (0.0, -0.04, 0.0)),
                 mirror: true,
                 detail: Always,
             ),

@@ -18,12 +18,14 @@ pub use rand::{Rng, RngExt};
 pub type MobRng = rand_pcg::Pcg64Mcg;
 
 /// Stable 64-bit hash of `label` under `seed`.
+#[must_use]
 pub fn stable_hash(seed: u64, label: &str) -> u64 {
     xxh3_64_with_seed(label.as_bytes(), seed)
 }
 
 /// Independent RNG stream for `label` (usually a part path) under a mob seed.
 /// Editing one part never reshuffles another part's stream.
+#[must_use]
 pub fn fork(seed: u64, label: &str) -> MobRng {
     MobRng::seed_from_u64(stable_hash(seed, label))
 }
@@ -87,8 +89,11 @@ pub struct Noise {
 
 impl Noise {
     /// Builds a generator seeded from `(seed, label)`.
+    #[must_use]
     pub fn new(settings: &NoiseSettings, seed: u64, label: &str) -> Self {
-        let mut n = FastNoiseLite::with_seed(stable_hash(seed, label) as i32);
+        // The generator takes 32 seed bits: the hash's low ones.
+        let [b0, b1, b2, b3, ..] = stable_hash(seed, label).to_le_bytes();
+        let mut n = FastNoiseLite::with_seed(i32::from_le_bytes([b0, b1, b2, b3]));
         n.set_noise_type(Some(match settings.kind {
             NoiseKind::OpenSimplex2 => NoiseType::OpenSimplex2,
             NoiseKind::OpenSimplex2S => NoiseType::OpenSimplex2S,
@@ -104,12 +109,19 @@ impl Noise {
             Fractal::Ridged => FractalType::Ridged,
             Fractal::PingPong => FractalType::PingPong,
         }));
-        n.set_fractal_octaves(Some(settings.octaves as i32));
+        n.set_fractal_octaves(Some(i32::from(settings.octaves)));
         n.set_fractal_lacunarity(Some(settings.lacunarity));
         n.set_fractal_gain(Some(settings.gain));
         Self { inner: n, amplitude: settings.amplitude }
     }
 
+    /// The largest magnitude [`sample`](Self::sample) returns.
+    #[must_use]
+    pub const fn amplitude(&self) -> f32 {
+        self.amplitude
+    }
+
+    #[must_use]
     pub fn sample(&self, p: Vec3) -> f32 {
         self.inner.get_noise_3d(p.x, p.y, p.z) * self.amplitude
     }

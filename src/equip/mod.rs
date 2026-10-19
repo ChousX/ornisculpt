@@ -18,10 +18,11 @@ use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 
 use crate::anatomy::{Anatomy, BoneId, Side, SocketDef, SocketKind};
+use crate::num::Idx;
 use crate::mob::{CrowdSkin, CrowdUploaded, GeneratedBody, MobBody, MobJoint, MobSkeleton};
 
 /// Which socket of the holder a tool goes in.
-#[derive(Reflect, Clone, Debug, PartialEq)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq)]
 pub enum SocketSel {
     /// The first socket of this kind on this side.
     Kind(SocketKind, Side),
@@ -36,10 +37,12 @@ impl Default for SocketSel {
 }
 
 impl SocketSel {
-    pub fn grip(side: Side) -> Self {
+    #[must_use]
+    pub const fn grip(side: Side) -> Self {
         Self::Kind(SocketKind::Grip, side)
     }
 
+    #[must_use]
     pub fn find<'a>(&self, sockets: &'a [SocketDef]) -> Option<&'a SocketDef> {
         match self {
             Self::Kind(kind, side) => sockets.iter().find(|s| s.kind == *kind && s.side == *side),
@@ -60,11 +63,13 @@ pub struct HeldBy {
 }
 
 impl HeldBy {
-    pub fn new(mob: Entity, socket: SocketSel) -> Self {
+    #[must_use]
+    pub const fn new(mob: Entity, socket: SocketSel) -> Self {
         Self { mob, socket, grip: Transform::IDENTITY }
     }
 
-    pub fn with_grip(mut self, grip: Transform) -> Self {
+    #[must_use]
+    pub const fn with_grip(mut self, grip: Transform) -> Self {
         self.grip = grip;
         self
     }
@@ -76,6 +81,7 @@ impl HeldBy {
 pub struct Holding(Vec<Entity>);
 
 impl Holding {
+    #[must_use]
     pub fn tools(&self) -> &[Entity] {
         &self.0
     }
@@ -105,7 +111,7 @@ fn rest_model(anatomy: &Anatomy, bone: BoneId) -> Affine3A {
     let mut m = Affine3A::IDENTITY;
     let mut cur = Some(bone);
     while let Some(b) = cur {
-        let def = anatomy.skeleton.get(b);
+        let Some(def) = anatomy.skeleton.get(b) else { break };
         m = def.rest.compute_affine() * m;
         cur = def.parent;
     }
@@ -123,7 +129,7 @@ fn crowd_bone(body: &GeneratedBody, base: u32, up: &CrowdUploaded, bone: BoneId)
     let mut skin = Mat4::ZERO;
     for (frame, w) in [(i.frame_a, i.weight_a), (i.frame_b, i.weight_b), (i.idle, i.weight_idle)] {
         if w != 0.0 {
-            let m = body.motion.matrix(frame.checked_sub(base)? as usize + crowd as usize)?;
+            let m = body.motion.matrix(frame.checked_sub(base)?.idx() + crowd.idx())?;
             skin += Mat4::from_cols_array(m) * w;
         }
     }
@@ -165,7 +171,7 @@ pub(crate) fn place_held(
                 while let Some(b) = cur {
                     let Some(t) = skeleton.0.get(b.index()).and_then(|j| joints.get(*j).ok()) else { return };
                     m = t.compute_affine() * m;
-                    cur = anatomy.skeleton.get(b).parent;
+                    cur = anatomy.skeleton.get(b).and_then(|def| def.parent);
                 }
                 m
             }

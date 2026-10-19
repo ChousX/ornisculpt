@@ -30,7 +30,7 @@ pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, BodyMeshData, MaterialSlot, MobVertexData,
-    NOT_CLOTH, Submesh,
+    NOT_CLOTH, Submesh, Vertex,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use octree::AdaptiveContour;
@@ -56,6 +56,8 @@ pub enum SurfaceError {
     TooManyTriangles { got: usize, max: usize },
     #[error("no parts present at this LOD level")]
     NoPartsAtLevel,
+    #[error("a meshing worker thread panicked")]
+    WorkerPanicked,
 }
 
 #[cfg(test)]
@@ -73,9 +75,9 @@ mod tests {
         assert!(data.triangle_count() > 100, "{} triangles", data.triangle_count());
         assert_eq!(data.positions.len(), data.weights.len());
         assert!(data.weights.iter().all(|w| (w.iter().sum::<f32>() - 1.0).abs() < 1e-3));
-        let crowd = anatomy.skeleton.crowd.bones.len() as u16;
+        let crowd = u16::try_from(anatomy.skeleton.crowd.bones.len()).unwrap();
         assert!(data.joints.iter().flatten().all(|&j| j < crowd), "joints must index the crowd skeleton");
-        assert!(data.indices.iter().all(|&i| (i as usize) < data.positions.len()));
+        assert!(data.indices.iter().all(|&i| usize::try_from(i).unwrap() < data.positions.len()));
         // Grounded body: lowest vertex near y = 0.
         let min_y = data.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
         assert!(min_y.abs() < 0.06, "lowest vertex at {min_y}");

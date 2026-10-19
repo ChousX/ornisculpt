@@ -14,6 +14,7 @@ mod eval;
 mod fit;
 mod gait;
 mod graph;
+mod hand;
 mod heft;
 pub mod library;
 mod ik;
@@ -34,6 +35,7 @@ pub use graph::{
     Param, ParamValue, Play, State, Switch, Transition, compose,
 };
 pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
+pub use hand::{Hand, HandPose, pose_hands};
 pub use heft::{Heft, HeftResponse, StepShape};
 pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, SpringState, TorsoState};
 pub use ik::{fabrik, orient_to_pole, two_bone};
@@ -60,17 +62,19 @@ pub struct ExternalRoot;
 
 /// Default gaits by leg count, built once (see [`Gait::for_legs`]).
 #[derive(Resource)]
-pub struct DefaultGaits(Vec<Gait>);
+pub struct DefaultGaits([Gait; 9]);
 
 impl Default for DefaultGaits {
     fn default() -> Self {
-        Self((0..=8).map(Gait::for_legs).collect())
+        Self(std::array::from_fn(Gait::for_legs))
     }
 }
 
 impl DefaultGaits {
+    #[must_use]
     pub fn for_legs(&self, legs: usize) -> &Gait {
-        &self.0[legs.min(self.0.len() - 1)]
+        let [.., most] = &self.0;
+        self.0.get(legs).unwrap_or(most)
     }
 }
 
@@ -103,7 +107,7 @@ pub struct MotionPlugin;
 
 impl Plugin for MotionPlugin {
     fn build(&self, app: &mut App) {
-        use MotionSystems::*;
+        use MotionSystems as M;
         app.init_asset::<Gait>()
             .init_resource::<DefaultGaits>()
             .init_asset_loader::<GaitLoader>()
@@ -115,14 +119,15 @@ impl Plugin for MotionPlugin {
             .init_resource::<player::MotionWarnings>()
             .init_resource::<MotionTime>()
             .register_type::<MobIntent>()
+            .register_type::<HandPose>()
             .add_observer(pose::bind_body)
-            .configure_sets(Update, (Root, Player, Clock, Pose).chain().in_set(crate::mob::MobSet::Motion))
+            .configure_sets(Update, (M::Root, M::Player, M::Clock, M::Pose).chain().in_set(crate::mob::MobSet::Motion))
             .add_systems(
                 Update,
                 (
-                    (state::tick_motion_time, pose::move_roots).chain().in_set(Root),
-                    (player::prepare_motion, player::update_motion).chain().in_set(Player),
-                    (pose::choose_steps, pose::advance_clocks).chain().in_set(Clock),
+                    (state::tick_motion_time, pose::move_roots).chain().in_set(M::Root),
+                    (player::prepare_motion, player::update_motion).chain().in_set(M::Player),
+                    (pose::choose_steps, pose::advance_clocks).chain().in_set(M::Clock),
                     (
                         (
                             pose::write_probes,
@@ -134,6 +139,7 @@ impl Plugin for MotionPlugin {
                             pose::ride_torso,
                             pose::swing_springs,
                             pose::apply_cycles,
+                            pose::pose_hands,
                             pose::shoulder_rhythm,
                             pose::solve_legs,
                             pose::look_at,
@@ -142,7 +148,7 @@ impl Plugin for MotionPlugin {
                             .chain(),
                         crowd::crowd_animate,
                     )
-                        .in_set(Pose),
+                        .in_set(M::Pose),
                 ),
             );
     }

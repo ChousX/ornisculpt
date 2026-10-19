@@ -6,12 +6,16 @@ use fast_surface_nets::{SurfaceNetsBuffer, surface_nets};
 use serde::{Deserialize, Serialize};
 
 use super::{BodyField, Field, SurfaceError};
+use crate::num::{Clamp, Idx, ToF32};
 
 /// Turns a field into a triangle mesh.
 ///
 /// Takes a [`BodyField`] rather than any [`Field`](super::Field) so it can cull per chunk with
 /// [`BodyField::view`]; garments get their own entry point when they exist.
 pub trait Mesher: Send + Sync {
+    /// # Errors
+    ///
+    /// When the field meshes to nothing or to too many triangles, or a worker thread panics.
     fn mesh(&self, field: &BodyField, settings: &MeshSettings) -> Result<RawMesh, SurfaceError>;
 }
 
@@ -45,7 +49,8 @@ pub struct RawMesh {
 }
 
 impl RawMesh {
-    pub fn triangle_count(&self) -> usize {
+    #[must_use]
+    pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
 }
@@ -60,34 +65,33 @@ impl Mesher for SurfaceNets {
         let v = settings.voxel_size.max(1e-4);
         let c = settings.chunk_voxels.max(4);
         let b = field.bounds();
-        let origin = Vec3A::from(b.min) - Vec3A::splat(2.0 * v);
-        let samples = ((Vec3A::from(b.max) - origin) / v).ceil() + Vec3A::splat(3.0);
-        let chunks = (samples / c as f32).ceil().as_uvec3().max(UVec3::ONE);
+        let origin = b.min - Vec3A::splat(2.0 * v);
+        let samples = ((b.max - origin) / v).ceil() + Vec3A::splat(3.0);
+        let chunks = (samples / c.to_f32()).ceil().as_uvec3().max(UVec3::ONE);
 
         let jobs: Vec<UVec3> = (0..chunks.z)
             .flat_map(|z| (0..chunks.y).flat_map(move |y| (0..chunks.x).map(move |x| UVec3::new(x, y, z))))
             .collect();
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(jobs.len().max(1));
+        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get).min(jobs.len().max(1));
         let parts: Vec<RawMesh> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|t| {
-                    let jobs = &jobs;
-                    scope.spawn(move || {
-                        let mut out = RawMesh::default();
-                        let mut chunk = ChunkScratch::new(c);
-                        for job in jobs.iter().skip(t).step_by(threads) {
-                            chunk.mesh(field, origin, v, *job * c, &mut out);
-                        }
-                        out
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().expect("meshing thread panicked")).collect()
-        });
+            let mut handles = Vec::with_capacity(threads);
+            for t in 0..threads {
+                let jobs = &jobs;
+                handles.push(scope.spawn(move || {
+                    let mut out = RawMesh::default();
+                    let mut chunk = ChunkScratch::new(c);
+                    for job in jobs.iter().skip(t).step_by(threads) {
+                        chunk.mesh(field, origin, v, *job * c, &mut out);
+                    }
+                    out
+                }));
+            }
+            handles.into_iter().map(|h| h.join().map_err(|_| SurfaceError::WorkerPanicked)).collect::<Result<_, _>>()
+        })?;
 
         let mut mesh = RawMesh::default();
         for part in parts {
-            let base = mesh.positions.len() as u32;
+            let base = mesh.positions.len().clamp_u32();
             mesh.positions.extend(part.positions);
             mesh.normals.extend(part.normals);
             mesh.indices.extend(part.indices.iter().map(|i| i + base));
@@ -95,10 +99,10 @@ impl Mesher for SurfaceNets {
         if mesh.indices.is_empty() {
             return Err(SurfaceError::Empty);
         }
-        if mesh.triangle_count() > settings.max_triangles as usize {
+        if mesh.triangle_count() > settings.max_triangles.idx() {
             return Err(SurfaceError::TooManyTriangles {
                 got: mesh.triangle_count(),
-                max: settings.max_triangles as usize,
+                max: settings.max_triangles.idx(),
             });
         }
         Ok(mesh)
@@ -119,13 +123,13 @@ impl ChunkScratch {
     fn new(c: u32) -> Self {
         let edge = c + 2;
         let shape = RuntimeShape::<u32, 3>::new([edge; 3]);
-        let n = shape.size() as usize;
+        let n = shape.size().idx();
         Self { shape, points: Vec::with_capacity(n), sdf: vec![0.0; n], buffer: default(), edge }
     }
 
     fn mesh(&mut self, field: &BodyField, origin: Vec3A, v: f32, start: UVec3, out: &mut RawMesh) {
         let lo = origin + start.as_vec3a() * v;
-        let hi = lo + Vec3A::splat((self.edge - 1) as f32 * v);
+        let hi = lo + Vec3A::splat((self.edge - 1).to_f32() * v);
         let view = field.view(Aabb3d { min: lo, max: hi });
         if view.is_empty() {
             return;
@@ -141,7 +145,7 @@ impl ChunkScratch {
             return;
         }
         surface_nets(&self.sdf, &self.shape, [0; 3], [self.edge - 1; 3], &mut self.buffer);
-        let base = out.positions.len() as u32;
+        let base = out.positions.len().clamp_u32();
         let offset = origin + start.as_vec3a() * v;
         out.positions.extend(
             self.buffer.positions.iter().map(|p| Vec3::from(offset + Vec3A::from_array(*p) * v)),

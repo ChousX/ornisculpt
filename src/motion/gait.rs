@@ -68,10 +68,12 @@ impl Default for GaitMode {
 
 /// Phase offset assignment for legs.
 #[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum PhasePattern {
     /// Left/right alternate (bipeds; a "pace" on quadrupeds).
     Alternate,
     /// Walk: hind left, fore left, hind right, fore right.
+    #[default]
     LateralSequence,
     /// Trot: diagonal pairs together.
     Diagonal,
@@ -90,6 +92,7 @@ pub enum PhasePattern {
 impl Gait {
     /// A reasonable default for a leg count: bipeds walk/run, quadrupeds walk/trot,
     /// hexapods tripod, more legs wave.
+    #[must_use]
     pub fn for_legs(legs: usize) -> Self {
         let mode = |name: &str, min_speed, pattern, duty, stride, lift, bob, body| GaitMode {
             name: name.into(),
@@ -118,6 +121,7 @@ impl Gait {
     }
 
     /// Index of the mode for a speed in leg lengths per second.
+    #[must_use]
     pub fn mode_for(&self, speed: f32) -> usize {
         self.modes.iter().rposition(|m| speed >= m.min_speed).unwrap_or(0)
     }
@@ -125,27 +129,25 @@ impl Gait {
 
 impl PhasePattern {
     /// Phase offset (0..1) of `leg` among `legs`.
+    #[must_use]
     pub fn offset(&self, leg: &LegInfo, index: usize, legs: &[LegInfo]) -> f32 {
-        let pairs = legs.iter().map(|l| l.pair + 1).max().unwrap_or(1) as f32;
-        let side = match leg.side {
-            Side::Right => 1.0,
-            _ => 0.0,
-        };
-        let pair = leg.pair as f32;
-        let odd = |x: f32| (x as u32 % 2) as f32;
+        let pairs = f32::from(legs.iter().map(|l| l.pair.saturating_add(1)).max().unwrap_or(1));
+        let right = leg.side == Side::Right;
+        let side = f32::from(u8::from(right));
+        let pair = f32::from(leg.pair);
+        let odd = |n: u8| f32::from(n % 2);
         let o = match self {
-            PhasePattern::Alternate => side * 0.5,
+            Self::Alternate => side * 0.5,
             // Hind pair leads; each pair forward lags by 1/(2·pairs).
-            PhasePattern::LateralSequence => side * 0.5 + (pairs - 1.0 - pair) * 0.5 / pairs,
-            PhasePattern::Diagonal | PhasePattern::Tripod => odd(pair + side) * 0.5,
-            PhasePattern::Bound => odd(pair) * 0.5,
-            PhasePattern::Gallop { lead } => {
-                let lead_side = if *lead == Side::Right { 1.0 } else { 0.0 };
-                let trailing = if side == lead_side { 0.1 } else { 0.0 };
-                (if pair == 0.0 { 0.5 } else { 0.0 }) + trailing
+            Self::LateralSequence => f32::mul_add(side, 0.5, (pairs - 1.0 - pair) * 0.5 / pairs),
+            Self::Diagonal | Self::Tripod => odd(leg.pair.wrapping_add(u8::from(right))) * 0.5,
+            Self::Bound => odd(leg.pair) * 0.5,
+            Self::Gallop { lead } => {
+                let trailing = if right == (*lead == Side::Right) { 0.1 } else { 0.0 };
+                (if leg.pair == 0 { 0.5 } else { 0.0 }) + trailing
             }
-            PhasePattern::Wave { lag } => side * 0.5 + (pairs - 1.0 - pair) * lag,
-            PhasePattern::Custom(v) => v.get(index).copied().unwrap_or(0.0),
+            Self::Wave { lag } => f32::mul_add(side, 0.5, (pairs - 1.0 - pair) * lag),
+            Self::Custom(v) => v.get(index).copied().unwrap_or(0.0),
         };
         o.rem_euclid(1.0)
     }
@@ -168,7 +170,7 @@ impl AssetLoader for GaitLoader {
     type Settings = ();
     type Error = GaitLoaderError;
 
-    async fn load(&self, reader: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>) -> Result<Gait, Self::Error> {
+    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Gait, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         Ok(ron::de::from_bytes(&bytes)?)
@@ -176,6 +178,98 @@ impl AssetLoader for GaitLoader {
 
     fn extensions(&self) -> &[&str] {
         &["gait.ron"]
+    }
+}
+
+/// How the torso rides the feet.
+///
+/// Each girdle (hips over the hind legs, shoulders over the fore
+/// legs) turns toward its forward leg, drops on its swinging side and shifts over its planted
+/// leg; the spine bends between the two; the head steadies against it. Degrees and leg lengths,
+/// at full speed (scaled down toward a standstill).
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct BodyMotion {
+    /// Girdle turn toward the forward leg, degrees.
+    pub yaw: f32,
+    /// Girdle drop on the swinging side, degrees.
+    pub roll: f32,
+    /// Hips shift over the planted foot, leg lengths.
+    pub sway: f32,
+    /// Hips and shoulders rise and fall apart (the body rocks), leg lengths.
+    pub rock: f32,
+    /// Upright bodies: how far the chest turns against the hips, 0..1.
+    pub counter: f32,
+    /// How much the neck cancels the body's turning, 0..1.
+    pub steady: f32,
+    /// Head nod with the fore feet, degrees.
+    pub nod: f32,
+    /// Tail swing against the hips, 0..2.
+    pub tail: f32,
+}
+
+impl Default for BodyMotion {
+    fn default() -> Self {
+        Self::walk()
+    }
+}
+
+impl BodyMotion {
+    #[must_use]
+    pub const fn walk() -> Self {
+        Self { yaw: 7.0, roll: 5.0, sway: 0.03, rock: 0.04, counter: 0.7, steady: 0.6, nod: 6.0, tail: 1.0 }
+    }
+
+    #[must_use]
+    pub const fn run() -> Self {
+        Self { yaw: 10.0, roll: 3.0, sway: 0.012, rock: 0.03, counter: 0.9, steady: 0.7, nod: 3.0, tail: 0.6 }
+    }
+
+    /// Diagonal pairs move together, so the back stays stiff and the hips and shoulders roll.
+    #[must_use]
+    pub const fn trot() -> Self {
+        Self { yaw: 3.0, roll: 5.0, sway: 0.01, rock: 0.02, counter: 0.5, steady: 0.7, nod: 3.0, tail: 0.8 }
+    }
+
+    /// The back flexes and extends: big rocking, little twisting.
+    #[must_use]
+    pub const fn gallop() -> Self {
+        Self { yaw: 2.0, roll: 2.5, sway: 0.0, rock: 0.12, counter: 0.3, steady: 0.5, nod: 10.0, tail: 0.5 }
+    }
+
+    /// Strutting birds and theropods: a level body, a very steady head.
+    #[must_use]
+    pub const fn strut() -> Self {
+        Self { yaw: 5.0, roll: 6.0, sway: 0.04, rock: 0.0, counter: 0.0, steady: 0.9, nod: 0.0, tail: 1.2 }
+    }
+
+    /// Insects and other armoured bodies: barely any.
+    #[must_use]
+    pub const fn rigid() -> Self {
+        Self { yaw: 2.5, roll: 2.0, sway: 0.0, rock: 0.01, counter: 0.0, steady: 0.3, nod: 0.0, tail: 0.5 }
+    }
+
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { yaw: 0.0, roll: 0.0, sway: 0.0, rock: 0.0, counter: 0.0, steady: 0.0, nod: 0.0, tail: 0.0 }
+    }
+}
+
+impl BodyMotion {
+    /// Moves every amount `t` of the way toward `to`.
+    pub fn approach(&mut self, to: &Self, t: f32) {
+        for (a, b) in [
+            (&mut self.yaw, to.yaw),
+            (&mut self.roll, to.roll),
+            (&mut self.sway, to.sway),
+            (&mut self.rock, to.rock),
+            (&mut self.counter, to.counter),
+            (&mut self.steady, to.steady),
+            (&mut self.nod, to.nod),
+            (&mut self.tail, to.tail),
+        ] {
+            *a = f32::mul_add(b - *a, t, *a);
+        }
     }
 }
 
@@ -215,91 +309,3 @@ mod tests {
     }
 }
 
-/// How the torso rides the feet. Each girdle (hips over the hind legs, shoulders over the fore
-/// legs) turns toward its forward leg, drops on its swinging side and shifts over its planted
-/// leg; the spine bends between the two; the head steadies against it. Degrees and leg lengths,
-/// at full speed (scaled down toward a standstill).
-#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(default)]
-pub struct BodyMotion {
-    /// Girdle turn toward the forward leg, degrees.
-    pub yaw: f32,
-    /// Girdle drop on the swinging side, degrees.
-    pub roll: f32,
-    /// Hips shift over the planted foot, leg lengths.
-    pub sway: f32,
-    /// Hips and shoulders rise and fall apart (the body rocks), leg lengths.
-    pub rock: f32,
-    /// Upright bodies: how far the chest turns against the hips, 0..1.
-    pub counter: f32,
-    /// How much the neck cancels the body's turning, 0..1.
-    pub steady: f32,
-    /// Head nod with the fore feet, degrees.
-    pub nod: f32,
-    /// Tail swing against the hips, 0..2.
-    pub tail: f32,
-}
-
-impl Default for BodyMotion {
-    fn default() -> Self {
-        Self::walk()
-    }
-}
-
-impl BodyMotion {
-    pub fn walk() -> Self {
-        Self { yaw: 7.0, roll: 5.0, sway: 0.03, rock: 0.04, counter: 0.7, steady: 0.6, nod: 6.0, tail: 1.0 }
-    }
-
-    pub fn run() -> Self {
-        Self { yaw: 10.0, roll: 3.0, sway: 0.012, rock: 0.03, counter: 0.9, steady: 0.7, nod: 3.0, tail: 0.6 }
-    }
-
-    /// Diagonal pairs move together, so the back stays stiff and the hips and shoulders roll.
-    pub fn trot() -> Self {
-        Self { yaw: 3.0, roll: 5.0, sway: 0.01, rock: 0.02, counter: 0.5, steady: 0.7, nod: 3.0, tail: 0.8 }
-    }
-
-    /// The back flexes and extends: big rocking, little twisting.
-    pub fn gallop() -> Self {
-        Self { yaw: 2.0, roll: 2.5, sway: 0.0, rock: 0.12, counter: 0.3, steady: 0.5, nod: 10.0, tail: 0.5 }
-    }
-
-    /// Strutting birds and theropods: a level body, a very steady head.
-    pub fn strut() -> Self {
-        Self { yaw: 5.0, roll: 6.0, sway: 0.04, rock: 0.0, counter: 0.0, steady: 0.9, nod: 0.0, tail: 1.2 }
-    }
-
-    /// Insects and other armoured bodies: barely any.
-    pub fn rigid() -> Self {
-        Self { yaw: 2.5, roll: 2.0, sway: 0.0, rock: 0.01, counter: 0.0, steady: 0.3, nod: 0.0, tail: 0.5 }
-    }
-
-    pub fn none() -> Self {
-        Self { yaw: 0.0, roll: 0.0, sway: 0.0, rock: 0.0, counter: 0.0, steady: 0.0, nod: 0.0, tail: 0.0 }
-    }
-}
-
-impl BodyMotion {
-    /// Moves every amount `t` of the way toward `to`.
-    pub fn approach(&mut self, to: &BodyMotion, t: f32) {
-        for (a, b) in [
-            (&mut self.yaw, to.yaw),
-            (&mut self.roll, to.roll),
-            (&mut self.sway, to.sway),
-            (&mut self.rock, to.rock),
-            (&mut self.counter, to.counter),
-            (&mut self.steady, to.steady),
-            (&mut self.nod, to.nod),
-            (&mut self.tail, to.tail),
-        ] {
-            *a += (b - *a) * t;
-        }
-    }
-}
-
-impl Default for PhasePattern {
-    fn default() -> Self {
-        PhasePattern::LateralSequence
-    }
-}

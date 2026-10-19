@@ -13,7 +13,7 @@ use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, 
 use crate::anatomy::Anatomy;
 use crate::mob::{BodyReady, GeneratedBody, MobBody, MobJoint, MobSkeleton};
 
-pub(crate) fn gait_for<'a>(handle: Option<&MobGait>, gaits: &'a Assets<Gait>, defaults: &'a DefaultGaits, a: &Anatomy) -> &'a Gait {
+pub fn gait_for<'a>(handle: Option<&MobGait>, gaits: &'a Assets<Gait>, defaults: &'a DefaultGaits, a: &Anatomy) -> &'a Gait {
     handle.and_then(|h| gaits.get(&h.0)).unwrap_or_else(|| defaults.for_legs(a.legs.len()))
 }
 
@@ -52,7 +52,7 @@ fn wrap(a: f32) -> f32 {
 
 /// The turn rate the body bends and leans with, eased so it doesn't flicker frame to frame.
 fn ease_turn(loco: &mut Locomotion, rate: f32, dt: f32) {
-    loco.turn_rate += (rate - loco.turn_rate) * (1.0 - (-12.0 * dt).exp());
+    loco.turn_rate = (rate - loco.turn_rate).mul_add(1.0 - (-12.0 * dt).exp(), loco.turn_rate);
 }
 
 /// A (re)generated body: fresh feet, springs and torso, and its weight.
@@ -92,14 +92,15 @@ pub(super) fn move_roots(
             tf.translation += loco.velocity * dt;
 
             let facing = intent.facing.map(|d| d.as_vec3()).or_else(|| (loco.velocity.length() > 0.05 * leg).then_some(loco.velocity));
-            let mut turned = 0.0;
-            if let Some(f) = facing {
+            let turned = if let Some(f) = facing {
                 let delta = wrap(f.x.atan2(f.z) - yaw_of(tf.rotation));
                 let max = gait.turn_rate_deg.to_radians() * agility * dt;
                 let step = delta.clamp(-max, max);
                 tf.rotation = Quat::from_rotation_y(step) * tf.rotation;
-                turned = step / dt;
-            }
+                step / dt
+            } else {
+                0.0
+            };
             ease_turn(&mut loco, turned, dt);
         }
         loco.last_root = Some((tf.translation, tf.rotation));
@@ -173,7 +174,9 @@ pub(super) fn plant_feet(
         if !landed.is_empty() {
             commands.command_scope(|mut commands| {
                 for leg in landed {
-                    commands.trigger(Footstep { entity, leg, position: feet.0[leg].position });
+                    if let Some(foot) = feet.0.get(leg) {
+                        commands.trigger(Footstep { entity, leg, position: foot.position });
+                    }
                 }
             });
         }
@@ -245,5 +248,12 @@ pub(super) fn shoulder_rhythm(assets: MotionAssets, mut mobs: Query<(&MobBody, &
     mobs.par_iter_mut().for_each(|(body, mut pose)| {
         let Some(b) = assets.bodies.get(&body.0) else { return };
         stages::shoulder_rhythm(&b.anatomy, &mut pose);
+    });
+}
+
+pub(super) fn pose_hands(assets: MotionAssets, mut mobs: Query<(&MobBody, &super::HandPose, &mut MobPose), With<MobSkeleton>>) {
+    mobs.par_iter_mut().for_each(|(body, hands, mut pose)| {
+        let Some(b) = assets.bodies.get(&body.0) else { return };
+        super::hand::pose_hands(&b.anatomy, hands, &mut pose);
     });
 }

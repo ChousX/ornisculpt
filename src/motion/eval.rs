@@ -12,6 +12,7 @@ use super::cycle::{Channel, Cycle, Joint, LegSel, Sides, Target, Track};
 use super::fit::BodyTraits;
 use super::graph::BodyMask;
 use crate::anatomy::{Anatomy, BoneId, LimbRole, PartPath, Side};
+use crate::num::{Clamp, Idx, ToF32};
 
 /// Bones each target resolves to on one body.
 #[derive(Clone, Debug)]
@@ -42,19 +43,22 @@ pub struct MotionRig {
 
 fn side_of_path(path: &PartPath) -> Side {
     let last = path.0.rsplit('/').next().unwrap_or("");
-    if last.ends_with(".l") {
+    let suffix = last.rsplit_once('.').map(|(_, s)| s);
+    if suffix == Some("l") {
         Side::Left
-    } else if last.ends_with(".r") {
+    } else if suffix == Some("r") {
         Side::Right
     } else {
         Side::Center
     }
 }
 
+/// The side a bone's name marks with an `l` or `r` component after its first (`ear.l.0`).
 fn side_of_name(name: &str) -> Side {
-    if name.contains(".l.") || name.ends_with(".l") {
+    let has = |side: &str| name.split('.').skip(1).any(|part| part == side);
+    if has("l") {
         Side::Left
-    } else if name.contains(".r.") || name.ends_with(".r") {
+    } else if has("r") {
         Side::Right
     } else {
         Side::Center
@@ -62,17 +66,18 @@ fn side_of_name(name: &str) -> Side {
 }
 
 impl MotionRig {
+    #[must_use]
     pub fn new(a: &Anatomy) -> Self {
         let traits = BodyTraits::of(a);
         let bones = &a.skeleton.bones;
         let by_prefix = |prefix: &str| -> Vec<BoneId> {
-            bones.iter().enumerate().filter(|(_, b)| b.name.starts_with(prefix)).map(|(i, _)| BoneId(i as u8)).collect()
+            bones.iter().enumerate().filter(|(_, b)| b.name.starts_with(prefix)).map(|(i, _)| BoneId(i.clamp_u8())).collect()
         };
         // Paired chains grouped per side (`ear.l.0`, `ear.l.1`, …).
         let paired = |prefix: &str| -> Vec<(Side, Vec<BoneId>)> {
             let mut out: Vec<(Side, Vec<BoneId>)> = Vec::new();
             for id in by_prefix(prefix) {
-                let side = side_of_name(&bones[id.index()].name);
+                let side = bones.get(id.index()).map_or(Side::Center, |b| side_of_name(&b.name));
                 match out.iter_mut().find(|(s, _)| *s == side) {
                     Some((_, v)) => v.push(id),
                     None => out.push((side, vec![id])),
@@ -83,7 +88,8 @@ impl MotionRig {
         let mut tails: Vec<Vec<BoneId>> = Vec::new();
         for id in by_prefix("tail") {
             // A new tail starts wherever a tail bone's parent isn't a tail bone.
-            let parent_is_tail = bones[id.index()].parent.is_some_and(|p| bones[p.index()].name.starts_with("tail"));
+            let parent = bones.get(id.index()).and_then(|b| b.parent).and_then(|p| bones.get(p.index()));
+            let parent_is_tail = parent.is_some_and(|p| p.name.starts_with("tail"));
             match tails.last_mut() {
                 Some(t) if parent_is_tail => t.push(id),
                 _ => tails.push(vec![id]),
@@ -98,9 +104,9 @@ impl MotionRig {
                 let chain: Vec<BoneId> = part_bones(p).into_iter().filter(|b| !a.clavicles.iter().any(|c| c.bone == *b)).collect();
                 arms.push((side_of_path(&p.path), chain));
                 // Digits parts growing from this arm.
-                for d in a.parts.iter().filter(|d| d.parent == Some(i as u16)) {
+                for d in a.parts.iter().filter(|d| d.parent.is_some_and(|p| p.idx() == i)) {
                     let ids = part_bones(d);
-                    if ids.iter().any(|b| bones[b.index()].name.starts_with("digit")) {
+                    if ids.iter().any(|b| bones.get(b.index()).is_some_and(|b| b.name.starts_with("digit"))) {
                         digits.push((side_of_path(&d.path), ids));
                     }
                 }
@@ -110,7 +116,7 @@ impl MotionRig {
             .wings
             .iter()
             .enumerate()
-            .filter_map(|(i, w)| w.bones.first().map(|(b, _)| (side_of_path(&a.parts[w.part as usize].path), i, *b)))
+            .filter_map(|(i, w)| Some((side_of_path(&a.parts.get(w.part.idx())?.path), i, w.bones.first()?.0)))
             .collect();
         let model = a.skeleton.model_rest();
         let model_rot: Vec<Quat> = model.iter().map(|m| Quat::from_mat3a(&m.matrix3).normalize()).collect();
@@ -129,7 +135,7 @@ impl MotionRig {
             arms,
             digits,
             wings,
-            roots: bones.iter().enumerate().filter(|(_, b)| b.parent.is_none()).map(|(i, _)| BoneId(i as u8)).collect(),
+            roots: bones.iter().enumerate().filter(|(_, b)| b.parent.is_none()).map(|(i, _)| BoneId(i.clamp_u8())).collect(),
             legs: a.legs.iter().map(|l| l.chain.to_vec()).collect(),
             model_rot,
             model_dir,
@@ -138,11 +144,13 @@ impl MotionRig {
         }
     }
 
-    pub fn leg_length(&self) -> f32 {
+    #[must_use]
+    pub const fn leg_length(&self) -> f32 {
         self.leg_length
     }
 
     /// Bones a target moves (for masks and fit reporting).
+    #[must_use]
     pub fn target_bones(&self, target: Target) -> Vec<BoneId> {
         match target {
             Target::Root => self.roots.clone(),
@@ -160,14 +168,24 @@ impl MotionRig {
         }
     }
 
+    /// Rest model-space rotation of a bone (identity for one this rig doesn't know).
+    fn rest_rot(&self, bone: BoneId) -> Quat {
+        self.model_rot.get(bone.index()).copied().unwrap_or(Quat::IDENTITY)
+    }
+
+    /// Rest model-space direction (+Y) of a bone.
+    fn rest_dir(&self, bone: BoneId) -> Vec3 {
+        self.model_dir.get(bone.index()).copied().unwrap_or(Vec3::Y)
+    }
+
     /// A model-space axis expressed in a bone's rest frame.
     fn local(&self, bone: BoneId, axis: Vec3) -> Vec3 {
-        (self.model_rot[bone.index()].inverse() * axis).normalize_or(Vec3::X)
+        (self.rest_rot(bone).inverse() * axis).normalize_or(Vec3::X)
     }
 
     /// Model-space axis for a chain rotation channel at `bone` (pitch / yaw / roll).
     fn chain_axis(&self, bone: BoneId, channel: Channel) -> Vec3 {
-        let dir = self.model_dir[bone.index()];
+        let dir = self.rest_dir(bone);
         match channel {
             Channel::Pitch => {
                 let a = dir.cross(Vec3::Y);
@@ -179,12 +197,15 @@ impl MotionRig {
     }
 
     /// Per-bone weights of a layer mask on this body.
+    #[must_use]
     pub fn mask(&self, mask: &BodyMask) -> MaskWeights {
         let n = self.model_rot.len();
         let mut m = MaskWeights { bones: vec![0.0; n], root: 0.0, feet: 0.0, wings: 0.0 };
         let mut set = |bones: &[BoneId]| {
             for b in bones {
-                m.bones[b.index()] = 1.0;
+                if let Some(w) = m.bones.get_mut(b.index()) {
+                    *w = 1.0;
+                }
             }
         };
         let half = self.spine.len() / 2;
@@ -194,11 +215,11 @@ impl MotionRig {
         let (mut root, mut feet, mut wings) = (0.0, 0.0, 0.0);
         match mask {
             BodyMask::All => {
-                set(&(0..n).map(|i| BoneId(i as u8)).collect::<Vec<_>>());
+                set(&(0..n).map(|i| BoneId(i.clamp_u8())).collect::<Vec<_>>());
                 (root, feet, wings) = (1.0, 1.0, 1.0);
             }
             BodyMask::Upper => {
-                set(&self.spine[half..]);
+                set(self.spine.get(half..).unwrap_or_default());
                 for list in [&self.neck, &head, &wing_bones] {
                     set(list);
                 }
@@ -208,7 +229,7 @@ impl MotionRig {
                 wings = 1.0;
             }
             BodyMask::Lower => {
-                set(&self.spine[..half]);
+                set(self.spine.get(..half).unwrap_or_default());
                 set(&self.tails.concat());
                 set(&self.legs.concat());
                 (root, feet) = (1.0, 1.0);
@@ -292,6 +313,7 @@ pub struct LayerPose {
 }
 
 impl LayerPose {
+    #[must_use]
     pub fn identity(bones: usize, legs: usize, wings: usize) -> Self {
         Self {
             rot: vec![Quat::IDENTITY; bones],
@@ -306,26 +328,31 @@ impl LayerPose {
 
     fn turn(&mut self, rig: &MotionRig, bone: BoneId, axis_model: Vec3, degrees: f32, post: bool) {
         let q = Quat::from_axis_angle(rig.local(bone, axis_model), degrees.to_radians());
-        let slot = if post { &mut self.post[bone.index()] } else { &mut self.rot[bone.index()] };
-        *slot = *slot * q;
-        self.touched[bone.index()] = 1.0;
+        let i = bone.index();
+        let slot = if post { self.post.get_mut(i) } else { self.rot.get_mut(i) };
+        if let (Some(slot), Some(touched)) = (slot, self.touched.get_mut(i)) {
+            *slot *= q;
+            *touched = 1.0;
+        }
     }
 
     /// Adds `other` scaled by `weight`: how the cycles inside one layer mix (crossfades, blend
     /// spaces), where the weights sum to about one.
-    pub fn accumulate(&mut self, other: &LayerPose, weight: f32) {
+    pub fn accumulate(&mut self, other: &Self, weight: f32) {
         if weight <= 0.0 {
             return;
         }
-        for i in 0..self.rot.len() {
-            if other.touched[i] > 0.0 {
-                self.rot[i] = self.rot[i] * Quat::IDENTITY.slerp(other.rot[i], weight);
-                self.post[i] = self.post[i] * Quat::IDENTITY.slerp(other.post[i], weight);
-                self.touched[i] = (self.touched[i] + other.touched[i] * weight).min(1.0);
+        let ours = self.rot.iter_mut().zip(&mut self.post).zip(&mut self.touched);
+        let theirs = other.rot.iter().zip(&other.post).zip(&other.touched);
+        for (((rot, post), touched), ((their_rot, their_post), their_touched)) in ours.zip(theirs) {
+            if *their_touched > 0.0 {
+                *rot *= Quat::IDENTITY.slerp(*their_rot, weight);
+                *post *= Quat::IDENTITY.slerp(*their_post, weight);
+                *touched = their_touched.mul_add(weight, *touched).min(1.0);
             }
         }
         self.root_offset += other.root_offset * weight;
-        self.root_rot = self.root_rot * Quat::IDENTITY.slerp(other.root_rot, weight);
+        self.root_rot *= Quat::IDENTITY.slerp(other.root_rot, weight);
         for (a, b) in self.feet.iter_mut().zip(&other.feet) {
             *a += *b * weight;
         }
@@ -336,25 +363,27 @@ impl LayerPose {
 
     /// Stacks layer `other` on top by `weight` within `mask`: `additive` adds its rotations and
     /// offsets, otherwise it replaces wherever it drives a bone.
-    pub fn compose(&mut self, other: &LayerPose, weight: f32, mask: &MaskWeights, additive: bool) {
-        for i in 0..self.rot.len() {
-            let w = weight * mask.bones.get(i).copied().unwrap_or(1.0) * other.touched[i];
+    pub fn compose(&mut self, other: &Self, weight: f32, mask: &MaskWeights, additive: bool) {
+        let ours = self.rot.iter_mut().zip(&mut self.post).zip(&mut self.touched);
+        let theirs = other.rot.iter().zip(&other.post).zip(&other.touched);
+        for (i, (((rot, post), touched), ((their_rot, their_post), their_touched))) in ours.zip(theirs).enumerate() {
+            let w = weight * mask.bones.get(i).copied().unwrap_or(1.0) * their_touched;
             if w <= 0.0 {
                 continue;
             }
             if additive {
-                self.rot[i] = self.rot[i] * Quat::IDENTITY.slerp(other.rot[i], w);
-                self.post[i] = self.post[i] * Quat::IDENTITY.slerp(other.post[i], w);
+                *rot *= Quat::IDENTITY.slerp(*their_rot, w);
+                *post *= Quat::IDENTITY.slerp(*their_post, w);
             } else {
-                self.rot[i] = self.rot[i].slerp(other.rot[i], w);
-                self.post[i] = self.post[i].slerp(other.post[i], w);
+                *rot = rot.slerp(*their_rot, w);
+                *post = post.slerp(*their_post, w);
             }
-            self.touched[i] = self.touched[i].max(w.min(1.0));
+            *touched = touched.max(w.min(1.0));
         }
         let (wr, wf) = (weight * mask.root, weight * mask.feet);
         if additive {
             self.root_offset += other.root_offset * wr;
-            self.root_rot = self.root_rot * Quat::IDENTITY.slerp(other.root_rot, wr);
+            self.root_rot *= Quat::IDENTITY.slerp(other.root_rot, wr);
             for (a, b) in self.feet.iter_mut().zip(&other.feet) {
                 *a += *b * wf;
             }
@@ -378,7 +407,7 @@ fn blend_fold(a: &mut (f32, f32), b: (f32, f32), w: f32) {
         return;
     }
     let total = a.1 + wb;
-    a.0 = (a.0 * a.1 + b.0 * wb) / total;
+    a.0 = b.0.mul_add(wb, a.0 * a.1) / total;
     a.1 = total.min(1.0);
 }
 
@@ -393,6 +422,7 @@ pub struct EvalInput<'a> {
 }
 
 /// Evaluates every track of `cycle` at `input.t` into a fresh layer pose.
+#[must_use]
 pub fn evaluate(cycle: &Cycle, input: &EvalInput) -> LayerPose {
     let a = input.anatomy;
     let mut out = LayerPose::identity(a.skeleton.len(), a.legs.len(), a.wings.len());
@@ -404,16 +434,14 @@ pub fn evaluate(cycle: &Cycle, input: &EvalInput) -> LayerPose {
 
 fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
     let rig = input.rig;
-    let a = input.anatomy;
-    let value_at = |t: f32| track.curve.sample(t.rem_euclid(1.0).min(0.9999)) * track.weight;
-    let leg_phase = |i: usize| input.leg_phases.get(i).copied().unwrap_or(input.t);
+    let value_at = |t: f32| track_value(track, t);
     let ch = track.channel;
     // A chain rotation spread over `bones`, the tip trailing by `lag`.
     let chain = |out: &mut LayerPose, bones: &[BoneId], side: Side| {
-        let n = bones.len().max(1) as f32;
+        let n = bones.len().max(1).to_f32();
         for (k, bone) in bones.iter().enumerate() {
-            let along = if bones.len() > 1 { k as f32 / (n - 1.0) } else { 0.0 };
-            let v = value_at(input.t - track.lag * along) * mirror(side, ch) / n;
+            let along = if bones.len() > 1 { k.to_f32() / (n - 1.0) } else { 0.0 };
+            let v = value_at(track.lag.mul_add(-along, input.t)) * mirror(side, ch) / n;
             out.turn(rig, *bone, rig.chain_axis(*bone, ch), v, false);
         }
     };
@@ -422,12 +450,12 @@ fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
             let v = value_at(input.t);
             let l = rig.leg_length;
             match ch {
-                Channel::Bob => out.root_offset.y += v * l,
-                Channel::Sway => out.root_offset.x += v * l,
-                Channel::Surge => out.root_offset.z += v * l,
-                Channel::Pitch => out.root_rot = out.root_rot * Quat::from_axis_angle(Vec3::NEG_X, v.to_radians()),
-                Channel::Roll => out.root_rot = out.root_rot * Quat::from_axis_angle(Vec3::Z, v.to_radians()),
-                Channel::Yaw => out.root_rot = out.root_rot * Quat::from_axis_angle(Vec3::Y, v.to_radians()),
+                Channel::Bob => out.root_offset.y = f32::mul_add(v, l, out.root_offset.y),
+                Channel::Sway => out.root_offset.x = f32::mul_add(v, l, out.root_offset.x),
+                Channel::Surge => out.root_offset.z = f32::mul_add(v, l, out.root_offset.z),
+                Channel::Pitch => out.root_rot *= Quat::from_axis_angle(Vec3::NEG_X, v.to_radians()),
+                Channel::Roll => out.root_rot *= Quat::from_axis_angle(Vec3::Z, v.to_radians()),
+                Channel::Yaw => out.root_rot *= Quat::from_axis_angle(Vec3::Y, v.to_radians()),
                 _ => {}
             }
         }
@@ -462,77 +490,25 @@ fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
             }
         }
         Target::Legs(sel) => {
-            for (i, leg) in a.legs.iter().enumerate() {
-                let chosen = match sel {
-                    LegSel::All => true,
-                    LegSel::Fore => leg.pair == rig.fore_pair,
-                    LegSel::Hind => leg.pair == rig.hind_pair,
-                    LegSel::Side(s) => s.includes(leg.side),
-                };
-                if !chosen {
-                    continue;
-                }
-                let t = if track.per_leg { leg_phase(i) } else { input.t };
-                let v = value_at(t);
-                let l = rig.leg_length;
-                match ch {
-                    Channel::FootLift => out.feet[i].y += v * l,
-                    Channel::FootReach => out.feet[i].z += v * l,
-                    Channel::Flex(joint) => {
-                        let idx = joint_index(joint);
-                        if let Some(bone) = leg.chain.get(idx) {
-                            out.turn(rig, *bone, Vec3::NEG_X, v, true);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            apply_legs(track, input, out, sel);
         }
         Target::Arms(sides) => {
-            for (side, bones) in rig.arms.iter().filter(|(s, _)| sides.includes(*s)) {
-                // Arms swing against the opposite-side leg.
-                let t = if track.per_leg {
-                    a.legs.iter().position(|l| l.side != *side && l.side != Side::Center).map_or(input.t, leg_phase)
-                } else {
-                    input.t
-                };
-                let v = value_at(t) * mirror(*side, ch);
-                match ch {
-                    Channel::Swing => {
-                        if let Some(b) = bones.first() {
-                            out.turn(rig, *b, Vec3::NEG_X, v, false);
-                        }
-                    }
-                    Channel::Raise => {
-                        if let Some(b) = bones.first() {
-                            // About the long axis; `v` is already mirrored, so + is outward.
-                            out.turn(rig, *b, Vec3::Z, v, false);
-                        }
-                    }
-                    Channel::Roll => {
-                        if let Some(b) = bones.first() {
-                            out.turn(rig, *b, rig.model_dir[b.index()], v, false);
-                        }
-                    }
-                    Channel::Flex(joint) => {
-                        if let Some(b) = bones.get(joint_index(joint)) {
-                            out.turn(rig, *b, Vec3::NEG_X, v, false);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            apply_arms(track, input, out, sides);
         }
         Target::Wings(sides) => {
             for (side, index, root) in rig.wings.iter().filter(|w| sides.includes(w.0)) {
                 let v = value_at(input.t);
                 let m = mirror(*side, ch);
                 match ch {
-                    Channel::Fold => out.fold[*index] = (v.clamp(0.0, 1.0), 1.0),
+                    Channel::Fold => {
+                        if let Some(fold) = out.fold.get_mut(*index) {
+                            *fold = (v.clamp(0.0, 1.0), 1.0);
+                        }
+                    }
                     // Up/down about the body's long axis, back about the vertical.
                     Channel::Flap => out.turn(rig, *root, Vec3::Z * m, v, false),
                     Channel::Sweep => out.turn(rig, *root, Vec3::Y * m, v, false),
-                    Channel::Roll => out.turn(rig, *root, rig.model_dir[root.index()], v * m, false),
+                    Channel::Roll => out.turn(rig, *root, rig.rest_dir(*root), v * m, false),
                     _ => {}
                 }
             }
@@ -544,11 +520,11 @@ fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
                     match ch {
                         // Close toward the palm: about each digit bone's own side axis.
                         Channel::Curl => {
-                            let axis = rig.model_rot[b.index()] * Vec3::X;
+                            let axis = rig.rest_rot(*b) * Vec3::X;
                             out.turn(rig, *b, axis, 70.0 * v, false);
                         }
                         Channel::Spread => {
-                            let axis = rig.model_rot[b.index()] * Vec3::Z;
+                            let axis = rig.rest_rot(*b) * Vec3::Z;
                             out.turn(rig, *b, axis, v * mirror(*side, ch) * 0.5, false);
                         }
                         _ => {}
@@ -559,11 +535,101 @@ fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
     }
 }
 
-fn joint_index(j: Joint) -> usize {
+const fn joint_index(j: Joint) -> usize {
     match j {
         Joint::Upper => 0,
         Joint::Middle => 1,
         Joint::Lower => 2,
         Joint::Tip => 3,
+    }
+}
+
+/// A track's value at cycle time `t` (wrapped), scaled by its weight.
+fn track_value(track: &Track, t: f32) -> f32 {
+    track.curve.sample(t.rem_euclid(1.0).min(0.9999)) * track.weight
+}
+
+/// Leg `i`'s gait phase (the cycle time without per-leg phases).
+fn leg_phase(input: &EvalInput, i: usize) -> f32 {
+    input.leg_phases.get(i).copied().unwrap_or(input.t)
+}
+
+/// [`apply_track`] for `Target::Legs`.
+fn apply_legs(track: &Track, input: &EvalInput, out: &mut LayerPose, sel: LegSel) {
+    let (rig, a, ch) = (input.rig, input.anatomy, track.channel);
+    let value_at = |t: f32| track_value(track, t);
+    let leg_phase = |i: usize| leg_phase(input, i);
+    for (i, leg) in a.legs.iter().enumerate() {
+        let chosen = match sel {
+            LegSel::All => true,
+            LegSel::Fore => leg.pair == rig.fore_pair,
+            LegSel::Hind => leg.pair == rig.hind_pair,
+            LegSel::Side(s) => s.includes(leg.side),
+        };
+        if !chosen {
+            continue;
+        }
+        let t = if track.per_leg { leg_phase(i) } else { input.t };
+        let v = value_at(t);
+        let l = rig.leg_length;
+        match ch {
+            Channel::FootLift => {
+                if let Some(foot) = out.feet.get_mut(i) {
+                    foot.y = f32::mul_add(v, l, foot.y);
+                }
+            }
+            Channel::FootReach => {
+                if let Some(foot) = out.feet.get_mut(i) {
+                    foot.z = f32::mul_add(v, l, foot.z);
+                }
+            }
+            Channel::Flex(joint) => {
+                let idx = joint_index(joint);
+                if let Some(bone) = leg.chain.get(idx) {
+                    out.turn(rig, *bone, Vec3::NEG_X, v, true);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// [`apply_track`] for `Target::Arms`.
+fn apply_arms(track: &Track, input: &EvalInput, out: &mut LayerPose, sides: Sides) {
+    let (rig, a, ch) = (input.rig, input.anatomy, track.channel);
+    let value_at = |t: f32| track_value(track, t);
+    let leg_phase = |i: usize| leg_phase(input, i);
+    for (side, bones) in rig.arms.iter().filter(|(s, _)| sides.includes(*s)) {
+        // Arms swing against the opposite-side leg.
+        let t = if track.per_leg {
+            a.legs.iter().position(|l| l.side != *side && l.side != Side::Center).map_or(input.t, leg_phase)
+        } else {
+            input.t
+        };
+        let v = value_at(t) * mirror(*side, ch);
+        match ch {
+            Channel::Swing => {
+                if let Some(b) = bones.first() {
+                    out.turn(rig, *b, Vec3::NEG_X, v, false);
+                }
+            }
+            Channel::Raise => {
+                if let Some(b) = bones.first() {
+                    // About the long axis; `v` is already mirrored, so + is outward.
+                    out.turn(rig, *b, Vec3::Z, v, false);
+                }
+            }
+            Channel::Roll => {
+                if let Some(b) = bones.first() {
+                    out.turn(rig, *b, rig.rest_dir(*b), v, false);
+                }
+            }
+            Channel::Flex(joint) => {
+                if let Some(b) = bones.get(joint_index(joint)) {
+                    out.turn(rig, *b, Vec3::NEG_X, v, false);
+                }
+            }
+            _ => {}
+        }
     }
 }

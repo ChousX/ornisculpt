@@ -18,22 +18,17 @@ use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 
 use super::{BodyField, ChunkView, Field, MeshSettings, Mesher, RawMesh, SurfaceError};
+use crate::num::{Clamp, Idx, Saturate, ToF32};
 
 /// Octree dual contouring; see the module docs.
 #[derive(Default, Clone, Copy)]
 pub struct AdaptiveContour;
 
 /// Child (and corner) `i` sits at `(i >> 2 & 1, i >> 1 & 1, i & 1)`.
-const CHILD: [IVec3; 8] = [
-    IVec3::new(0, 0, 0),
-    IVec3::new(0, 0, 1),
-    IVec3::new(0, 1, 0),
-    IVec3::new(0, 1, 1),
-    IVec3::new(1, 0, 0),
-    IVec3::new(1, 0, 1),
-    IVec3::new(1, 1, 0),
-    IVec3::new(1, 1, 1),
-];
+fn child(i: usize) -> IVec3 {
+    IVec3::new(i32::from(i & 4 != 0), i32::from(i & 2 != 0), i32::from(i & 1 != 0))
+}
+
 /// Cell edges as corner pairs: 0–3 along x, 4–7 along y, 8–11 along z.
 const EDGEVMAP: [[usize; 2]; 12] = [[0, 4], [1, 5], [2, 6], [3, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 1], [2, 3], [4, 5], [6, 7]];
 const CELL_PROC_FACE_MASK: [[usize; 3]; 12] =
@@ -52,9 +47,13 @@ const FACE_PROC_EDGE_MASK: [[[usize; 6]; 4]; 3] = [
 const EDGE_PROC_EDGE_MASK: [[[usize; 5]; 2]; 3] =
     [[[3, 2, 1, 0, 0], [7, 6, 5, 4, 0]], [[5, 1, 4, 0, 1], [7, 3, 6, 2, 1]], [[6, 4, 2, 0, 2], [7, 5, 3, 1, 2]]];
 const PROCESS_EDGE_MASK: [[usize; 4]; 3] = [[3, 2, 1, 0], [7, 5, 6, 4], [11, 10, 9, 8]];
+/// Which of a face's two nodes each of an edge's four cells comes from.
+const FACE_PROC_ORDERS: [[usize; 4]; 2] = [[0, 0, 1, 1], [0, 1, 0, 1]];
+/// One thread's finished subtrees, by job index.
+type Built = Vec<(usize, Option<Node>)>;
 
 enum Node {
-    Internal(Box<[Option<Node>; 8]>),
+    Internal(Box<[Option<Self>; 8]>),
     Leaf(Leaf),
     /// A subtree being built on another thread (index into the job list).
     Pending(usize),
@@ -71,13 +70,13 @@ struct Leaf {
 }
 
 impl Node {
-    fn internal(&self) -> bool {
-        matches!(self, Node::Internal(_))
+    const fn internal(&self) -> bool {
+        matches!(self, Self::Internal(_))
     }
 
-    fn child(&self, i: usize) -> Option<&Node> {
+    fn child(&self, i: usize) -> Option<&Self> {
         match self {
-            Node::Internal(c) => c[i].as_ref(),
+            Self::Internal(c) => c.get(i).and_then(Option::as_ref),
             _ => Some(self),
         }
     }
@@ -97,9 +96,14 @@ impl Grid {
         self.origin + c.as_vec3a() * self.fine
     }
 
+    /// Edge length of a cell at `level`.
+    fn size(&self, level: u8) -> f32 {
+        self.fine * (1u32 << level).to_f32()
+    }
+
     fn region(&self, cell: IVec3, level: u8, pad: f32) -> Aabb3d {
         let lo = self.point(cell);
-        let size = self.fine * (1u32 << level) as f32;
+        let size = self.size(level);
         Aabb3d { min: lo - Vec3A::splat(pad), max: lo + Vec3A::splat(size + pad) }
     }
 
@@ -107,9 +111,9 @@ impl Grid {
     /// half-diagonal (0.87 × size); ours overstates by up to ~20% where limbs switch between
     /// smooth and hard unions, and a cell dropped wrongly leaves a hole, so the bound is looser.
     fn near_surface(&self, view: &ChunkView, cell: IVec3, level: u8) -> bool {
-        let size = self.fine * (1u32 << level) as f32;
+        let size = self.size(level);
         let centre = self.point(cell) + Vec3A::splat(size * 0.5);
-        view.distance(centre).abs() <= size * 1.2 + self.fine
+        view.distance(centre).abs() <= size.mul_add(1.2, self.fine)
     }
 }
 
@@ -135,16 +139,18 @@ impl Builder<'_> {
         if !g.near_surface(view, cell, level) {
             return None;
         }
-        let size = g.fine * (1u32 << level) as f32;
+        let size = g.size(level);
         let split = level > 0 && {
             let centre = g.point(cell) + Vec3A::splat(size * 0.5);
-            level > g.base_level || size > (local_radius(view, centre, g.fine * (1u32 << g.base_level) as f32) / g.per_radius).max(g.fine) * 1.001
+            level > g.base_level
+                || size > (local_radius(view, centre, g.size(g.base_level)) / g.per_radius).max(g.fine) * 1.001
+                || size > g.fine * 1.001 && curved(view, centre, size)
         };
         // A cell whose corners imply more than one sheet of surface (the gap between thumb and
         // palm) would pinch them into one vertex: split it while it can be.
         let split = split || level > 0 && {
             let span = 1i32 << level;
-            let mask = (0..8).fold(0u8, |m, i| if self.corner(view, cell + CHILD[i] * span) < 0.0 { m | 1 << i } else { m });
+            let mask = (0..8).fold(0u8, |m, i| if self.corner(view, cell + child(i) * span) < 0.0 { m | 1 << i } else { m });
             ambiguous(mask) || !self.consistent(view, cell, level)
         };
         if !split {
@@ -153,7 +159,7 @@ impl Builder<'_> {
         let narrowed = (level >= 3).then(|| view.narrow(g.region(cell, level, g.fine)));
         let view = narrowed.as_ref().unwrap_or(view);
         let half = 1i32 << (level - 1);
-        let children: [Option<Node>; 8] = std::array::from_fn(|i| self.build(view, cell + CHILD[i] * half, level - 1));
+        let children: [Option<Node>; 8] = std::array::from_fn(|i| self.build(view, cell + child(i) * half, level - 1));
         children.iter().any(Option::is_some).then(|| Node::Internal(Box::new(children)))
     }
 
@@ -163,25 +169,27 @@ impl Builder<'_> {
     /// contour differently from its neighbours and leave a crack.
     fn consistent(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> bool {
         let span = 1i32 << level;
-        let inside: [bool; 8] = std::array::from_fn(|i| self.corner(view, cell + CHILD[i] * span) < 0.0);
+        let inside: [bool; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span) < 0.0);
         for [a, b] in EDGEVMAP {
-            let dir = CHILD[b] - CHILD[a];
+            let (Some(&in_a), Some(&in_b)) = (inside.get(a), inside.get(b)) else { continue };
+            let dir = child(b) - child(a);
             let mut changes = 0;
-            let mut prev = inside[a];
+            let mut prev = in_a;
             for k in 1..=span {
-                let s = if k == span { inside[b] } else { self.corner(view, cell + CHILD[a] * span + dir * k) < 0.0 };
-                changes += (s != prev) as u32;
+                let s = if k == span { in_b } else { self.corner(view, cell + child(a) * span + dir * k) < 0.0 };
+                changes += u32::from(s != prev);
                 prev = s;
             }
-            if changes != (inside[a] != inside[b]) as u32 {
+            if changes != u32::from(in_a != in_b) {
                 return false;
             }
         }
         for axis in 0..3 {
             let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
             for side in [0, 1] {
-                let corners: Vec<bool> = (0..8).filter(|&i| CHILD[i][axis] == side).map(|i| inside[i]).collect();
-                if corners.iter().any(|c| *c != corners[0]) {
+                let mut corners = inside.iter().enumerate().filter(|(i, _)| child(*i)[axis] == side).map(|(_, c)| *c);
+                let Some(first) = corners.next() else { continue };
+                if corners.any(|c| c != first) {
                     continue;
                 }
                 for a in 1..span {
@@ -190,7 +198,7 @@ impl Builder<'_> {
                         o[axis] = side * span;
                         o[u] = a;
                         o[v] = b;
-                        if (self.corner(view, cell + o) < 0.0) != corners[0] {
+                        if (self.corner(view, cell + o) < 0.0) != first {
                             return false;
                         }
                     }
@@ -203,24 +211,24 @@ impl Builder<'_> {
     fn leaf(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Leaf> {
         let g = self.grid;
         let span = 1i32 << level;
-        let d: [f32; 8] = std::array::from_fn(|i| self.corner(view, cell + CHILD[i] * span));
-        let corners = (0..8).fold(0u8, |m, i| if d[i] < 0.0 { m | 1 << i } else { m });
+        let d: [f32; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span));
+        let corners = d.iter().enumerate().fold(0u8, |m, (i, v)| if *v < 0.0 { m | 1 << i } else { m });
         if corners == 0 || corners == 0xff {
             return None;
         }
         // Surface-nets placement: the mean of the edge crossings...
-        let at = |i: usize| g.point(cell + CHILD[i] * span);
+        let at = |i: usize| g.point(cell + child(i) * span);
         let (mut sum, mut n) = (Vec3A::ZERO, 0.0);
         for [a, b] in EDGEVMAP {
-            if (d[a] < 0.0) != (d[b] < 0.0) {
-                let t = d[a] / (d[a] - d[b]);
-                sum += at(a).lerp(at(b), t);
+            let (Some(&da), Some(&db)) = (d.get(a), d.get(b)) else { continue };
+            if (da < 0.0) != (db < 0.0) {
+                sum += at(a).lerp(at(b), da / (da - db));
                 n += 1.0;
             }
         }
         let mut p = sum / n;
         // ...pulled onto the surface, staying near the cell so faces don't fold.
-        let size = g.fine * span as f32;
+        let size = g.size(level);
         let (lo, hi) = (at(0) - Vec3A::splat(size * 0.25), at(7) + Vec3A::splat(size * 0.25));
         for _ in 0..2 {
             // `Field::gradient` is a raw central difference over ±1 mm: scale it to a true gradient.
@@ -239,10 +247,10 @@ impl Mesher for AdaptiveContour {
     fn mesh(&self, field: &BodyField, settings: &MeshSettings) -> Result<RawMesh, SurfaceError> {
         let base = settings.voxel_size.max(1e-4);
         let detail = settings.detail_levels.min(4);
-        let fine = base / (1u32 << detail) as f32;
+        let fine = base / (1u32 << detail).to_f32();
         let b = field.bounds();
-        let extent = Vec3::from(b.max - b.min).max_element() + 4.0 * base;
-        let root_level = detail + (extent / base).log2().ceil().max(0.0) as u8;
+        let extent = 4.0f32.mul_add(base, Vec3::from(b.max - b.min).max_element());
+        let root_level = detail + (extent / base).log2().ceil().max(0.0).sat_u8();
         let grid = Grid { origin: b.min - Vec3A::splat(2.0 * base), fine, base_level: detail, per_radius: settings.cells_per_radius.max(0.5) };
 
         // Upper levels serially, down to subtrees that build in parallel.
@@ -250,27 +258,29 @@ impl Mesher for AdaptiveContour {
         let mut jobs: Vec<IVec3> = Vec::new();
         let whole = field.view(field.bounds());
         let mut root = top(&grid, &whole, IVec3::ZERO, root_level, job_level, &mut jobs);
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(jobs.len().max(1));
-        let built: Vec<(usize, Option<Node>)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|t| {
-                    let (jobs, grid) = (&jobs, &grid);
-                    scope.spawn(move || {
-                        let mut builder = Builder { field, grid, corners: HashMap::new() };
-                        let mut out = Vec::new();
-                        for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
-                            let view = field.view(grid.region(*cell, job_level, grid.fine));
-                            out.push((i, builder.build(&view, *cell, job_level)));
-                        }
-                        out
-                    })
-                })
-                .collect();
-            handles.into_iter().flat_map(|h| h.join().expect("meshing thread panicked")).collect()
+        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get).min(jobs.len().max(1));
+        let built: Option<Vec<Built>> = std::thread::scope(|scope| {
+            // Spawn every worker before joining any.
+            let mut handles = Vec::with_capacity(threads);
+            for t in 0..threads {
+                let (jobs, grid) = (&jobs, &grid);
+                handles.push(scope.spawn(move || {
+                    let mut builder = Builder { field, grid, corners: HashMap::new() };
+                    let mut out = Vec::new();
+                    for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
+                        let view = field.view(grid.region(*cell, job_level, grid.fine));
+                        out.push((i, builder.build(&view, *cell, job_level)));
+                    }
+                    out
+                }));
+            }
+            handles.into_iter().map(|h| h.join().ok()).collect()
         });
         let mut results: Vec<Option<Node>> = (0..jobs.len()).map(|_| None).collect();
-        for (i, node) in built {
-            results[i] = node;
+        for (i, node) in built.ok_or(SurfaceError::WorkerPanicked)?.into_iter().flatten() {
+            if let Some(slot) = results.get_mut(i) {
+                *slot = node;
+            }
         }
         if let Some(r) = root.as_mut() {
             fill(r, &mut results);
@@ -285,8 +295,8 @@ impl Mesher for AdaptiveContour {
         if mesh.indices.is_empty() {
             return Err(SurfaceError::Empty);
         }
-        if mesh.triangle_count() > settings.max_triangles as usize {
-            return Err(SurfaceError::TooManyTriangles { got: mesh.triangle_count(), max: settings.max_triangles as usize });
+        if mesh.triangle_count() > settings.max_triangles.idx() {
+            return Err(SurfaceError::TooManyTriangles { got: mesh.triangle_count(), max: settings.max_triangles.idx() });
         }
         Ok(mesh)
     }
@@ -303,7 +313,7 @@ fn top(grid: &Grid, view: &ChunkView, cell: IVec3, level: u8, job_level: u8, job
     }
     let narrowed = view.narrow(grid.region(cell, level, grid.fine));
     let half = 1i32 << (level - 1);
-    let children: [Option<Node>; 8] = std::array::from_fn(|i| top(grid, &narrowed, cell + CHILD[i] * half, level - 1, job_level, jobs));
+    let children: [Option<Node>; 8] = std::array::from_fn(|i| top(grid, &narrowed, cell + child(i) * half, level - 1, job_level, jobs));
     children.iter().any(Option::is_some).then(|| Node::Internal(Box::new(children)))
 }
 
@@ -311,7 +321,7 @@ fn fill(node: &mut Node, results: &mut [Option<Node>]) {
     if let Node::Internal(children) = node {
         for slot in children.iter_mut() {
             if let Some(Node::Pending(i)) = slot {
-                *slot = results[*i].take();
+                *slot = results.get_mut(*i).and_then(Option::take);
             } else if let Some(c) = slot {
                 fill(c, results);
             }
@@ -327,7 +337,7 @@ fn prune(node: Node) -> Option<Node> {
             children.iter().any(Option::is_some).then(|| Node::Internal(Box::new(children)))
         }
         Node::Pending(_) => None,
-        leaf => Some(leaf),
+        leaf @ Node::Leaf(_) => Some(leaf),
     }
 }
 
@@ -336,7 +346,7 @@ fn number(node: &mut Node, mesh: &mut RawMesh) {
     match node {
         Node::Internal(children) => children.iter_mut().flatten().for_each(|c| number(c, mesh)),
         Node::Leaf(l) => {
-            l.index = mesh.positions.len() as u32;
+            l.index = mesh.positions.len().clamp_u32();
             mesh.positions.push(l.pos);
             mesh.normals.push(l.normal);
         }
@@ -349,13 +359,14 @@ fn cell_proc(node: &Node, out: &mut Vec<u32>) {
     for c in children.iter().flatten() {
         cell_proc(c, out);
     }
+    let at = |i: usize| children.get(i).and_then(Option::as_ref);
     for [a, b, dir] in CELL_PROC_FACE_MASK {
-        if let (Some(a), Some(b)) = (&children[a], &children[b]) {
+        if let (Some(a), Some(b)) = (at(a), at(b)) {
             face_proc([a, b], dir, out);
         }
     }
     for [a, b, c, d, dir] in CELL_PROC_EDGE_MASK {
-        if let (Some(a), Some(b), Some(c), Some(d)) = (&children[a], &children[b], &children[c], &children[d]) {
+        if let (Some(a), Some(b), Some(c), Some(d)) = (at(a), at(b), at(c), at(d)) {
             edge_proc([a, b, c, d], dir, out);
         }
     }
@@ -365,16 +376,16 @@ fn face_proc(nodes: [&Node; 2], dir: usize, out: &mut Vec<u32>) {
     if !nodes[0].internal() && !nodes[1].internal() {
         return;
     }
-    for [c0, c1, d] in FACE_PROC_FACE_MASK[dir] {
+    for &[c0, c1, d] in FACE_PROC_FACE_MASK.get(dir).into_iter().flatten() {
         if let (Some(a), Some(b)) = (nodes[0].child(c0), nodes[1].child(c1)) {
             face_proc([a, b], d, out);
         }
     }
-    const ORDERS: [[usize; 4]; 2] = [[0, 0, 1, 1], [0, 1, 0, 1]];
-    for [o, c0, c1, c2, c3, d] in FACE_PROC_EDGE_MASK[dir] {
-        let order = ORDERS[o];
+    for &[o, c0, c1, c2, c3, d] in FACE_PROC_EDGE_MASK.get(dir).into_iter().flatten() {
+        let Some(order) = FACE_PROC_ORDERS.get(o) else { continue };
         let cs = [c0, c1, c2, c3];
-        let picked: [Option<&Node>; 4] = std::array::from_fn(|j| nodes[order[j]].child(cs[j]));
+        let picked: [Option<&Node>; 4] =
+            std::array::from_fn(|j| order.get(j).zip(cs.get(j)).and_then(|(&side, &c)| nodes.get(side)?.child(c)));
         if let [Some(a), Some(b), Some(c), Some(e)] = picked {
             edge_proc([a, b, c, e], d, out);
         }
@@ -386,9 +397,9 @@ fn edge_proc(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
         process_edge(nodes, dir, out);
         return;
     }
-    for [c0, c1, c2, c3, d] in EDGE_PROC_EDGE_MASK[dir] {
+    for &[c0, c1, c2, c3, d] in EDGE_PROC_EDGE_MASK.get(dir).into_iter().flatten() {
         let cs = [c0, c1, c2, c3];
-        let picked: [Option<&Node>; 4] = std::array::from_fn(|j| nodes[j].child(cs[j]));
+        let picked: [Option<&Node>; 4] = std::array::from_fn(|j| nodes.get(j).zip(cs.get(j)).and_then(|(n, &c)| n.child(c)));
         if let [Some(a), Some(b), Some(c), Some(e)] = picked {
             edge_proc([a, b, c, e], d, out);
         }
@@ -397,89 +408,50 @@ fn edge_proc(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
 
 /// Four leaves around one edge: a quad if the smallest leaf's copy of the edge changes sign.
 fn process_edge(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
+    let Some(edges) = PROCESS_EDGE_MASK.get(dir) else { return };
     let mut min_level = u8::MAX;
     let mut sign_change = false;
     let mut flip = false;
     let mut idx = [0u32; 4];
-    for (i, n) in nodes.iter().enumerate() {
+    for ((n, &edge), slot) in nodes.iter().zip(edges).zip(&mut idx) {
         let Node::Leaf(l) = n else { return };
-        let [c1, c2] = EDGEVMAP[PROCESS_EDGE_MASK[dir][i]];
+        let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
         let (m1, m2) = (l.corners >> c1 & 1 == 1, l.corners >> c2 & 1 == 1);
         if l.level < min_level {
             min_level = l.level;
             flip = m1;
             sign_change = m1 != m2;
         }
-        idx[i] = l.index;
+        *slot = l.index;
     }
     if !sign_change {
         return;
     }
-    let tris = if flip { [[0, 3, 1], [0, 2, 3]] } else { [[0, 1, 3], [0, 3, 2]] };
-    for t in tris {
-        let (a, b, c) = (idx[t[0]], idx[t[1]], idx[t[2]]);
+    let [i0, i1, i2, i3] = idx;
+    let tris = if flip { [[i0, i3, i1], [i0, i2, i3]] } else { [[i0, i1, i3], [i0, i3, i2]] };
+    for [a, b, c] in tris {
         if a != b && b != c && a != c {
             out.extend([a, b, c]);
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{BodyFieldOptions, SurfaceNets};
-
-    fn field(src: &str) -> BodyField {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true })
+/// Whether the surface bends sharply within a cell of `size` centred on `p`: normals half a cell
+/// either side of the nearest surface point differ by more than ~16° (a radius of curvature
+/// under ~3.5 cells). A nose, lip or knuckle is
+/// a small feature on a thick body, which [`local_radius`] alone would mesh at the base size.
+fn curved(view: &ChunkView, p: Vec3A, size: f32) -> bool {
+    const MIN_COS: f32 = 0.96;
+    let normal = |q: Vec3A| view.gradient(q).normalize_or(Vec3A::Y);
+    let dist = view.distance(p);
+    if dist.abs() > size {
+        return false;
     }
-
-    /// (edges not shared by exactly two triangles, directed edges used twice, signed volume).
-    fn check(m: &RawMesh) -> (usize, usize, f32) {
-        let mut undirected: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut volume = 0.0;
-        for t in m.indices.chunks(3) {
-            let p = [m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]];
-            volume += p[0].dot(p[1].cross(p[2])) / 6.0;
-            for k in 0..3 {
-                let (a, b) = (t[k], t[(k + 1) % 3]);
-                *undirected.entry((a.min(b), a.max(b))).or_default() += 1;
-                *directed.entry((a, b)).or_default() += 1;
-            }
-        }
-        (undirected.values().filter(|n| **n != 2).count(), directed.values().filter(|n| **n > 1).count(), volume)
-    }
-
-    #[test]
-    fn adaptive_mesh_is_closed_and_refines_thin_parts() {
-        let f = field(include_str!("../../assets/mobs/biped.body.ron"));
-        let uniform = MeshSettings { voxel_size: 0.008, ..default() };
-        let adaptive = MeshSettings { detail_levels: 2, ..uniform };
-        let t = std::time::Instant::now();
-        let m = AdaptiveContour.mesh(&f, &adaptive).unwrap();
-        let took = t.elapsed().as_secs_f32();
-        let nets = SurfaceNets.mesh(&f, &uniform).unwrap();
-        let (open, twice, volume) = check(&m);
-        let (_, _, nets_volume) = check(&nets);
-        println!(
-            "adaptive: {} verts {} tris in {took:.2}s; open edges {open}, doubled directed edges {twice}, volume {volume:.4} (surface nets {nets_volume:.4}, {} tris)",
-            m.positions.len(),
-            m.triangle_count(),
-            nets.triangle_count()
-        );
-        assert_eq!(volume.signum(), nets_volume.signum(), "same winding as surface nets");
-        assert!((volume / nets_volume - 1.0).abs() < 0.05, "same body: {volume} vs {nets_volume}");
-        let edges = m.triangle_count() * 3 / 2;
-        // A uniform grid leaves a handful too: finest cells with two sheets of surface.
-        assert!(open <= 20, "{open} of {edges} edges are open or non-manifold");
-        assert_eq!(twice, 0, "flipped faces");
-    }
+    let surface = p - normal(p) * dist;
+    let n = normal(surface);
+    let (tangent, bitangent) = Vec3::from(n).any_orthonormal_pair();
+    let half = size * 0.5;
+    [tangent, -tangent, bitangent, -bitangent].into_iter().any(|o| n.dot(normal(surface + Vec3A::from(o) * half)) < MIN_COS)
 }
 
 /// How thick the body is near `p`: the deepest point reached marching inward from the nearest
@@ -528,4 +500,62 @@ fn ambiguous(mask: u8) -> bool {
         count
     };
     mask != 0 && mask != 0xff && (groups(true) > 1 || groups(false) > 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{BodyFieldOptions, SurfaceNets};
+
+    fn field(src: &str) -> BodyField {
+        let plan: BodyPlan = ron::from_str(src).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true })
+    }
+
+    /// (edges not shared by exactly two triangles, directed edges used twice, signed volume).
+    fn check(m: &RawMesh) -> (usize, usize, f32) {
+        let mut undirected: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut volume = 0.0;
+        for t in m.indices.chunks(3) {
+            let p = [m.positions[t[0].idx()], m.positions[t[1].idx()], m.positions[t[2].idx()]];
+            volume += p[0].dot(p[1].cross(p[2])) / 6.0;
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *undirected.entry((a.min(b), a.max(b))).or_default() += 1;
+                *directed.entry((a, b)).or_default() += 1;
+            }
+        }
+        (undirected.values().filter(|n| **n != 2).count(), directed.values().filter(|n| **n > 1).count(), volume)
+    }
+
+    #[test]
+    fn adaptive_mesh_is_closed_and_refines_thin_parts() {
+        let f = field(include_str!("../../assets/mobs/biped.body.ron"));
+        let uniform = MeshSettings { voxel_size: 0.008, ..default() };
+        let adaptive = MeshSettings { detail_levels: 2, ..uniform };
+        let t = std::time::Instant::now();
+        let m = AdaptiveContour.mesh(&f, &adaptive).unwrap();
+        let took = t.elapsed().as_secs_f32();
+        let nets = SurfaceNets.mesh(&f, &uniform).unwrap();
+        let (open, twice, volume) = check(&m);
+        let (_, _, nets_volume) = check(&nets);
+        println!(
+            "adaptive: {} verts {} tris in {took:.2}s; open edges {open}, doubled directed edges {twice}, volume {volume:.4} (surface nets {nets_volume:.4}, {} tris)",
+            m.positions.len(),
+            m.triangle_count(),
+            nets.triangle_count()
+        );
+        assert_eq!(volume.signum(), nets_volume.signum(), "same winding as surface nets");
+        assert!((volume / nets_volume - 1.0).abs() < 0.05, "same body: {volume} vs {nets_volume}");
+        let edges = m.triangle_count() * 3 / 2;
+        // A uniform grid leaves a handful too: finest cells with two sheets of surface.
+        assert!(open <= 20, "{open} of {edges} edges are open or non-manifold");
+        assert_eq!(twice, 0, "flipped faces");
+    }
 }

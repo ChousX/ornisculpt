@@ -11,7 +11,7 @@ use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD
 pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
 
-/// Every mob surface: StandardMaterial lighting with coat shading on top.
+/// Every mob surface: `StandardMaterial` lighting with coat shading on top.
 pub type MobMaterial = ExtendedMaterial<StandardMaterial, CoatExt>;
 
 /// Which surface a material draws.

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cycle::Curve;
 use crate::anatomy::{Anatomy, WATER};
+use crate::num::ToF32;
 
 /// The shape of one step. Torso signals are sampled over the leg's own step time: `0..0.5` is
 /// the stance (foot planted, moving back), `0.5..1` the swing.
@@ -68,6 +69,7 @@ impl Heft {
     /// Kilograms per m² of leg section of a dog or a human.
     pub const REFERENCE: f32 = 2500.0;
 
+    #[must_use]
     pub fn of(a: &Anatomy) -> Self {
         let m = &a.mass;
         if m.total <= 0.0 || a.legs.is_empty() {
@@ -79,11 +81,11 @@ impl Heft {
         let (front, back) = (a.legs.iter().map(|l| l.pair).min().unwrap_or(0), a.legs.iter().map(|l| l.pair).max().unwrap_or(0));
         let z = |pair: u8| {
             let feet: Vec<f32> = a.legs.iter().filter(|l| l.pair == pair).map(|l| l.rest_foot.z).collect();
-            feet.iter().sum::<f32>() / feet.len().max(1) as f32
+            feet.iter().sum::<f32>() / feet.len().max(1).to_f32()
         };
         let fore = if front == back { 0.5 } else { ((m.centre.z - z(back)) / (z(front) - z(back))).clamp(0.0, 1.0) };
         let share = |pick: &dyn Fn(&str) -> bool| {
-            a.skeleton.bones.iter().enumerate().filter(|(_, b)| pick(&b.name)).map(|(i, _)| m.bones[i]).sum::<f32>() / m.total
+            a.skeleton.bones.iter().zip(&m.bones).filter(|(b, _)| pick(&b.name)).map(|(_, kg)| kg).sum::<f32>() / m.total
         };
         Self {
             kg: m.total,
@@ -133,6 +135,7 @@ impl Default for HeftResponse {
 
 impl HeftResponse {
     /// No effect at any weight.
+    #[must_use]
     pub fn none() -> Self {
         let one = || Curve::Constant(1.0);
         Self {
@@ -192,25 +195,26 @@ mod tests {
         // Older files without the new fields still load.
         let old: crate::motion::Gait = ron::from_str("(modes: [(name: \"walk\", duty: 0.7)])").unwrap();
         assert_eq!(old.heft, HeftResponse::default());
-        println!("{}", &text[text.find("heft").unwrap()..][..400]);
+        let at = text.find("heft").unwrap();
+        println!("{}", text.get(at..).unwrap().chars().take(400).collect::<String>());
     }
 
     /// The default step shape is the hand-written motion it replaced.
     #[test]
     fn default_shape_matches_the_old_formulas() {
         let s = StepShape::default();
-        for k in 0..=20 {
-            let x = k as f32 / 20.0;
+        for k in 0u8..=20 {
+            let x = f32::from(k) / 20.0;
             let close = |a: f32, b: f32| assert!((a - b).abs() < 1e-4, "{a} vs {b} at {x}");
             close(s.arc.sample(x), (PI * x).sin());
-            close(s.travel.sample(x), x * x * (3.0 - 2.0 * x));
+            close(s.travel.sample(x), x * x * 2.0f32.mul_add(-x, 3.0));
             // Stance half: u = 2x; swing half: s = 2x − 1.
-            let (stance, swing) = (x * 0.5, 0.5 + x * 0.5);
+            let (stance, swing) = (x * 0.5, x.mul_add(0.5, 0.5));
             close(s.reach.sample(stance), (PI * x).cos());
             close(s.load.sample(stance), (PI * x).sin());
             close(s.reach.sample(swing), -(PI * x).cos());
             close(s.raise.sample(swing), (PI * x).sin());
-            close(s.lively.sample(x * 0.4), x * x * (3.0 - 2.0 * x));
+            close(s.lively.sample(x * 0.4), x * x * 2.0f32.mul_add(-x, 3.0));
         }
     }
 }
