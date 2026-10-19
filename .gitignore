@@ -7,3 +7,6 @@ devenv.local.nix
 
 # Benchmark runs (bench/golden is kept)
 /bench/results
+
+# Accepted benchmark screenshots (~46 MB; recorded locally)
+/bench/golden

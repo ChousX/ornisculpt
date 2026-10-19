@@ -9,10 +9,10 @@ cargo run --release --example bench -- all --out bench/results/<name>
 cargo run --release --example bench -- compare bench/results/<base-1>,<base-2>,<base-3> bench/results/<new>
 ```
 
-The runs below were measured on a working tree that also held uncommitted anatomy and coat
-changes, so absolute numbers and screenshots differ on a clean checkout; the before/after deltas
-are what carry over. Golden screenshots aren't committed for that reason: record them with
-`compare ... --accept` on the tree you benchmark.
+The runs below were measured on the tree as committed together with the chain-section, muzzle
+and mixed-coat work. Golden screenshots (about 46 MB) aren't committed: record them locally with
+`compare ... --accept` (into `bench/golden/`), then pass `bench/golden` as a base to compare against
+the accepted look.
 
 Machine: Lenovo Yoga Slim 7x (Snapdragon X, Adreno X1-85, turnip Vulkan), 12 cores, 15 GB, on
 mains power. Times are p50 unless noted. Per-pass GPU times (`gpu.*`) are unreliable on this
