@@ -16,7 +16,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{MobOutfit, Outfit, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods};
+use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -380,6 +380,10 @@ pub(super) fn start_generation(
                 }
                 for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
                     annotate(lod, &coat, &anatomy, level);
+                }
+                // Centres of rotation on the final vertices and weights (coat meshes copy them).
+                for lod in &mut lods {
+                    lod.cor = centres_of_rotation(lod);
                 }
                 let motion = bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len()));
                 let mut level = 0;

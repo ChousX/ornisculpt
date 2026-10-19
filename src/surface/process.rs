@@ -86,6 +86,7 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
         coverage: Vec::new(),
         flow: Vec::new(),
         cloth: Vec::new(),
+        cor: Vec::new(),
         indices: mesh.indices,
         submeshes: Vec::new(),
     };
@@ -217,6 +218,17 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
     pad_extend(&mut base.uvs, &other.uvs, vbase as usize, other.positions.len(), [0.0; 2]);
     pad_extend(&mut base.coverage, &other.coverage, vbase as usize, other.positions.len(), [0.0; 3]);
     pad_extend(&mut base.flow, &other.flow, vbase as usize, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
+    // Centres of rotation: a vertex without one rotates about itself (exactly linear blending).
+    if !base.cor.is_empty() || !other.cor.is_empty() {
+        if base.cor.len() != vbase as usize {
+            base.cor = base.positions[..vbase as usize].to_vec();
+        }
+        if other.cor.len() == other.positions.len() {
+            base.cor.extend_from_slice(&other.cor);
+        } else {
+            base.cor.extend_from_slice(&other.positions);
+        }
+    }
     if !base.cloth.is_empty() || !other.cloth.is_empty() {
         base.cloth.resize(vbase as usize, NOT_CLOTH);
         if other.cloth.is_empty() {

@@ -9,6 +9,7 @@
 //!
 //! Loaded from `*.coat.ron`; a mob wears one through [`MobCoat`] (none = plain skin).
 
+pub mod dqs;
 mod geometry;
 mod material;
 
@@ -257,6 +258,8 @@ pub struct CoatPlugin;
 
 impl Plugin for CoatPlugin {
     fn build(&self, app: &mut App) {
+        // The dual quaternion skinning module `coat_vertex.wesl` imports (kept loaded as a library).
+        bevy::shader::load_shader_library!(app, "dqs.wesl");
         bevy::asset::embedded_asset!(app, "coat_vertex.wesl");
         bevy::asset::embedded_asset!(app, "coat_fragment.wesl");
         app.init_asset::<Coat>()

@@ -11,6 +11,7 @@
 mod binding;
 mod body;
 mod combinators;
+mod cor;
 mod field;
 mod hard;
 mod lod;
@@ -21,13 +22,14 @@ mod process;
 pub mod sdf;
 
 pub use binding::{BindSettings, VoxelBinding};
+pub use cor::centres_of_rotation;
 pub use body::{BodyField, BodyFieldOptions, ChunkView};
 pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
 pub use field::{Field, Influences, SurfaceInfo};
 pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
-    ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, BodyMeshData, MaterialSlot, MobVertexData,
+    ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, BodyMeshData, MaterialSlot, MobVertexData,
     NOT_CLOTH, Submesh,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};

@@ -173,6 +173,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
         coverage: Vec::new(),
         flow: sheet.dirs.iter().zip(&sheet.thickness).map(|(d, t)| d.extend(*t).to_array()).collect(),
         cloth: vec![sheet.kind as u8; n],
+        cor: Vec::new(),
         indices: sheet.indices.clone(),
         submeshes: vec![Submesh { indices: 0..sheet.indices.len() as u32, slot: MaterialSlot::Wing }],
     }

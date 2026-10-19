@@ -84,6 +84,9 @@ pub fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<
             out.uvs.push([h, 0.0]);
             out.coverage.push(body.coverage.get(i).copied().unwrap_or([0.0, 1.0, 0.0]));
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
+            if let Some(c) = body.cor.get(i) {
+                out.cor.push(*c);
+            }
         }
         let base = (k - 1) * n;
         out.indices.extend(tris.iter().flat_map(|t| t.map(|v| base + remap[v as usize])));
@@ -260,6 +263,10 @@ pub fn feather_cards(
                 out.uvs.push(uv);
                 out.coverage.push([0.0, 0.0, 1.0]);
                 out.flow.push(along.extend(0.0).to_array());
+                // A card turns about its root vertex's centre (it shares that vertex's weights).
+                if let Some(c) = body.cor.get(a as usize) {
+                    out.cor.push(*c);
+                }
             }
             out.indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
         }

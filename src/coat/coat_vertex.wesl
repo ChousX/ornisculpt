@@ -1,6 +1,8 @@
 // Mob vertex shader for every coat layer and tier.
-// - Hero meshes are skinned by Bevy (SKINNED); crowd meshes from the crowd bone buffer at the
-//   slot in the mesh tag (COAT_CROWD).
+// - Hero meshes take Bevy's joint matrices (SKINNED); crowd meshes the crowd bone buffer at the
+//   slot in the mesh tag (COAT_CROWD). Both rotate each vertex about its precomputed centre of
+//   rotation (COAT_COR), or blend dual quaternions where a mesh has none (`dqs.wesl`): limbs keep
+//   their volume at bent joints, where averaging matrices shrinks them.
 // - Fur shells (COAT_SHELL) are pushed out along the normal by uv.x · fur length, drooping a little.
 // - tangent.w is the distance along the coat flow (metres, baked at generation); crowd skin is inflated over fur/feathers so silhouettes keep the coat's volume.
 // - Vertex colour = rest-pose position (xyz) + scale weight (w); tangent = coat flow; on the
@@ -13,6 +15,9 @@ import bevy_pbr::render::{
 };
 @if(SKINNED)
 import bevy_pbr::render::skinning;
+@if(SKINNED && !SKINS_USE_UNIFORM_BUFFERS)
+import bevy_pbr::render::mesh_bindings::mesh;
+import package::coat::dqs;
 
 const MAX_CROWD_BONES: u32 = 32u;
 
@@ -47,6 +52,8 @@ struct CoatVertex {
     @location(6) joint_indices: vec4<u32>,
     @if(SKINNED || COAT_CROWD)
     @location(7) joint_weights: vec4<f32>,
+    @if(COAT_COR)
+    @location(8) cor: vec3<f32>,
 };
 
 @vertex
@@ -62,30 +69,68 @@ fn vertex(v: CoatVertex) -> VertexOutput {
     position += v.normal * (v.uv.x * coat.fur.x * 0.8 + v.uv.y * coat.feathers.x * 0.2);
 }
 
-    var world_from_local = mesh_functions::get_world_from_local(v.instance_index);
+    let instance_from_local = mesh_functions::get_world_from_local(v.instance_index);
+    var tangent = vec3<f32>(1.0, 0.0, 0.0);
+@if(VERTEX_TANGENTS) {
+    tangent = v.tangent.xyz;
+}
+    // The centre of rotation (the vertex itself when the mesh has none: no effect).
+    var cor = position;
+@if(COAT_COR) {
+    cor = v.cor;
+}
+    // Rigid by default; skinned paths replace these.
+    var world = (instance_from_local * vec4<f32>(position, 1.0)).xyz;
+    var world_normal = normalize((instance_from_local * vec4<f32>(v.normal, 0.0)).xyz);
+    var world_tangent = normalize((instance_from_local * vec4<f32>(tangent, 0.0)).xyz);
 @if(COAT_CROWD) {
+    // Crowd bones are mob-local skin matrices.
     let base = mesh_functions::get_tag(v.instance_index) * MAX_CROWD_BONES;
-    let skin = crowd_bones[base + v.joint_indices.x] * v.joint_weights.x
-        + crowd_bones[base + v.joint_indices.y] * v.joint_weights.y
-        + crowd_bones[base + v.joint_indices.z] * v.joint_weights.z
-        + crowd_bones[base + v.joint_indices.w] * v.joint_weights.w;
-    world_from_local = world_from_local * skin;
+    let j = v.joint_indices + vec4<u32>(base);
+    let s = dqs::blend(array<mat4x4<f32>, 4>(crowd_bones[j.x], crowd_bones[j.y], crowd_bones[j.z], crowd_bones[j.w]), v.joint_weights, position, v.normal, tangent, cor);
+    world = (instance_from_local * vec4<f32>(s.position, 1.0)).xyz;
+    world_normal = normalize((instance_from_local * vec4<f32>(s.normal, 0.0)).xyz);
+    world_tangent = normalize((instance_from_local * vec4<f32>(s.tangent, 0.0)).xyz);
 }
 @if(SKINNED && !COAT_CROWD) {
-    world_from_local = skinning::skin_model(v.joint_indices, v.joint_weights, v.instance_index);
+    // Bevy's joint matrices are world-space skin matrices.
+    let s = dqs::blend(hero_joints(v.joint_indices, v.instance_index), v.joint_weights, position, v.normal, tangent, cor);
+    world = s.position;
+    world_normal = s.normal;
+    world_tangent = s.tangent;
 }
 
-    let world = world_from_local * vec4<f32>(position, 1.0);
-    out.world_position = world;
-    out.position = position_world_to_clip(world.xyz);
-    out.world_normal = normalize((world_from_local * vec4<f32>(v.normal, 0.0)).xyz);
+    out.world_position = vec4<f32>(world, 1.0);
+    out.position = position_world_to_clip(world);
+    out.world_normal = world_normal;
 @if(VERTEX_UVS_A)
     out.uv = v.uv;
 @if(VERTEX_TANGENTS)
-    out.world_tangent = vec4<f32>(normalize((world_from_local * vec4<f32>(v.tangent.xyz, 0.0)).xyz), v.tangent.w);
+    out.world_tangent = vec4<f32>(world_tangent, v.tangent.w);
 @if(VERTEX_COLORS)
     out.color = v.color;
 @if(VERTEX_OUTPUT_INSTANCE_INDEX)
     out.instance_index = v.instance_index;
     return out;
+}
+
+// The four joints' skin matrices for a hero vertex, from Bevy's joint buffer.
+@if(SKINNED)
+fn hero_joints(indexes: vec4<u32>, instance_index: u32) -> array<mat4x4<f32>, 4> {
+@if(SKINS_USE_UNIFORM_BUFFERS)
+    return array<mat4x4<f32>, 4>(
+        skinning::joint_matrices.data[indexes.x],
+        skinning::joint_matrices.data[indexes.y],
+        skinning::joint_matrices.data[indexes.z],
+        skinning::joint_matrices.data[indexes.w],
+    );
+@if(!SKINS_USE_UNIFORM_BUFFERS)
+    let base = mesh[instance_index].current_skin_index;
+@if(!SKINS_USE_UNIFORM_BUFFERS)
+    return array<mat4x4<f32>, 4>(
+        skinning::joint_matrices[base + indexes.x],
+        skinning::joint_matrices[base + indexes.y],
+        skinning::joint_matrices[base + indexes.z],
+        skinning::joint_matrices[base + indexes.w],
+    );
 }

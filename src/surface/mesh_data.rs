@@ -21,6 +21,8 @@ pub const ATTRIBUTE_CROWD_JOINT_INDEX: MeshVertexAttribute =
     MeshVertexAttribute::new("Ornisculpt_CrowdJointIndex", 0x0b5c_0002, VertexFormat::Uint16x4);
 pub const ATTRIBUTE_CROWD_JOINT_WEIGHT: MeshVertexAttribute =
     MeshVertexAttribute::new("Ornisculpt_CrowdJointWeight", 0x0b5c_0003, VertexFormat::Float32x4);
+/// Per-vertex centre of rotation ([`BodyMeshData::cor`]).
+pub const ATTRIBUTE_COR: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_CentreOfRotation", 0x0b5c_0004, VertexFormat::Float32x3);
 
 /// [`BodyMeshData::cloth`] value of vertices that are not part of a garment.
 pub const NOT_CLOTH: u8 = 255;
@@ -116,6 +118,9 @@ pub struct BodyMeshData {
     pub flow: Vec<[f32; 4]>,
     /// Outfit palette index per vertex ([`NOT_CLOTH`] for body vertices). Empty = no garments.
     pub cloth: Vec<u8>,
+    /// Optimized centre of rotation per vertex (rest pose; see `surface::centres_of_rotation`).
+    /// Empty = skin with dual quaternions instead.
+    pub cor: Vec<Vec3>,
     pub indices: Vec<u32>,
     pub submeshes: Vec<Submesh>,
 }
@@ -171,6 +176,9 @@ impl BodyMeshData {
         } else if self.coverage.len() == n {
             let weights: Vec<[f32; 2]> = self.coverage.iter().map(|c| [c[1], c[2]]).collect();
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, weights);
+        }
+        if self.cor.len() == n {
+            mesh.insert_attribute(ATTRIBUTE_COR, self.cor.clone());
         }
         if self.flow.len() == n {
             mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.flow.clone());

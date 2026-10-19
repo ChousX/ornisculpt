@@ -6,7 +6,7 @@ use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use super::CoatUniform;
-use crate::surface::{ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT};
+use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT};
 
 pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
@@ -78,6 +78,13 @@ impl MaterialExtension for CoatExt {
         if key.bind_group_data.crowd {
             defs.push("COAT_CROWD".into());
         }
+        // The shadow and depth prepass keeps Bevy's shader and vertex layout.
+        let main_pass = descriptor.label.as_deref() != Some("prepass_pipeline");
+        // Meshes with centres of rotation skin about them (`dqs.wesl`); others with dual quaternions.
+        let cor = main_pass && layout.0.contains(ATTRIBUTE_COR);
+        if cor {
+            defs.push("COAT_COR".into());
+        }
         match key.bind_group_data.layer {
             CoatLayer::Skin => defs.push("COAT_SKIN".into()),
             CoatLayer::Shell => defs.push("COAT_SHELL".into()),
@@ -86,12 +93,16 @@ impl MaterialExtension for CoatExt {
             CoatLayer::Cloth => defs.push("COAT_CLOTH".into()),
             CoatLayer::Wing => defs.push("COAT_WING".into()),
         }
+        // `ORNISCULPT_LINEAR_SKIN`: average joint matrices instead of dual quaternions (for comparing).
+        if std::env::var_os("ORNISCULPT_LINEAR_SKIN").is_some() {
+            descriptor.vertex.shader_defs.push("COAT_LINEAR_SKIN".into());
+        }
         descriptor.vertex.shader_defs.extend(defs.iter().cloned());
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.extend(defs);
         }
-        if key.bind_group_data.crowd {
-            // Crowd meshes carry joints under custom attributes, which Bevy doesn't lay out.
+        if key.bind_group_data.crowd || cor {
+            // Crowd joints and centres of rotation are custom attributes, which Bevy doesn't lay out.
             let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
             if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
                 attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
@@ -102,8 +113,16 @@ impl MaterialExtension for CoatExt {
             if layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
                 attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
             }
-            attributes.push(ATTRIBUTE_CROWD_JOINT_INDEX.at_shader_location(6));
-            attributes.push(ATTRIBUTE_CROWD_JOINT_WEIGHT.at_shader_location(7));
+            if key.bind_group_data.crowd {
+                attributes.push(ATTRIBUTE_CROWD_JOINT_INDEX.at_shader_location(6));
+                attributes.push(ATTRIBUTE_CROWD_JOINT_WEIGHT.at_shader_location(7));
+            } else if layout.0.contains(Mesh::ATTRIBUTE_JOINT_INDEX) {
+                attributes.push(Mesh::ATTRIBUTE_JOINT_INDEX.at_shader_location(6));
+                attributes.push(Mesh::ATTRIBUTE_JOINT_WEIGHT.at_shader_location(7));
+            }
+            if cor {
+                attributes.push(ATTRIBUTE_COR.at_shader_location(8));
+            }
             descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         }
         Ok(())
