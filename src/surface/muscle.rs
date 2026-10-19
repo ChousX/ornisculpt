@@ -29,7 +29,7 @@ const CREASE: (f32, f32) = (0.35, 0.85);
 /// enough of the mesh to bulge smoothly.
 const SPREAD: f32 = 1.6;
 /// Smoothing passes over the per-vertex amplitudes.
-const SMOOTHING: usize = 8;
+const SMOOTHING: usize = 12;
 
 /// One muscle belly, in the rest pose.
 struct Belly {
