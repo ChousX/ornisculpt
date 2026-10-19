@@ -49,3 +49,13 @@ pub struct LookDef {
     pub bones: SmallVec<[(BoneId, f32); 4]>,
     pub limit_deg: f32,
 }
+
+/// A shoulder-girdle bone between the torso and an arm. Arm raises past ~30° share part of their
+/// rotation with it, so the shoulder lifts the way a scapula does (see `motion`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clavicle {
+    pub bone: BoneId,
+    /// The arm's first bone (its shoulder joint), a child of `bone`.
+    pub arm: BoneId,
+    pub side: Side,
+}

@@ -64,6 +64,9 @@ pub struct VoxelBinding {
     /// Each cell's nearest primitive's bone (`NO_BONE` outside).
     owner: Vec<u8>,
     parent: Vec<Option<u8>>,
+    /// Per bone: the arm it moves (part index; `None` for every other bone, clavicles included)
+    /// and that arm's shoulder joint (position, radius) in the field's pose.
+    limb: Vec<Option<(u16, Vec3A, f32)>>,
     falloff: f32,
 }
 
@@ -222,7 +225,33 @@ impl VoxelBinding {
             touched.clear();
         }
         let parent = anatomy.skeleton.bones.iter().map(|b| b.parent.map(|p| p.0)).collect();
-        Self { origin, h, dims, kind, near, owner: bone, parent, falloff: settings.falloff }
+        // Limbs and their root joints, for fading limb weight out over the torso.
+        let limb_of = |part: usize| -> Option<u16> {
+            let p = &anatomy.parts[part];
+            if p.role.is_some() {
+                return Some(part as u16);
+            }
+            p.parent.filter(|q| anatomy.parts[*q as usize].role.is_some())
+        };
+        let bones = &anatomy.skeleton.bones;
+        let limb = (0..bones.len())
+            .map(|bi| {
+                if anatomy.clavicles.iter().any(|c| c.bone.index() == bi) {
+                    return None;
+                }
+                let l = limb_of(bones[bi].part as usize)?;
+                // Arms only: they swing far past where they rest. Legs' weights over the hips are fine as
+                // distance gives them, and big hips need them wide.
+                if anatomy.parts[l as usize].role != Some(crate::anatomy::LimbRole::Manipulator) {
+                    return None;
+                }
+                let range = &anatomy.parts[l as usize].bones;
+                let root = (range.start..range.end).find(|r| !anatomy.clavicles.iter().any(|c| c.bone.0 == *r))?;
+                let at = model.get(root as usize)?.translation;
+                Some((l, at, bones[root as usize].length * 0.35))
+            })
+            .collect();
+        Self { origin, h, dims, kind, near, owner: bone, parent, limb, falloff: settings.falloff }
     }
 
     /// Replaces each vertex's joints and weights with the geodesic binding (positions in the pose
@@ -277,9 +306,23 @@ impl VoxelBinding {
                 if best[k].0 != NO_BONE {
                     joints[k] = best[k].0 as u16;
                     weights[k] = (best[k].1 + eps).powf(-self.falloff);
+                    // A limb's pull on the torso fades within a short radius of its root joint (as a
+                    // rigger paints it): distance through the body alone lets a raised arm drag the
+                    // whole side of the chest.
+                    if let Some((l, root, radius)) = self.limb.get(best[k].0 as usize).copied().flatten() {
+                        let own = self.limb.get(home as usize).copied().flatten().is_some_and(|h| h.0 == l);
+                        if !own {
+                            let x = p.distance(root) / radius.max(1e-3);
+                            let s = ((x - 0.5) / 1.0).clamp(0.0, 1.0);
+                            weights[k] *= 1.0 - s * s * (3.0 - 2.0 * s);
+                        }
+                    }
                 }
             }
             let sum: f32 = weights.iter().sum();
+            if sum <= 1e-12 {
+                continue;
+            }
             for w in &mut weights {
                 *w /= sum;
                 if *w < 0.01 {
@@ -354,7 +397,7 @@ impl VoxelBinding {
     fn in_line(&self, a: u8, b: u8) -> bool {
         let up = |from: u8, to: u8| {
             let mut cur = Some(from);
-            for _ in 0..=2 {
+            for _ in 0..=3 {
                 match cur {
                     Some(c) if c == to => return true,
                     Some(c) => cur = self.parent.get(c as usize).copied().flatten(),

@@ -411,11 +411,12 @@ impl Field for ChunkView<'_> {
 }
 
 impl BodyField {
-    /// Whether `a` and `b` are the same bone or one is a near ancestor of the other.
+    /// Whether `a` and `b` are the same bone or one is a near ancestor of the other (within three
+    /// steps: chest bone → clavicle → arm still counts).
     pub(crate) fn in_line(&self, a: BoneId, b: BoneId) -> bool {
         let up = |from: BoneId, to: BoneId| {
             let mut cur = Some(from);
-            for _ in 0..=2 {
+            for _ in 0..=3 {
                 match cur {
                     Some(c) if c == to => return true,
                     Some(c) => cur = self.bone_parent.get(c.index()).copied().flatten(),

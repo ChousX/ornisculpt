@@ -94,7 +94,9 @@ impl MotionRig {
         let mut digits = Vec::new();
         for (i, p) in a.parts.iter().enumerate() {
             if matches!(p.role, Some(LimbRole::Manipulator)) {
-                arms.push((side_of_path(&p.path), part_bones(p)));
+                // The clavicle isn't part of the arm's chain: swings and raises start at the shoulder.
+                let chain: Vec<BoneId> = part_bones(p).into_iter().filter(|b| !a.clavicles.iter().any(|c| c.bone == *b)).collect();
+                arms.push((side_of_path(&p.path), chain));
                 // Digits parts growing from this arm.
                 for d in a.parts.iter().filter(|d| d.parent == Some(i as u16)) {
                     let ids = part_bones(d);

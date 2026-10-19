@@ -134,6 +134,7 @@ impl Plugin for MotionPlugin {
                             pose::ride_torso,
                             pose::swing_springs,
                             pose::apply_cycles,
+                            pose::shoulder_rhythm,
                             pose::solve_legs,
                             pose::look_at,
                             pose::write_joints,

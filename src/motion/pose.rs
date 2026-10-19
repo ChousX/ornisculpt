@@ -240,3 +240,10 @@ pub(super) fn write_joints(mut joints: Query<(&MobJoint, &mut Transform)>, poses
         }
     });
 }
+
+pub(super) fn shoulder_rhythm(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
+    mobs.par_iter_mut().for_each(|(body, mut pose)| {
+        let Some(b) = assets.bodies.get(&body.0) else { return };
+        stages::shoulder_rhythm(&b.anatomy, &mut pose);
+    });
+}

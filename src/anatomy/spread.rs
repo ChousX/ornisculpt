@@ -51,7 +51,8 @@ pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
         if p.bones.start >= p.bones.end {
             continue;
         }
-        let root = BoneId(p.bones.start);
+        // The arm's shoulder joint (past its clavicle, if it has one).
+        let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or(BoneId(p.bones.start), |c| c.arm);
         let m = &world[root.index()];
         let side = m.translation.x;
         if side.abs() < 1e-3 {
@@ -119,7 +120,7 @@ mod tests {
         let spread = model(&a, &spread_pose(&a, &Spread::default()));
         let rest = a.skeleton.model_rest();
         for p in a.parts.iter().filter(|p| p.role == Some(LimbRole::Manipulator)) {
-            let root = p.bones.start as usize;
+            let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or(p.bones.start as usize, |c| c.arm.index());
             let angle = (spread[root].matrix3 * Vec3A::Y).angle_between(Vec3A::NEG_Y).to_degrees();
             let out = (spread[root].matrix3 * Vec3A::Y).x * rest[root].translation.x.signum();
             assert!(angle > 44.0 && out > 0.0, "{}: {angle:.1}° from down, outward {out:.2}", p.path.0);

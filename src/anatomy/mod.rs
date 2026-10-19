@@ -42,7 +42,7 @@ pub use path::PartPath;
 pub use plan::{AttachSlot, BodyPlan, PartNode, PartOffset, PartTone, Repeat, Tone};
 pub use primitive::{HardPart, PrimLayer, PrimOp, PrimShape, Primitive};
 pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, RegionTable, Side};
-pub use rig::{ClothFollow, LegInfo, LookDef, SpringChainDef};
+pub use rig::{Clavicle, ClothFollow, LegInfo, LookDef, SpringChainDef};
 pub use spread::{Spread, spread_pose};
 pub use skeleton::{
     BoneDef, BoneId, CrowdSkeleton, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,

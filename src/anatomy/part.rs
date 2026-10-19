@@ -234,6 +234,10 @@ pub struct LimbParams {
     /// next segment toward the front. Empty = the stance's default. Front and hind legs of real
     /// quadrupeds bend oppositely (elbow back, knee forward), so set these per limb.
     pub bends: Vec<(f32, f32)>,
+    /// Manipulator arms: a clavicle from inside the chest to the shoulder, metres, so raised arms
+    /// lift the shoulder instead of folding the skin there. `None` = automatic (0.45 × the upper
+    /// segment for manipulators, none otherwise); `Some(0.0)` = none.
+    pub clavicle: Option<f32>,
 }
 
 /// What a limb is used for. `Locomotor`/`Both` limbs become [`LegInfo`](super::LegInfo)s;

@@ -303,6 +303,33 @@ pub(crate) fn apply_cycles(a: &Anatomy, cycles: &LayerPose, pose: &mut MobPose) 
     }
 }
 
+
+/// Scapulohumeral rhythm: past ~30°, a third of an arm's turn moves to its clavicle, so the
+/// shoulder lifts rather than one joint folding the skin through the whole raise. The arm still
+/// points where the animation put it; only the shoulder point moves.
+pub(crate) fn shoulder_rhythm(a: &Anatomy, pose: &mut MobPose) {
+    const FREE: f32 = 30.0;
+    const SHARE: f32 = 1.0 / 3.0;
+    const MAX: f32 = 45.0;
+    for c in &a.clavicles {
+        let rest = a.skeleton.bones[c.arm.index()].rest.rotation;
+        let arm = pose.local[c.arm.index()].rotation;
+        // The arm's turn from rest, in the clavicle's frame; the short way round.
+        let mut turn = (arm * rest.inverse()).normalize();
+        if turn.w < 0.0 {
+            turn = -turn;
+        }
+        let (axis, angle) = turn.to_axis_angle();
+        let shared = ((angle.to_degrees() - FREE).max(0.0) * SHARE).min(MAX).to_radians();
+        if shared <= 1e-4 {
+            continue;
+        }
+        let girdle = Quat::from_axis_angle(axis, shared);
+        pose.local[c.bone.index()].rotation *= girdle;
+        pose.local[c.arm.index()].rotation = girdle.inverse() * arm;
+    }
+}
+
 /// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
 /// loose cloth swings with the thighs. Leaves the pre-IK world transforms in `pose.world`.
 pub(crate) fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut MobPose) {
@@ -570,6 +597,7 @@ impl Sim {
         bob_and_bend(f, &self.loco, &self.clock, &self.step, &mut self.pose);
         ride_torso(f, &self.loco, &self.clock, &self.step, &self.heft, &mut self.torso, &mut self.pose);
         swing_springs(f, &self.loco, &mut self.springs, &mut self.pose);
+        shoulder_rhythm(a, &mut self.pose);
         solve_legs(f, &self.feet, None, &mut self.pose);
         look_at(f, target, &mut self.look, &mut self.pose);
         &self.pose.local
@@ -748,5 +776,58 @@ mod torso {
             assert!(hips.0 > 2.0 && hips.1 > 1.5, "{name}: the hips barely move");
             assert!(head.0 < chest.0.max(hips.0), "{name}: the head swings more than the body");
         }
+    }
+}
+
+#[cfg(test)]
+mod shoulders {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+
+    fn human() -> Anatomy {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+    }
+
+    /// The arm's direction and its shoulder's height (world), after raising it by `degrees` and
+    /// running the rhythm.
+    fn raise(a: &Anatomy, degrees: f32) -> (Vec3, Vec3, f32, Quat) {
+        let c = a.clavicles[0];
+        let mut pose = MobPose::default();
+        rest_pose(a, std::iter::repeat(Vec3::ONE), &mut pose);
+        // Raise sideways: about the body's forward axis, in the clavicle's frame.
+        let model = a.skeleton.rest_model();
+        let clav = Quat::from_mat3a(&model[c.bone.index()].matrix3).normalize();
+        let out = model[c.arm.index()].translation.x.signum();
+        let q = clav.inverse() * Quat::from_rotation_z(out * degrees.to_radians()) * clav;
+        pose.local[c.arm.index()].rotation = q * pose.local[c.arm.index()].rotation;
+        let before = forward_kinematics(&a.skeleton.bones, &pose.local, Affine3A::IDENTITY);
+        shoulder_rhythm(a, &mut pose);
+        let after = forward_kinematics(&a.skeleton.bones, &pose.local, Affine3A::IDENTITY);
+        let dir = |w: &[Affine3A]| (w[c.arm.index()].matrix3 * Vec3A::Y).normalize();
+        let lift = after[c.arm.index()].translation.y - before[c.arm.index()].translation.y;
+        (dir(&before).into(), dir(&after).into(), lift, pose.local[c.bone.index()].rotation * a.skeleton.bones[c.bone.index()].rest.rotation.inverse())
+    }
+
+    #[test]
+    fn arms_hang_from_clavicles() {
+        let a = human();
+        assert_eq!(a.clavicles.len(), 2);
+        for c in &a.clavicles {
+            assert_eq!(a.skeleton.bones[c.arm.index()].parent, Some(c.bone));
+        }
+    }
+
+    #[test]
+    fn raised_arms_lift_the_shoulder_and_keep_their_aim() {
+        let a = human();
+        let (before, after, lift, _) = raise(&a, 120.0);
+        println!("120° raise: shoulder lifts {:.1} cm, aim changes {:.3}°", lift * 100.0, before.angle_between(after).to_degrees());
+        assert!(after.y > 0.3, "a 120° raise points the arm up: {after}");
+        assert!(before.angle_between(after).to_degrees() < 0.1, "the arm keeps pointing where it was put");
+        assert!(lift > 0.01, "the shoulder lifts: {lift}");
+        let (_, _, small, clav) = raise(&a, 20.0);
+        assert!(small.abs() < 1e-5 && clav.angle_between(Quat::IDENTITY) < 1e-4, "walking swings leave the clavicle alone");
     }
 }

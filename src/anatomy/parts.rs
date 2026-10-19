@@ -314,10 +314,26 @@ impl PartBuild for LimbParams {
         let upper = b.region(RegionKind::LimbUpper, cx.side)?;
         let lower = b.region(RegionKind::LimbLower, cx.side)?;
         let end_region = b.region(RegionKind::LimbEnd, cx.side)?;
+        // Arms hang from a clavicle reaching in from the shoulder toward the chest, so raises can
+        // share their rotation with it (a shoulder lifts; it doesn't fold).
+        let clavicle_len = match self.clavicle {
+            Some(l) => l,
+            None if self.role == LimbRole::Manipulator => lens[0] * 0.45,
+            None => 0.0,
+        };
+        let clavicle = if self.role == LimbRole::Manipulator && clavicle_len > 1e-3 && at.bone.is_some() {
+            let frame = Transform::from_translation(pos - outward * clavicle_len).with_rotation(frame_y_z(outward, Vec3::Z));
+            Some(b.bone(at.bone, &suffixed("clavicle", cx), frame, clavicle_len, upper)?)
+        } else {
+            None
+        };
         let name = suffixed("limb", cx);
-        let (bones, axis_samples) = emit_chain(b, at.bone, &name, &frames, &self.chain, |t| {
+        let (bones, axis_samples) = emit_chain(b, clavicle.or(at.bone), &name, &frames, &self.chain, |t| {
             if t < 0.5 { upper } else { lower }
         })?;
+        if let Some(c) = clavicle {
+            b.clavicle(c, bones[0], cx.side);
+        }
         let last = bones[n - 1];
         let tip = frames[n];
         let r = radius_at(&self.chain.radius, 1.0);

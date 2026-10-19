@@ -417,6 +417,11 @@ impl AnatomyBuilder {
         });
     }
 
+    /// Registers an arm's clavicle.
+    pub fn clavicle(&mut self, bone: BoneId, arm: BoneId, side: Side) {
+        self.anatomy.clavicles.push(super::Clavicle { bone, arm, side });
+    }
+
     /// Adds a thin generated surface (logical model space; mirrored copies are reflected and
     /// rewound).
     pub fn sheet(&mut self, mut sheet: Sheet) {
