@@ -212,7 +212,7 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
     let items: Vec<(&[u16], &[u32])> = groups.iter().flat_map(|(bones, members)| members.chunks(GROUP_CHUNK).map(move |c| (bones.as_slice(), c))).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = super::worker_threads().min(items.len().max(1));
-    let per_unique: Vec<Option<Vec3>> = std::thread::scope(|scope| {
+    let per_unique: Vec<Option<Vec3>> = super::scope(|scope| {
         let mut handles = Vec::with_capacity(threads);
         for _ in 0..threads {
             let (items, next, weights, uniques, tris, buckets) = (&items, &next, &weights, &uniques, &tris, &buckets);

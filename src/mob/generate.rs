@@ -329,7 +329,8 @@ impl StageTimes {
     /// Runs `f` as stage `name`: a trace span (for Tracy) plus a timing entry.
     fn stage<T>(&mut self, name: &'static str, f: impl FnOnce() -> T) -> T {
         let _span = info_span!("generate", stage = name).entered();
-        let t = std::time::Instant::now();
+        // Bevy's `Instant` also works in the browser, where `std`'s panics.
+        let t = bevy::platform::time::Instant::now();
         let out = f();
         let took = t.elapsed();
         match self.0.iter_mut().find(|(n, _)| *n == name) {

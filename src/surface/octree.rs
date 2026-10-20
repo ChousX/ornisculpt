@@ -259,7 +259,7 @@ impl Mesher for AdaptiveContour {
         let whole = field.view(field.bounds());
         let mut root = top(&grid, &whole, IVec3::ZERO, root_level, job_level, &mut jobs);
         let threads = super::worker_threads().min(jobs.len().max(1));
-        let built: Option<Vec<Built>> = std::thread::scope(|scope| {
+        let built: Option<Vec<Built>> = super::scope(|scope| {
             // Spawn every worker before joining any.
             let mut handles = Vec::with_capacity(threads);
             for t in 0..threads {

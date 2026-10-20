@@ -390,7 +390,7 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
     let count = anatomy.skeleton.bones.len();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = super::worker_threads().min(count).max(1);
-    let mut per_bone: Vec<(usize, Reached)> = std::thread::scope(|scope| {
+    let mut per_bone: Vec<(usize, Reached)> = super::scope(|scope| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 let (one_bone, next) = (&one_bone, &next);

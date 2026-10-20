@@ -81,12 +81,16 @@ pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync)
         return items.iter().map(f).collect();
     }
     let chunk = items.len().div_ceil(threads);
-    std::thread::scope(|scope| {
+    scope(|s| {
         let f = &f;
-        let handles: Vec<_> = items.chunks(chunk).map(|c| scope.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
+        let handles: Vec<_> = items.chunks(chunk).map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
     })
 }
+
+/// Scoped workers for the parallel stages. Every stage spawns through this and merges its
+/// workers' output in job order, so a stage's result doesn't depend on who runs the workers.
+pub(crate) use std::thread::scope;
 
 #[derive(Debug, Error)]
 pub enum SurfaceError {

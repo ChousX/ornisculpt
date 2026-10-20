@@ -149,14 +149,16 @@ pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
     settings: &SurfaceSettings,
     seed: u64,
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
-    // Near and far on their own threads while hero (most of the work) runs on this one.
+    // Near and far on their own threads while hero (most of the work) runs on this one (one after
+    // another on the web).
     let level = |l: LodLevel| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed);
-    let (hero, near, far) = std::thread::scope(|scope| {
+    let (hero, near, far) = super::scope(|scope| {
         let near = scope.spawn(|| level(LodLevel::Near));
         let far = scope.spawn(|| level(LodLevel::Far));
         let hero = level(LodLevel::Hero);
-        let join = |h: std::thread::ScopedJoinHandle<'_, _>| h.join().unwrap_or(Err(SurfaceError::WorkerPanicked));
-        (hero, join(near), join(far))
+        let near = near.join().unwrap_or(Err(SurfaceError::WorkerPanicked));
+        let far = far.join().unwrap_or(Err(SurfaceError::WorkerPanicked));
+        (hero, near, far)
     });
     Ok([hero?, near?, far?])
 }

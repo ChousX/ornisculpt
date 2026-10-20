@@ -74,7 +74,7 @@ impl Mesher for SurfaceNets {
             .collect();
         let threads = super::worker_threads().min(jobs.len().max(1));
         // One part per chunk, joined in chunk order: the mesh doesn't depend on the thread count.
-        let per_thread: Vec<Vec<(usize, RawMesh)>> = std::thread::scope(|scope| {
+        let per_thread: Vec<Vec<(usize, RawMesh)>> = super::scope(|scope| {
             let mut handles = Vec::with_capacity(threads);
             for t in 0..threads {
                 let jobs = &jobs;
