@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 
-use super::generate::{GenPending, is_lost, ready_body};
+use super::generate::{GenPending, lost_error, ready_body};
 use super::crowd::{CrowdSkin, CrowdSlot, CrowdUploaded};
-use super::{BodyReady, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
+use super::{BodyFailed, BodyReady, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::MeshTag;
 use crate::anatomy::{BoneId, LodLevel, PartKind, PartPath};
@@ -112,8 +112,8 @@ pub(super) fn attach_body(
     };
     let with_placeholder: Vec<Entity> = placeholders.iter().map(ChildOf::parent).collect();
     for (mob, pend, tier, children, slot) in &pending {
-        if is_lost(&cache, pend) {
-            commands.entity(mob).remove::<GenPending>();
+        if let Some(error) = lost_error(&cache, pend) {
+            commands.entity(mob).remove::<GenPending>().trigger(move |entity| BodyFailed { entity, error });
             continue;
         }
         let Some(handle) = ready_body(&cache, pend) else {

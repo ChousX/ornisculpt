@@ -7,16 +7,25 @@
 //!
 //! Controls: Tab / Shift+Tab part · Up / Down field (`PageUp` / `PageDown` jump) · Left / Right
 //! adjust (Shift x10, Ctrl x0.1; toggles bools, cycles enum variants) · Delete remove the part ·
-//! Ctrl+Z undo · Ctrl+S save · left-drag orbit · scroll zoom · G skeleton gizmos.
+//! Ctrl+Z undo · Ctrl+S save · left-drag orbit · scroll zoom · G skeleton gizmos. The selected
+//! part's bones are always drawn (every copy of a mirrored or repeated part).
 //!
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits.
+//! `ORNISCULPT_EDITOR_TEST=1` first steps through a few edits by itself (held key, pause, undo)
+//! and logs each preview and full rebuild, then takes the screenshot of the final body.
 //!
 //! The fields come from reflection over the plan, so every number, flag and unit enum variant in a
 //! part is editable; strings and `None` are shown but fixed. Mirrored and repeated parts are one
 //! entry (the authored plan, not the expanded one). Saving rewrites the file from the edited plan,
 //! so its comments and formatting are lost. The file is watched: a save from another editor
 //! replaces unsaved edits here.
+//!
+//! Regeneration is two-speed. Every edit goes straight to a coarse preview (one in flight at a
+//! time, so held keys stream previews as fast as they are made); once edits pause the body is
+//! rebuilt at full quality. With one body to build it gets every core but one, and bodies not
+//! shown recently are dropped from the generation cache so a long session doesn't fill memory.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 
 use bevy::asset::AssetPlugin;
@@ -26,32 +35,50 @@ use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo, VariantType};
 use bevy::reflect::{GetPath, PartialReflect, ReflectMut, ReflectRef, TypeInfo};
 use ornisculpt::OrnisculptPlugin;
-use ornisculpt::anatomy::{BodyPlan, PartNode, PartPath, Repeat};
-use ornisculpt::mob::{BodyReady, GeneratedBody, Mob, MobBody, MobJoint, MobSkeleton};
+use ornisculpt::anatomy::{BodyPlan, Form, PartNode, PartPath, Repeat, apply_form, path_matches};
+use ornisculpt::mob::{BodyFailed, BodyKey, BodyReady, GenBudget, GenCache, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSkeleton};
+use ornisculpt::surface::SurfaceSettings;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
     let path = path.strip_prefix("assets/").map(str::to_owned).unwrap_or(path);
-    App::new()
-        .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin { primary_window: Some(Window { title: "Ornisculpt editor".into(), ..default() }), ..default() })
-                .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
-            OrnisculptPlugin,
-        ))
-        .insert_resource(Editor::new(path))
-        .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
-        .init_resource::<Orbit>()
-        .init_resource::<KeyRepeat>()
-        .add_observer(on_ready)
-        .add_systems(Startup, setup)
-        .add_systems(Update, (sync_from_asset, controls, push_edits, orbit_camera, draw_skeleton, render_panel, screenshot).chain())
-        .run();
+    let mut app = App::new();
+    app.add_plugins((
+        DefaultPlugins
+            .set(WindowPlugin { primary_window: Some(Window { title: "Ornisculpt editor".into(), ..default() }), ..default() })
+            .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
+        OrnisculptPlugin,
+    ))
+    .insert_resource(Editor::new(path))
+    // One body at a time: the meshing stages get every core but one (the main and render
+    // threads share it; the default keeps two for a crowd's worth of bodies).
+    .insert_resource(GenBudget { reserved_threads: 1, ..default() })
+    .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+    .init_resource::<Orbit>()
+    .init_resource::<KeyRepeat>()
+    .add_observer(on_ready)
+    .add_observer(on_failed)
+    .add_systems(Startup, setup)
+    .add_systems(Update, (sync_from_asset, controls, drive_generation, orbit_camera, draw_skeleton, render_panel, screenshot).chain());
+    if std::env::var_os("ORNISCULPT_EDITOR_TEST").is_some() {
+        app.init_resource::<Script>().add_systems(Update, scripted_edits.before(drive_generation));
+    }
+    app.run();
 }
 
-/// Seconds an edit waits for the next before the plan goes to the asset (one regeneration per
-/// burst of key presses).
-const PUSH_DELAY: f32 = 0.3;
+/// Seconds after the last edit (and after its preview is on screen) before the full-quality
+/// rebuild starts. Short, so a pause shows the real body soon; not zero, so a slow run of key
+/// presses doesn't start a full rebuild between each pair that then steals cores from the next
+/// preview.
+const REFINE_DELAY: f32 = 0.2;
+/// Preview meshing: the hero level at this voxel size (full quality is 8 mm with two detail
+/// levels), unsimplified and without centres of rotation or muscle flex (the editor shows the
+/// rest pose). The near level is built like the far one: the editor never shows it.
+const PREVIEW_VOXEL: f32 = 0.015;
+const PREVIEW_DETAIL_LEVELS: u8 = 1;
+/// Generated bodies kept in the cache: the ones shown most recently, so undo and a step back
+/// come up at once. Everything older is dropped with its meshes.
+const KEEP_BODIES: usize = 12;
 /// Edits kept for undo.
 const UNDO_DEPTH: usize = 200;
 /// Fields shown at once.
@@ -72,15 +99,64 @@ struct Editor {
     fields: Vec<Field>,
     field: usize,
     undo: Vec<BodyPlan>,
-    /// Seconds until the edited plan goes to the asset.
-    push_in: Option<f32>,
+    /// The plan changed since the last submission: the mob needs a new preview.
+    dirty: bool,
+    /// When the last edit was made (seconds since start).
+    edited_at: f64,
+    /// Counts edits; `stamped_version` is the last one `edited_at` was taken for, `full_failed`
+    /// the one whose full rebuild failed.
+    version: u64,
+    stamped_version: u64,
+    full_failed: Option<u64>,
+    /// Quality of the submitted generation that hasn't come back yet (`BodyReady` or
+    /// `BodyFailed`); superseded submissions never come back, so this is always the latest.
+    owed: Option<Quality>,
+    /// When it was submitted (seconds since start), for the timings shown.
+    submitted_at: f64,
+    /// Quality of the body the mob shows.
+    shown: Option<Quality>,
+    /// Quality the `SurfaceSettings` resource is set to (what the plugin's own requests build).
+    settings_quality: Quality,
+    /// Last measured submit-to-attach times in milliseconds, by quality.
+    took_ms: [Option<f64>; 2],
+    /// Keys of the bodies shown most recently, newest last (see `KEEP_BODIES`).
+    recent: VecDeque<BodyKey>,
     /// Asset events before this time (seconds since start) are our own writes: not reloaded.
     ignore_until: f64,
-    generating: bool,
     status: String,
     gizmos: bool,
     /// Frames since the body became ready (for screenshots).
     ready_frames: Option<u32>,
+}
+
+/// How a body is built: quickly for the next frame, or properly once the edit settles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Quality {
+    Preview,
+    Full,
+}
+
+impl Quality {
+    const fn index(self) -> usize {
+        match self {
+            Self::Preview => 0,
+            Self::Full => 1,
+        }
+    }
+
+    /// Surface settings for this quality.
+    fn settings(self) -> SurfaceSettings {
+        let mut settings = SurfaceSettings::default();
+        if self == Self::Preview {
+            let [hero, near, far] = &mut settings.levels;
+            hero.mesh.voxel_size = PREVIEW_VOXEL;
+            hero.mesh.detail_levels = PREVIEW_DETAIL_LEVELS;
+            hero.simplify_ratio = 1.0;
+            hero.deformation = false;
+            *near = *far;
+        }
+        settings
+    }
 }
 
 /// One part of the authored plan.
@@ -126,9 +202,19 @@ impl Editor {
             fields: Vec::new(),
             field: 0,
             undo: Vec::new(),
-            push_in: None,
+            dirty: false,
+            edited_at: 0.0,
+            version: 0,
+            stamped_version: 0,
+            full_failed: None,
+            // The plugin builds the first body itself, at the default (full) settings.
+            owed: Some(Quality::Full),
+            submitted_at: 0.0,
+            shown: None,
+            settings_quality: Quality::Full,
+            took_ms: [None; 2],
+            recent: VecDeque::new(),
             ignore_until: 0.0,
-            generating: true,
             status: "loading".into(),
             gizmos: false,
             ready_frames: None,
@@ -158,10 +244,12 @@ impl Editor {
         }
     }
 
-    /// After an edit: refresh the panel and schedule the regeneration.
+    /// After an edit: refresh the panel and ask for a preview (`drive_generation` submits it, and
+    /// stamps the time).
     fn edited(&mut self) {
         self.rebuild();
-        self.push_in = Some(PUSH_DELAY);
+        self.dirty = true;
+        self.version += 1;
     }
 
     fn select_part(&mut self, part: usize) {
@@ -203,8 +291,9 @@ impl Editor {
         let Some(node) = self.plan.as_mut().and_then(|p| p.node_mut(&parent)) else { return };
         node.children.retain(|c| c.name != name);
         self.status = format!("removed {path}");
-        self.select_part(self.part.saturating_sub(1));
-        self.push_in = Some(PUSH_DELAY);
+        self.part = self.part.saturating_sub(1);
+        self.field = 0;
+        self.edited();
     }
 
     fn undo(&mut self) {
@@ -431,6 +520,14 @@ impl Default for Orbit {
     }
 }
 
+impl Orbit {
+    /// Frames a grounded body of this radius (the first body only; after that the view is yours).
+    fn fit(&mut self, radius: f32) {
+        self.target = Vec3::new(0.0, radius * 0.5, 0.0);
+        self.distance = (radius * 2.6).clamp(0.3, 30.0);
+    }
+}
+
 /// Held arrow keys repeat after a delay.
 #[derive(Resource, Default)]
 struct KeyRepeat {
@@ -467,7 +564,10 @@ fn setup(
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut gizmo_config: ResMut<GizmoConfigStore>,
 ) {
+    // Bones are inside the body: draw them over it.
+    gizmo_config.config_mut::<DefaultGizmoConfigGroup>().0.depth_bias = -1.0;
     commands.spawn(Camera3d::default());
     commands.spawn((
         DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
@@ -492,23 +592,29 @@ fn setup(
 /// Takes the plan from the asset when it loads or changes on disk (not after our own writes).
 fn sync_from_asset(mut events: MessageReader<AssetEvent<BodyPlan>>, plans: Res<Assets<BodyPlan>>, mut editor: ResMut<Editor>, time: Res<Time>) {
     let id = editor.handle.id();
+    let first = editor.plan.is_none();
+    // Loading raises `Added` and `LoadedWithDependencies` (frames apart); only a change on disk
+    // is a reload once the plan is here.
     let changed = events.read().any(|ev| match ev {
-        AssetEvent::Added { id: i } | AssetEvent::Modified { id: i } | AssetEvent::LoadedWithDependencies { id: i } => *i == id,
+        AssetEvent::Added { id: i } | AssetEvent::LoadedWithDependencies { id: i } => first && *i == id,
+        AssetEvent::Modified { id: i } => *i == id,
         AssetEvent::Removed { .. } | AssetEvent::Unused { .. } => false,
     });
-    if !changed || (editor.plan.is_some() && time.elapsed_secs_f64() < editor.ignore_until) {
+    if !changed || (!first && time.elapsed_secs_f64() < editor.ignore_until) {
         return;
     }
     let Some(plan) = plans.get(id) else { return };
-    let first = editor.plan.is_none();
     if !first {
         editor.snapshot();
     }
     editor.plan = Some(plan.clone());
-    editor.push_in = None;
-    editor.generating = true;
     editor.status = if first { "loaded".into() } else { "reloaded from disk".into() };
-    editor.rebuild();
+    if first {
+        editor.rebuild();
+    } else {
+        // The plugin regenerates on its own too; our submission supersedes it.
+        editor.edited();
+    }
 }
 
 #[allow(clippy::too_many_lines, reason = "one key per branch")]
@@ -559,33 +665,97 @@ fn controls(
     }
 }
 
-/// Once edits pause, the plan goes to the asset; the plugin regenerates every mob using it.
-fn push_edits(mut editor: ResMut<Editor>, mut plans: ResMut<Assets<BodyPlan>>, time: Res<Time>) {
-    let Some(left) = editor.push_in else { return };
-    let left = left - time.delta_secs();
-    if left > 0.0 {
-        editor.push_in = Some(left);
-        return;
+/// Submits generations: a preview as soon as the plan changes (unless one is already on its way,
+/// in which case the next starts the moment it lands), and the full rebuild once edits pause with
+/// the preview on screen. A full rebuild in progress is superseded by a preview rather than
+/// waited for; the plugin finishes it in the background and the result is only cached.
+fn drive_generation(mut commands: Commands, mut editor: ResMut<Editor>, mut settings: ResMut<SurfaceSettings>, time: Res<Time>) {
+    let now = time.elapsed_secs_f64();
+    if editor.dirty && editor.version != editor.stamped_version {
+        editor.edited_at = now;
+        editor.stamped_version = editor.version;
     }
-    editor.push_in = None;
-    let Some(plan) = editor.plan.clone() else { return };
-    let Some(mut asset) = plans.get_mut(&editor.handle) else { return };
-    *asset = plan;
-    editor.ignore_until = time.elapsed_secs_f64() + 0.5;
-    editor.generating = true;
-    editor.status = "generating".into();
+    // Only writes below mark the editor changed (the panel re-renders on change).
+    let editor = editor.into_inner();
+    let quality = if editor.dirty && editor.owed != Some(Quality::Preview) {
+        Quality::Preview
+    } else if !editor.dirty
+        && editor.owed.is_none()
+        && editor.shown == Some(Quality::Preview)
+        && now - editor.edited_at >= f64::from(REFINE_DELAY)
+        && editor.full_failed != Some(editor.version)
+    {
+        Quality::Full
+    } else {
+        return;
+    };
+    let Some(plan) = &editor.plan else { return };
+    let live = match apply_form(plan, &Form::default()) {
+        Ok(live) => live,
+        Err(e) => {
+            editor.dirty = false;
+            editor.status = format!("failed: {e}");
+            return;
+        }
+    };
+    if editor.settings_quality != quality {
+        *settings = quality.settings();
+        editor.settings_quality = quality;
+    }
+    commands.entity(editor.mob).insert((LiveBody(live), GenRequest));
+    editor.dirty = false;
+    editor.owed = Some(quality);
+    editor.submitted_at = now;
 }
 
-fn on_ready(ev: On<BodyReady>, mut editor: ResMut<Editor>, bodies: Res<Assets<GeneratedBody>>, mobs: Query<&MobBody>) {
+fn on_ready(
+    ev: On<BodyReady>,
+    mut editor: ResMut<Editor>,
+    mut cache: ResMut<GenCache>,
+    mut orbit: ResMut<Orbit>,
+    bodies: Res<Assets<GeneratedBody>>,
+    mobs: Query<&MobBody>,
+    time: Res<Time>,
+) {
     if ev.entity != editor.mob {
         return;
     }
-    editor.generating = false;
-    editor.ready_frames = Some(0);
-    if let Some(body) = mobs.get(editor.mob).ok().and_then(|b| bodies.get(&b.0)) {
-        let a = &body.anatomy;
-        editor.status = format!("ready: {} bones, {} primitives, {} hard parts", a.skeleton.len(), a.primitives.len(), a.hard_parts.len());
+    // A body we didn't ask for (the plugin's own hot reload) was built at the resource's settings.
+    let quality = editor.owed.take().unwrap_or(editor.settings_quality);
+    let first = editor.shown.is_none();
+    editor.shown = Some(quality);
+    let took = (time.elapsed_secs_f64() - editor.submitted_at) * 1000.0;
+    if let Some(slot) = editor.took_ms.get_mut(quality.index()) {
+        *slot = Some(took);
     }
+    if quality == Quality::Full {
+        editor.ready_frames = Some(0);
+    }
+    let Some(body) = mobs.get(editor.mob).ok().and_then(|b| bodies.get(&b.0)) else { return };
+    if first {
+        orbit.fit(body.radius);
+    }
+    let a = &body.anatomy;
+    editor.status = format!("{} bones, {} primitives, {} hard parts", a.skeleton.len(), a.primitives.len(), a.hard_parts.len());
+    // Keep the bodies shown lately (undo comes back to them at once); drop the rest with their
+    // meshes. Superseded generations land in the cache too and go at the next attach.
+    let key = body.key;
+    editor.recent.retain(|k| *k != key);
+    editor.recent.push_back(key);
+    while editor.recent.len() > KEEP_BODIES {
+        editor.recent.pop_front();
+    }
+    cache.bodies.retain(|k, _| editor.recent.contains(k));
+}
+
+fn on_failed(ev: On<BodyFailed>, mut editor: ResMut<Editor>) {
+    if ev.entity != editor.mob {
+        return;
+    }
+    if editor.owed.take() == Some(Quality::Full) {
+        editor.full_failed = Some(editor.version);
+    }
+    editor.status = format!("failed: {}", ev.error);
 }
 
 fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) {
@@ -593,8 +763,17 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
         return;
     }
     let mut s = String::new();
-    let _ = writeln!(s, "{}{}", editor.path, if editor.generating { "   [generating]" } else { "" });
-    let _ = writeln!(s, "{}", editor.status);
+    let state = match (editor.owed, editor.shown) {
+        (Some(Quality::Preview), _) => "   [previewing]",
+        (Some(Quality::Full), None) => "   [generating]",
+        (Some(Quality::Full), Some(_)) => "   [refining]",
+        (None, Some(Quality::Preview)) => "   [preview]",
+        (None, _) => "",
+    };
+    let _ = writeln!(s, "{}{state}", editor.path);
+    let ms = |t: Option<f64>| t.map_or_else(|| "-".to_owned(), |t| format!("{t:.0} ms"));
+    let [preview_ms, full_ms] = editor.took_ms;
+    let _ = writeln!(s, "{}   preview {}, full {}", editor.status, ms(preview_ms), ms(full_ms));
     let _ = writeln!(s, "{HELP}\n");
     for (i, p) in editor.parts.iter().enumerate() {
         let mark = if i == editor.part { '>' } else { ' ' };
@@ -621,8 +800,56 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
     }
 }
 
-fn screenshot(mut commands: Commands, mut editor: ResMut<Editor>, mut exit: MessageWriter<AppExit>) {
+/// Scripted edits (`ORNISCULPT_EDITOR_TEST`): a held key on the root part's first number, a
+/// pause, then undo back. Frames count from the first body.
+#[derive(Resource, Default)]
+struct Script {
+    frame: u32,
+    done: bool,
+    logged: String,
+}
+
+fn scripted_edits(mut script: ResMut<Script>, mut editor: ResMut<Editor>) {
+    if script.done || editor.shown.is_none() {
+        return;
+    }
+    script.frame += 1;
+    let frame = script.frame;
+    match frame {
+        1 => {
+            editor.select_part(1);
+            editor.field = editor.fields.iter().position(|f| f.kind == FieldKind::Float).unwrap_or(0);
+        }
+        // Held key: an edit every third frame (the key repeat rate), then undo one per 8 frames.
+        10..=100 if frame % 3 == 0 => editor.adjust_selected(1.0, 1.0),
+        180..=260 if frame % 8 == 0 => editor.undo(),
+        320 => {
+            script.done = true;
+            // The screenshot counts from the full body: the one shown, or the one on its way.
+            editor.ready_frames = (editor.shown == Some(Quality::Full) && editor.owed.is_none()).then_some(0);
+        }
+        _ => {}
+    }
+    let line = format!(
+        "{} [{}] preview {:?} ms, full {:?} ms ({} = {})",
+        editor.status,
+        editor.owed.map_or("idle", |_| "waiting"),
+        editor.took_ms.first().copied().flatten().map(f64::round),
+        editor.took_ms.last().copied().flatten().map(f64::round),
+        editor.fields.get(editor.field).map_or("", |f| f.label.as_str()),
+        editor.fields.get(editor.field).map_or("", |f| f.value.as_str()),
+    );
+    if script.logged != line {
+        info!("test frame {frame}: {line}");
+        script.logged = line;
+    }
+}
+
+fn screenshot(mut commands: Commands, mut editor: ResMut<Editor>, script: Option<Res<Script>>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
+    if script.is_some_and(|s| !s.done) {
+        return;
+    }
     let Some(frames) = editor.ready_frames.as_mut() else { return };
     *frames += 1;
     // Give pipelines time to compile before capturing.
@@ -652,6 +879,8 @@ fn orbit_camera(
     }
 }
 
+/// The selected part's bones (in every copy of it) in cyan, always; the whole skeleton and the
+/// sockets in yellow with `G`.
 fn draw_skeleton(
     editor: Res<Editor>,
     bodies: Res<Assets<GeneratedBody>>,
@@ -659,16 +888,30 @@ fn draw_skeleton(
     joints: Query<&GlobalTransform, With<MobJoint>>,
     mut gizmos: Gizmos,
 ) {
-    if !editor.gizmos {
-        return;
-    }
     let Ok((body, skeleton)) = mobs.get(editor.mob) else { return };
     let Some(body) = bodies.get(&body.0) else { return };
     let a = &body.anatomy;
-    for (bone, &joint) in a.skeleton.bones.iter().zip(&skeleton.0) {
+    // The selected authored part matches its expanded copies (`leg` matches `leg.l` and `leg.r`).
+    let selected = editor.parts.get(editor.part).filter(|p| p.reflect != "tone").map(|p| &p.path);
+    let highlighted = |bone: usize| {
+        selected.is_some_and(|sel| {
+            a.parts.iter().any(|p| path_matches(sel, &p.path) && p.bones.contains(&u8::try_from(bone).unwrap_or(u8::MAX)))
+        })
+    };
+    for (i, (bone, &joint)) in a.skeleton.bones.iter().zip(&skeleton.0).enumerate() {
         let Ok(g) = joints.get(joint) else { continue };
-        gizmos.line(g.translation(), g.transform_point(Vec3::Y * bone.length), Color::srgb(1.0, 0.85, 0.1));
-        gizmos.sphere(Isometry3d::from_translation(g.translation()), 0.008, Color::srgb(1.0, 0.4, 0.1));
+        let (line, dot) = if highlighted(i) {
+            (Color::srgb(0.2, 0.95, 1.0), Color::srgb(0.6, 1.0, 1.0))
+        } else if editor.gizmos {
+            (Color::srgb(1.0, 0.85, 0.1), Color::srgb(1.0, 0.4, 0.1))
+        } else {
+            continue;
+        };
+        gizmos.line(g.translation(), g.transform_point(Vec3::Y * bone.length), line);
+        gizmos.sphere(Isometry3d::from_translation(g.translation()), 0.008, dot);
+    }
+    if !editor.gizmos {
+        return;
     }
     for socket in &a.sockets {
         let Some(Ok(g)) = skeleton.0.get(socket.bone.index()).map(|&joint| joints.get(joint)) else { continue };

@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use xxhash_rust::xxh3::xxh3_128;
 
-use super::{LiveBody, Mob, MobSeed};
+use super::{BodyFailed, LiveBody, Mob, MobSeed};
 use crate::anatomy::{
     Anatomy, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, TriMesh, apply_form, build_anatomy, referenced_assets,
 };
@@ -271,11 +271,19 @@ pub(super) struct GenPending(pub BodyKey);
 type GenResult = Result<(GenOutput, BodyMeshes), String>;
 
 /// Finished bodies plus in-flight work, deduplicated by key.
+///
+/// `bodies` holds every body generated so far; an app that generates many bodies it no longer
+/// shows (an editor) can drop entries it has no use for.
 #[derive(Resource, Default)]
 pub struct GenCache {
     pub bodies: HashMap<BodyKey, Handle<GeneratedBody>>,
     in_flight: HashMap<BodyKey, Task<GenResult>>,
+    /// Why recent keys failed, for the mobs waiting on them ([`BodyFailed`]).
+    failed: HashMap<BodyKey, String>,
 }
+
+/// Failure messages kept; past this the oldest are forgotten (they are read within a frame).
+const FAILED_KEPT: usize = 32;
 
 impl GenCache {
     #[must_use]
@@ -366,15 +374,16 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
             annotate(lod, &coat, &anatomy, level);
         }
     });
-    // Centres of rotation on the final vertices and weights (coat meshes copy them).
+    // Centres of rotation on the final vertices and weights (coat meshes copy them). Levels
+    // without `deformation` keep neither (empty = linear skinning, still muscles).
     times.stage("centres_of_rotation", || {
-        for lod in &mut lods {
+        for (lod, _) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
             lod.cor = centres_of_rotation(lod);
         }
     });
     // Muscle flex on the final skin (before the coat copies it onto shells and cards).
     times.stage("muscle_flex", || {
-        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
             lod.muscle = muscle_flex(lod, &anatomy, level);
         }
     });
@@ -467,7 +476,8 @@ pub(super) fn start_generation(
                 }
                 Err(e) => {
                     error!("mob {entity}: {e}");
-                    commands.entity(entity).remove::<GenRequest>();
+                    let error = e.to_string();
+                    commands.entity(entity).remove::<GenRequest>().trigger(move |entity| BodyFailed { entity, error });
                     continue;
                 }
             }
@@ -521,6 +531,10 @@ pub(super) fn finish_generation(
             Ok((o, m)) => (o, m),
             Err(e) => {
                 error!("generation failed: {e}");
+                if cache.failed.len() >= FAILED_KEPT {
+                    cache.failed.clear();
+                }
+                cache.failed.insert(key, e);
                 continue;
             }
         };
@@ -553,9 +567,13 @@ pub(super) fn ready_body(cache: &GenCache, pending: &GenPending) -> Option<Handl
     cache.bodies.get(&pending.0).cloned()
 }
 
-/// Failed keys are neither cached nor in flight; mobs waiting on them give up.
-pub(super) fn is_lost(cache: &GenCache, pending: &GenPending) -> bool {
-    !cache.bodies.contains_key(&pending.0) && !cache.in_flight.contains_key(&pending.0)
+/// Failed keys are neither cached nor in flight; mobs waiting on them give up. Returns the
+/// failure's message (a generic one if it has been forgotten).
+pub(super) fn lost_error(cache: &GenCache, pending: &GenPending) -> Option<String> {
+    if cache.bodies.contains_key(&pending.0) || cache.in_flight.contains_key(&pending.0) {
+        return None;
+    }
+    Some(cache.failed.get(&pending.0).cloned().unwrap_or_else(|| "generation failed".into()))
 }
 
 /// Splits the cores not reserved for the main and render threads between the bodies generating

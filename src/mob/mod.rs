@@ -79,6 +79,14 @@ pub struct BodyReady {
     pub entity: Entity,
 }
 
+/// Triggered on a mob when a requested (re)generation failed (the error is also logged). The mob
+/// keeps the body it had, if any.
+#[derive(EntityEvent, Clone, Debug)]
+pub struct BodyFailed {
+    pub entity: Entity,
+    pub error: String,
+}
+
 /// System sets, in order, all in `Update`.
 #[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug)]
 pub enum MobSet {

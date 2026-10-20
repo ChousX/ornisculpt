@@ -21,6 +21,10 @@ pub struct LodSpec {
     pub max_error: f32,
     pub geometric_folds: bool,
     pub hard_parts: bool,
+    /// Centres of rotation and muscle flex for this level's mesh: skinning that holds up at bent
+    /// joints, muscles that bulge. Off, the level skins linearly and its muscles are still; it
+    /// comes out two to three times sooner (a preview).
+    pub deformation: bool,
 }
 
 /// Per-level surface quality. Scaled by the quality profile later.
@@ -39,6 +43,7 @@ impl Default for SurfaceSettings {
             max_error,
             geometric_folds,
             hard_parts,
+            deformation: true,
         };
         Self {
             levels: [
