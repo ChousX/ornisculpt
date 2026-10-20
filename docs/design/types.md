@@ -59,7 +59,7 @@
 | Physics | **User's choice.** The plugin has no physics dependency, and the game fills foot ground hits. |
 | Part LOD | Parts have detail levels. Small parts drop out of the mesh, skeleton and ECS at coarser tiers (§2.10). |
 | Cache | postcard + zstd. |
-| Tooling | No editor. **Examples** for testing and **benches** for performance (§12). |
+| Tooling | No standalone editor: the `editor` example edits a plan live. **Examples** for testing and **benches** for performance (§12). |
 
 ---
 
@@ -629,7 +629,7 @@ pub enum MobSet { Generation, Intent /* game writes MobIntent */, Tiering, HeroM
 
 ## 12. Examples and benchmarks (from TQ-5)
 
-There is no editor. Examples double as visual tests, and benches guard performance.
+There is no standalone editor; the `editor` example adjusts a plan's values live and saves them back. Examples double as visual tests, and benches guard performance.
 
 | Example | Shows / tests |
 |---|---|
