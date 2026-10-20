@@ -91,7 +91,8 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
         indices: mesh.indices,
         submeshes: Vec::new(),
     };
-    for p in &out.positions {
+    // Each vertex queries the field on its own: in parallel.
+    let attrs = super::par_map(&out.positions, |p| {
         let pa = Vec3A::from(*p);
         let normal = field.gradient(pa).normalize_or(Vec3A::Y);
         let info = field.surface_info(pa);
@@ -105,20 +106,21 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
             .map_or_else(|| bone.0..bone.0.saturating_add(1), |part| part.bones.clone());
         let span = f32::from((range.end.saturating_sub(range.start)).max(1));
         let limb_t = (f32::from(bone.0.saturating_sub(range.start)) + 0.5) / span;
-        out.normals.push(normal.into());
-        out.joints.push(info.influences.bones.map(|b| u16::from(b.0)));
-        out.weights.push(info.influences.weights);
-        out.mob_data.push(
-            MobVertexData {
-                region: info.region,
-                cavity: (occluded * 255.0).sat_u8(),
-                curvature: 128,
-                limb_t: (limb_t * 255.0).sat_u8(),
-                primary_bone: bone,
-                layer: info.layer,
-            }
-            .pack(),
-        );
+        let data = MobVertexData {
+            region: info.region,
+            cavity: (occluded * 255.0).sat_u8(),
+            curvature: 128,
+            limb_t: (limb_t * 255.0).sat_u8(),
+            primary_bone: bone,
+            layer: info.layer,
+        };
+        (Vec3::from(normal), info.influences.bones.map(|b| u16::from(b.0)), info.influences.weights, data.pack())
+    });
+    for (normal, joints, weights, data) in attrs {
+        out.normals.push(normal);
+        out.joints.push(joints);
+        out.weights.push(weights);
+        out.mob_data.push(data);
     }
     out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot: MaterialSlot::Skin });
     out

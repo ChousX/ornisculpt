@@ -169,9 +169,12 @@ impl VoxelBinding {
     /// Replaces each vertex's joints and weights with the geodesic binding (positions in the pose
     /// the field was built in).
     pub fn apply(&self, data: &mut BodyMeshData) {
-        for (&position, (joints, weights)) in data.positions.iter().zip(data.joints.iter_mut().zip(data.weights.iter_mut())) {
-            // The bone the vertex's own surface belongs to (its nearest primitive's).
-            if let Some((j, w)) = self.bind(Vec3A::from(position), joints[0].clamp_u8()) {
+        // The bone the vertex's own surface belongs to (its nearest primitive's). Vertices bind
+        // independently: in parallel.
+        let homes: Vec<(Vec3, u8)> = data.positions.iter().zip(&data.joints).map(|(p, j)| (*p, j[0].clamp_u8())).collect();
+        let bound = super::par_map(&homes, |&(p, home)| self.bind(Vec3A::from(p), home));
+        for (b, (joints, weights)) in bound.into_iter().zip(data.joints.iter_mut().zip(data.weights.iter_mut())) {
+            if let Some((j, w)) = b {
                 *joints = j;
                 *weights = w;
             }
@@ -317,13 +320,11 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
         .filter(|o| *o != IVec3::ZERO)
         .map(|o| (o, o.as_vec3().length() * grid.size))
         .collect();
-    let mut near = vec![[(NO_BONE, f32::INFINITY); 4]; grid.len()];
-    let mut dist = vec![f32::INFINITY; grid.len()];
-    let mut touched: Vec<usize> = Vec::new();
-    let mut frontier = BinaryHeap::new();
     let model = field.bone_model();
-    for (bi, def) in anatomy.skeleton.bones.iter().enumerate() {
-        let (Ok(bone), Some(m)) = (u8::try_from(bi), model.get(bi)) else { continue };
+    // One bone's Dijkstra, in scratch `dist` (left all infinite again): the cells it reached and
+    // their distances, in the order they were first reached.
+    let one_bone = |bi: usize, dist: &mut [f32], touched: &mut Vec<usize>, frontier: &mut BinaryHeap<Step>| -> Option<Reached> {
+        let (Ok(bone), Some(def), Some(m)) = (u8::try_from(bi), anatomy.skeleton.bones.get(bi), model.get(bi)) else { return None };
         let reach = (def.length * settings.reach).max(settings.min_reach);
         let (head, tail) = (m.translation, m.transform_point3a(Vec3A::Y * def.length));
         let steps = (def.length / (grid.size * 0.5)).ceil().sat_usize().max(1);
@@ -345,7 +346,7 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
         }
         // A bone outside the volume (thin parts): seed from the cells it owns.
         if !seeded {
-            for (i, (_, d)) in cells.iter().zip(&mut dist).enumerate().filter(|(_, (c, _))| c.bone == bone && c.kind != EXTERIOR) {
+            for (i, (_, d)) in cells.iter().zip(dist.iter_mut()).enumerate().filter(|(_, (c, _))| c.bone == bone && c.kind != EXTERIOR) {
                 seed(i, d);
             }
         }
@@ -375,15 +376,60 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
                 }
             }
         }
-        for &i in &touched {
-            let (Some(d), Some(slot)) = (dist.get_mut(i), near.get_mut(i)) else { continue };
-            if *d < slot[3].1 {
-                slot[3] = (bone, *d);
-                slot.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let reached = touched.iter().filter_map(|&i| dist.get(i).map(|&d| (i, d))).collect();
+        for &i in touched.iter() {
+            if let Some(d) = dist.get_mut(i) {
+                *d = f32::INFINITY;
             }
-            *d = f32::INFINITY;
         }
         touched.clear();
+        Some((bone, reached))
+    };
+    // Bones spread independently, so they run in parallel (each thread with its own scratch) and
+    // merge in bone order: the same result on any thread count.
+    let count = anatomy.skeleton.bones.len();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = super::worker_threads().min(count).max(1);
+    let mut per_bone: Vec<(usize, Reached)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let (one_bone, next) = (&one_bone, &next);
+                scope.spawn(move || {
+                    let (mut dist, mut touched, mut frontier) = (vec![f32::INFINITY; grid.len()], Vec::new(), BinaryHeap::new());
+                    let mut out = Vec::new();
+                    loop {
+                        let bi = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if bi >= count {
+                            break out;
+                        }
+                        if let Some(r) = one_bone(bi, &mut dist, &mut touched, &mut frontier) {
+                            out.push((bi, r));
+                        }
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    });
+    per_bone.sort_unstable_by_key(|(bi, _)| *bi);
+    nearest_four(per_bone.into_iter().map(|(_, r)| r), grid.len())
+}
+
+/// A bone and the cells its spread reached, with their distances (in the order first reached).
+type Reached = (u8, Vec<(usize, f32)>);
+
+/// Each cell's four nearest bones, from every bone's spread in bone order (ties keep the earlier
+/// bone).
+fn nearest_four(per_bone: impl Iterator<Item = Reached>, cells: usize) -> Vec<[(u8, f32); 4]> {
+    let mut near = vec![[(NO_BONE, f32::INFINITY); 4]; cells];
+    for (bone, reached) in per_bone {
+        for (i, d) in reached {
+            let Some(slot) = near.get_mut(i) else { continue };
+            if d < slot[3].1 {
+                slot[3] = (bone, d);
+                slot.sort_by(|a, b| a.1.total_cmp(&b.1));
+            }
+        }
     }
     near
 }

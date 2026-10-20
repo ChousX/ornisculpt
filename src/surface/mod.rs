@@ -71,6 +71,23 @@ pub fn worker_threads() -> usize {
     }
 }
 
+/// Maps `f` over `items` on up to [`worker_threads`] threads, in contiguous chunks; the results keep
+/// `items`' order, so they don't depend on the thread count. Small inputs stay on this thread.
+/// A worker's panic resumes here.
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    const MIN_PER_THREAD: usize = 512;
+    let threads = worker_threads().min(items.len() / MIN_PER_THREAD).max(1);
+    if threads == 1 {
+        return items.iter().map(f).collect();
+    }
+    let chunk = items.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let f = &f;
+        let handles: Vec<_> = items.chunks(chunk).map(|c| scope.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum SurfaceError {
     #[error("field produced no surface (empty or fully inside/outside)")]

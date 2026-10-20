@@ -137,7 +137,7 @@ fn hard_part_owners(anatomy: &Anatomy) -> Vec<u16> {
     out
 }
 
-/// All three levels; independent, so callers may run them in parallel instead.
+/// All three levels, built in parallel (near and far beside hero, which is most of the work).
 ///
 /// # Errors
 ///
@@ -149,8 +149,16 @@ pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
     settings: &SurfaceSettings,
     seed: u64,
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
-    let [a, b, c] = LodLevel::ALL.map(|l| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed));
-    Ok([a?, b?, c?])
+    // Near and far on their own threads while hero (most of the work) runs on this one.
+    let level = |l: LodLevel| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed);
+    let (hero, near, far) = std::thread::scope(|scope| {
+        let near = scope.spawn(|| level(LodLevel::Near));
+        let far = scope.spawn(|| level(LodLevel::Far));
+        let hero = level(LodLevel::Hero);
+        let join = |h: std::thread::ScopedJoinHandle<'_, _>| h.join().unwrap_or(Err(SurfaceError::WorkerPanicked));
+        (hero, join(near), join(far))
+    });
+    Ok([hero?, near?, far?])
 }
 
 /// A wing sheet as mesh data: double-sided in the shader, so one layer of triangles.
@@ -223,6 +231,61 @@ mod hero_timing {
             let t = std::time::Instant::now();
             let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
             println!("voxel {v}: {:.2}s, {} tris", t.elapsed().as_secs_f32(), m.indices.len() / 3);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stage_probe {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{AdaptiveContour, ProceduralHardParts};
+
+    /// Where `mesh_lod`'s time goes, per level and stage.
+    #[test]
+    #[ignore = "timing probe"]
+    fn mesh_lod_stage_times() {
+        for body in ["biped", "horse"] {
+            let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let plan: BodyPlan = ron::from_str(&text).unwrap();
+            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let settings = SurfaceSettings::default();
+            for level in LodLevel::ALL {
+                let spec = settings.get(level);
+                let mut t = std::time::Instant::now();
+                let lap = |name: &str, t: &mut std::time::Instant| {
+                    print!("{name} {:.0}  ", t.elapsed().as_secs_f32() * 1000.0);
+                    *t = std::time::Instant::now();
+                };
+                print!("{body} {level:?} ms: ");
+                let opts = BodyFieldOptions { level, seed: 1, geometric_folds: spec.geometric_folds, spread: true };
+                let field = BodyField::new(&anatomy, &opts);
+                let extent = Vec3::from(field.bounds().max - field.bounds().min).max_element();
+                let mut ms = spec.mesh;
+                ms.voxel_size *= (extent / REFERENCE_EXTENT).max(1.0);
+                lap("field", &mut t);
+                let mut raw = AdaptiveContour.mesh(&field, &ms).unwrap();
+                lap("mesher", &mut t);
+                weld(&mut raw, ms.voxel_size * 1e-3);
+                smooth(&mut raw, 2);
+                lap("weld+smooth", &mut t);
+                let mut data = skin_and_attrs(raw, &field, &anatomy);
+                lap("skin_attrs", &mut t);
+                let bind = BindSettings { voxel: (ms.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
+                let binding = VoxelBinding::new(&field, &anatomy, &bind);
+                lap("bind_grid", &mut t);
+                binding.apply(&mut data);
+                lap("bind_apply", &mut t);
+                field.unbind(&mut data);
+                lap("unbind", &mut t);
+                if spec.simplify_ratio < 1.0 {
+                    data = simplify(&data, spec.simplify_ratio, spec.max_error);
+                }
+                lap("simplify", &mut t);
+                let full = std::time::Instant::now();
+                let _ = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, level, spec, 1).unwrap();
+                println!("| whole mesh_lod {:.0}", full.elapsed().as_secs_f32() * 1000.0);
+            }
         }
     }
 }
