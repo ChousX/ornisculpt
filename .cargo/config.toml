@@ -1,0 +1,4 @@
+# Browser builds (`tools/web.sh`): cargo hands the built .wasm to the runner, which binds it with
+# wasm-bindgen and serves it.
+[target.wasm32-unknown-unknown]
+runner = "tools/web-run.sh"

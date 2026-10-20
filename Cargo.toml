@@ -3,6 +3,12 @@ name = "ornisculpt"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Browser build (wasm32-unknown-unknown; `tools/web.sh`): Bevy's web platform support and the
+# WebGPU backend (the crowd skinning compute shader and storage buffers rule out WebGL2), randomness
+# from the browser, and the parallel meshing stages on the calling thread (browsers have no threads).
+web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
+
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = ["3d", "serialize", "png"] }
 bytemuck = { version = "1", features = ["derive"] }
@@ -17,14 +23,22 @@ serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1", features = ["serde", "union", "const_generics"] }
 thiserror = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Browser randomness for `rand` 0.10 and for `mesh_to_sdf`'s `bvh` (rand 0.8): `web` only.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"], optional = true }
 
-[dev-dependencies]
-# Hot reload for the examples.
+# Hot reload for the examples (not in the browser, where Bevy rejects `file_watcher`).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 bevy = { version = "0.20", default-features = false, features = ["file_watcher"] }
 
 # Bevy is slow in debug; optimize dependencies but keep our crate fast to rebuild.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Browser builds (`tools/web.sh`): release, minus the symbol names that double the .wasm.
+[profile.web]
+inherits = "release"
+strip = true
 
 
 [lints.clippy]

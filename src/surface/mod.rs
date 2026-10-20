@@ -62,9 +62,12 @@ pub fn set_worker_threads(threads: usize) {
     WORKER_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Threads a parallel stage may use now.
+/// Threads a parallel stage may use now (always 1 with the `web` feature: browsers have no threads).
 #[must_use]
 pub fn worker_threads() -> usize {
+    if cfg!(feature = "web") {
+        return 1;
+    }
     match WORKER_THREADS.load(std::sync::atomic::Ordering::Relaxed) {
         0 => std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         n => n,
@@ -88,9 +91,55 @@ pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync)
     })
 }
 
-/// Scoped workers for the parallel stages. Every stage spawns through this and merges its
-/// workers' output in job order, so a stage's result doesn't depend on who runs the workers.
+/// Scoped workers for the parallel stages: [`std::thread::scope`], or with the `web` feature (no
+/// threads in the browser) [`sequential::scope`], where every spawned closure runs at once on the
+/// calling thread. Each stage merges its workers' output in job order, so the result is the same.
+#[cfg(not(feature = "web"))]
 pub(crate) use std::thread::scope;
+#[cfg(feature = "web")]
+pub(crate) use sequential::scope;
+
+/// The shape of [`std::thread::scope`] with every worker run at once on the calling thread, so a
+/// stage written for scoped threads runs unchanged where there are none. A worker's panic
+/// surfaces from `spawn` instead of `join`; nothing here catches it either way.
+#[cfg(feature = "web")]
+mod sequential {
+    use std::marker::PhantomData;
+
+    pub struct Scope<'scope, 'env: 'scope> {
+        scope: PhantomData<&'scope mut &'scope ()>,
+        env: PhantomData<&'env mut &'env ()>,
+    }
+
+    /// A finished worker's result.
+    pub struct JoinHandle<T>(T);
+
+    pub fn scope<'env, F, T>(f: F) -> T
+    where
+        F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
+    {
+        f(&Scope { scope: PhantomData, env: PhantomData })
+    }
+
+    impl<'scope> Scope<'scope, '_> {
+        /// Runs `f` now; the handle holds its result.
+        #[allow(clippy::unused_self, reason = "the shape of `Scope::spawn`")]
+        pub fn spawn<F, T>(&'scope self, f: F) -> JoinHandle<T>
+        where
+            F: FnOnce() -> T + Send + 'scope,
+            T: Send + 'scope,
+        {
+            JoinHandle(f())
+        }
+    }
+
+    impl<T> JoinHandle<T> {
+        #[allow(clippy::unnecessary_wraps, reason = "the shape of `ScopedJoinHandle::join`")]
+        pub fn join(self) -> std::thread::Result<T> {
+            Ok(self.0)
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SurfaceError {

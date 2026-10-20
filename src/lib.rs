@@ -1,6 +1,8 @@
 //! Ornisculpt: procedural creature/mob generation for Bevy.
 //!
 //! Design reference: `docs/design/types.md`.
+//!
+//! Runs in the browser too (WebGPU): the `web` feature, built and served by `tools/web.sh`.
 
 pub mod anatomy;
 pub mod clothing;
@@ -13,6 +15,9 @@ pub mod random;
 pub mod surface;
 
 use bevy::prelude::*;
+
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+compile_error!("browser builds need the `web` feature: `cargo build --target wasm32-unknown-unknown --features web`, or `tools/web.sh`");
 
 /// Top-level plugin. Adds every Ornisculpt sub-plugin.
 #[derive(Default)]

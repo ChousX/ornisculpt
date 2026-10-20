@@ -276,3 +276,64 @@ fn pad_extend<T: Copy>(base: &mut Vec<T>, other: &[T], base_len: usize, other_le
         base.resize(base_len + other_len, fill);
     }
 }
+
+/// meshoptimizer (`meshopt`) takes its scratch memory from C++'s `operator new` and
+/// `operator delete`, which nothing provides on wasm32-unknown-unknown: these are them, over Rust's
+/// allocator. The size goes in a header in front of each block so `delete`, which only gets the
+/// pointer, can rebuild the layout.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod cxx_alloc {
+    use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+
+    /// Payload alignment, and the header size that keeps the payload aligned.
+    const ALIGN: usize = 16;
+
+    const fn layout(size: usize) -> Option<Layout> {
+        match Layout::from_size_align(size.saturating_add(ALIGN), ALIGN) {
+            Ok(l) => Some(l),
+            Err(_) => None,
+        }
+    }
+
+    /// `operator new(size_t)`.
+    ///
+    /// # Safety
+    ///
+    /// Called by C++ only; the block is freed with [`_ZdlPv`].
+    #[allow(clippy::cast_ptr_alignment, reason = "the block is 16-aligned")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _Znwm(size: usize) -> *mut u8 {
+        let Some(layout) = layout(size) else { std::process::abort() };
+        // SAFETY: the layout has a non-zero size.
+        let base = unsafe { alloc(layout) };
+        if base.is_null() {
+            handle_alloc_error(layout);
+        }
+        // SAFETY: the block holds the header and `size` bytes after it.
+        unsafe {
+            base.cast::<usize>().write(size);
+            base.add(ALIGN)
+        }
+    }
+
+    /// `operator delete(void*)`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is null or came from [`_Znwm`] and hasn't been freed.
+    #[allow(clippy::cast_ptr_alignment, reason = "the block is 16-aligned")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _ZdlPv(ptr: *mut u8) {
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: `ptr` was handed out by `_Znwm`, so the header precedes it and holds the size.
+        unsafe {
+            let base = ptr.sub(ALIGN);
+            let size = base.cast::<usize>().read();
+            if let Some(layout) = layout(size) {
+                dealloc(base, layout);
+            }
+        }
+    }
+}
