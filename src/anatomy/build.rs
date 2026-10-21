@@ -67,6 +67,21 @@ pub struct BuiltPart {
 }
 
 impl Anatomy {
+    /// The idle pose: every bone at rest, wings folded by their rest fold (local transforms, one
+    /// per bone).
+    #[must_use]
+    pub fn idle_pose(&self) -> Vec<Transform> {
+        let mut pose: Vec<Transform> = self.skeleton.bones.iter().map(|b| b.rest).collect();
+        for w in &self.wings {
+            for (bone, folded) in &w.bones {
+                if let Some(r) = pose.get_mut(bone.index()) {
+                    r.rotation = r.rotation.slerp(*folded, w.fold);
+                }
+            }
+        }
+        pose
+    }
+
     #[must_use]
     pub fn part(&self, path: &PartPath) -> Option<&BuiltPart> {
         self.parts.iter().find(|p| &p.path == path)

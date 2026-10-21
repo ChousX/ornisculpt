@@ -100,16 +100,7 @@ fn skin_frame(anatomy: &Anatomy, local: &[Transform]) -> SkinFrame {
 #[must_use]
 pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
     debug_assert!(anatomy.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
-    // Idle: the rest pose with wings folded by their rest fold.
-    let mut rest: Vec<Transform> = anatomy.skeleton.bones.iter().map(|b| b.rest).collect();
-    for w in &anatomy.wings {
-        for (bone, folded) in &w.bones {
-            if let Some(r) = rest.get_mut(bone.index()) {
-                r.rotation = r.rotation.slerp(*folded, w.fold);
-            }
-        }
-    }
-    let idle = skin_frame(anatomy, &rest);
+    let idle = skin_frame(anatomy, &anatomy.idle_pose());
     let leg = leg_length(anatomy);
 
     let clips = gait

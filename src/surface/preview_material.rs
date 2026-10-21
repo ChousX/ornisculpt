@@ -30,7 +30,7 @@ use bevy::render::sync_world::MainEntity;
 use bevy::render::texture::GpuImage;
 use bevy::shader::{ShaderDefVal, ShaderRef};
 
-use super::{BRICK_VOXELS, PreviewField};
+use super::{BRICK_VOXELS, PreviewField, PreviewSheets};
 
 pub const SDF_PREVIEW_SHADER: &str = "embedded://ornisculpt/surface/sdf_preview.wesl";
 
@@ -138,6 +138,10 @@ pub struct SdfPreview {
     pub buffer: Handle<ShaderBuffer>,
     pub hull: Handle<Mesh>,
     pub atlas: Handle<Image>,
+    /// The wing sheets, drawn as triangles by a child entity.
+    pub sheets: Handle<Mesh>,
+    /// Clay colour of the body (the sheets' vertex colours start from it).
+    pub color: Color,
     /// Bricks the field in `buffer` has (the atlas may hold more).
     pub bricks: u32,
     /// Counts [`show`](Self::show)s: the render world bakes the bricks when it changes.
@@ -165,6 +169,7 @@ pub struct SdfPreviewAssets<'w> {
     pub materials: ResMut<'w, Assets<SdfPreviewMaterial>>,
     pub buffers: ResMut<'w, Assets<ShaderBuffer>>,
     pub images: ResMut<'w, Assets<Image>>,
+    pub standard: ResMut<'w, Assets<StandardMaterial>>,
 }
 
 /// A brick atlas `layers` layers of `BRICK_ROW²` bricks deep.
@@ -183,7 +188,8 @@ const fn atlas_bricks(image: &Image) -> u32 {
 }
 
 impl SdfPreview {
-    /// The preview's components (spawn them as a child of the mob), clay coloured.
+    /// The preview's components (spawn them as a child of the mob), clay coloured, with a child
+    /// drawing the wing sheets.
     pub fn bundle(assets: &mut SdfPreviewAssets, color: Color) -> impl Bundle {
         let buffer = assets.buffers.add(ShaderBuffer::new(vec![[0.0f32; 4]; 64], RenderAssetUsages::RENDER_WORLD));
         let atlas = assets.images.add(atlas(1));
@@ -192,11 +198,16 @@ impl SdfPreview {
             extension: SdfPreviewExt { field: buffer.clone(), params: SdfPreviewUniform::default(), atlas: atlas.clone() },
         });
         let hull = assets.meshes.add(Cuboid::from_length(1e-3));
+        let sheets = assets.meshes.add(sheets_mesh(&PreviewSheets::default(), color, Vec4::ZERO));
+        // Colours come from the vertices; both faces lit (a sheet is one layer of triangles).
+        let sheet_material =
+            assets.standard.add(StandardMaterial { perceptual_roughness: 0.6, double_sided: true, cull_mode: None, ..default() });
         (
-            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, bricks: 0, generation: 0 },
+            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, sheets: sheets.clone(), color, bricks: 0, generation: 0 },
             Mesh3d(hull),
             MeshMaterial3d(material),
             Visibility::Hidden,
+            children![(Mesh3d(sheets), MeshMaterial3d(sheet_material))],
         )
     }
 
@@ -211,6 +222,10 @@ impl SdfPreview {
         }
         if let Some(mut mesh) = assets.meshes.get_mut(&self.hull) {
             *mesh = hull_mesh(field);
+        }
+        let highlight = assets.materials.get(&self.material).map_or(Vec4::ZERO, |m| m.extension.params.highlight);
+        if let Some(mut mesh) = assets.meshes.get_mut(&self.sheets) {
+            *mesh = sheets_mesh(&field.sheets, self.color, highlight);
         }
         if assets.images.get(&self.atlas).is_some_and(|image| atlas_bricks(image) < field.bricks) {
             if let Some(mut image) = assets.images.get_mut(&self.atlas) {
@@ -234,6 +249,36 @@ fn hull_mesh(field: &PreviewField) -> Mesh {
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+/// The wing sheets as a mesh coloured per vertex: the clay, darker where the sheet is thin,
+/// tinted like the body where highlighted (`highlight`: linear rgb, strength). Never empty (a
+/// degenerate triangle stands in for no sheets).
+fn sheets_mesh(sheets: &PreviewSheets, color: Color, highlight: Vec4) -> Mesh {
+    let clay = color.to_linear().to_vec3();
+    let colors: Vec<[f32; 4]> = sheets
+        .shade
+        .iter()
+        .map(|[thickness, lit]| {
+            let shaded = clay * thickness.clamp(0.0, 1.0).mul_add(0.3, 0.7);
+            shaded.lerp(highlight.truncate(), highlight.w * lit).extend(1.0).to_array()
+        })
+        .collect();
+    let (positions, normals, colors, indices) = if sheets.indices.is_empty() {
+        (vec![[0.0; 3]; 3], vec![[0.0, 1.0, 0.0]; 3], vec![[0.0; 4]; 3], vec![0, 1, 2])
+    } else {
+        (
+            sheets.positions.iter().map(Vec3::to_array).collect(),
+            sheets.normals.iter().map(Vec3::to_array).collect(),
+            colors,
+            sheets.indices.clone(),
+        )
+    };
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
         .with_inserted_indices(Indices::U32(indices))
 }
 

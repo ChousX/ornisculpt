@@ -45,17 +45,6 @@ fn brick_distance(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) ->
     return textureSampleLevel(atlas, atlas_sampler, texel / vec3<f32>(textureDimensions(atlas)), 0.0).x;
 }
 
-// The baked distance at `p`: its cell's brick, or for a cell without one, a cell's length (no
-// surface there). For the normal's taps around a hit.
-fn distance_at(g: Grid, b: Bricks, p: vec3<f32>) -> f32 {
-    let c = cell_at(g, p);
-    let brick = cell_list(g, c).z;
-    if brick == 0u {
-        return g.cell;
-    }
-    return brick_distance(g, b, c, brick - 1u, p);
-}
-
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     let g = grid_info();
@@ -101,11 +90,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         discard;
     }
 
-    // Normal from the baked distance's gradient (tetrahedron taps half a voxel out).
+    // Normal from the baked distance's gradient: tetrahedron taps half a voxel out, each read from
+    // the brick of the cell it lands in (bricks agree on their shared walls, so no seams), or from
+    // the hit's own brick, clamped to its walls, where that cell has none (a cell without a brick
+    // has no distances, only a flat stand-in). Facing the camera where a sliver too thin for the
+    // lattice leaves no gradient.
+    let c = cell_at(g, p);
     var n_model = vec3<f32>(0.0);
     for (var k = 0u; k < 4u; k++) {
         let tap = vec3<f32>(f32((k + 1u) & 2u) - 1.0, f32((k >> 1u) & 1u) * 2.0 - 1.0, f32(k & 1u) * 2.0 - 1.0);
-        n_model += tap * distance_at(g, b, p + tap * voxel * 0.5);
+        let q = p + tap * voxel * 0.5;
+        let cq = cell_at(g, q);
+        let brick = cell_list(g, cq).z;
+        if brick == 0u {
+            n_model += tap * brick_distance(g, b, c, list.z - 1u, q);
+        } else {
+            n_model += tap * brick_distance(g, b, cq, brick - 1u, q);
+        }
+    }
+    if dot(n_model, n_model) < 1e-12 {
+        n_model = -dir;
     }
     let world = (preview.world_from_model * vec4<f32>(p, 1.0)).xyz;
     // Normals go through the inverse transpose of world_from_model.

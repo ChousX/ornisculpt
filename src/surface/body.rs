@@ -159,16 +159,27 @@ pub(super) fn transform_aabb(m: &Affine3A, (lo, hi): (Vec3, Vec3)) -> Aabb3d {
 }
 
 impl BodyField {
+    #[must_use]
     pub fn new(anatomy: &Anatomy, opts: &BodyFieldOptions) -> Self {
-        let rest = anatomy.skeleton.model_rest();
-        let (model, unbind) = if opts.spread {
+        if opts.spread {
             let pose = crate::anatomy::spread_pose(anatomy, &crate::anatomy::Spread::default());
-            let mut model: Vec<Affine3A> = Vec::with_capacity(pose.len());
-            for (b, local) in anatomy.skeleton.bones.iter().zip(&pose) {
-                let l = local.compute_affine();
-                let parent = b.parent.and_then(|p| model.get(p.index()));
-                model.push(parent.map_or(l, |m| *m * l));
-            }
+            Self::build(anatomy, opts, Some(&pose))
+        } else {
+            Self::build(anatomy, opts, None)
+        }
+    }
+
+    /// The field with the bones in the local pose `pose` (one transform per bone) rather than at
+    /// rest; `opts.spread` is ignored. [`unbind`](Self::unbind) brings a mesh of it back to rest.
+    #[must_use]
+    pub fn with_pose(anatomy: &Anatomy, opts: &BodyFieldOptions, pose: &[Transform]) -> Self {
+        Self::build(anatomy, opts, Some(pose))
+    }
+
+    fn build(anatomy: &Anatomy, opts: &BodyFieldOptions, pose: Option<&[Transform]>) -> Self {
+        let rest = anatomy.skeleton.model_rest();
+        let (model, unbind) = if let Some(pose) = pose {
+            let model = anatomy.skeleton.model_from(pose);
             let unbind = rest.iter().zip(&model).map(|(r, s)| *r * s.inverse()).collect();
             (model, unbind)
         } else {

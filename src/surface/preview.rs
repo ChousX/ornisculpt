@@ -81,6 +81,64 @@ pub struct PreviewField {
     /// counter-clockwise seen from outside) with their outward normals. Rays start where they
     /// enter it, so the empty space around the body is neither drawn nor marched.
     pub hull: Vec<([Vec3; 4], Vec3)>,
+    /// Wing sheets (membranes, flight feathers, insect wings): thin, so drawn as the triangles
+    /// the anatomy already has rather than marched.
+    pub sheets: PreviewSheets,
+}
+
+/// Wing sheets as one triangle list, model space, in the field's pose.
+#[derive(Clone, Debug, Default)]
+pub struct PreviewSheets {
+    pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    /// Per vertex: thickness (0 = thinnest .. 1 = bone, shaft), and 1 where the sheet's part is
+    /// highlighted.
+    pub shade: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+}
+
+impl PreviewSheets {
+    /// Every sheet of `anatomy`, skinned to the bones at `model` (linear blend: the sheets bend
+    /// little between their bones), flagged where `highlight` holds for its part.
+    fn new(anatomy: &Anatomy, model: &[Affine3A], highlight: &impl Fn(u16) -> bool) -> Self {
+        let skin: Vec<Affine3A> =
+            model.iter().zip(&anatomy.skeleton.inverse_bind).map(|(m, inv)| *m * Affine3A::from_mat4(*inv)).collect();
+        let mut out = Self::default();
+        for sheet in &anatomy.sheets {
+            let base = out.positions.len().clamp_u32();
+            let lit = f32::from(u8::from(highlight(sheet.part)));
+            let posed: Vec<Vec3> = sheet
+                .positions
+                .iter()
+                .zip(&sheet.joints)
+                .zip(&sheet.weights)
+                .map(|((p, joints), weights)| {
+                    joints.iter().zip(weights).fold(Vec3::ZERO, |acc, (j, w)| {
+                        acc + skin.get(j.idx()).map_or(*p, |m| m.transform_point3(*p)) * *w
+                    })
+                })
+                .collect();
+            let sheet_positions = &posed;
+            let mut normals = vec![Vec3::ZERO; sheet.positions.len()];
+            for t in sheet.indices.as_chunks::<3>().0 {
+                let [a, b, c] = t.map(Idx::idx);
+                let (Some(&pa), Some(&pb), Some(&pc)) = (sheet_positions.get(a), sheet_positions.get(b), sheet_positions.get(c)) else {
+                    continue;
+                };
+                let n = (pb - pa).cross(pc - pa);
+                for v in [a, b, c] {
+                    if let Some(slot) = normals.get_mut(v) {
+                        *slot += n;
+                    }
+                }
+            }
+            out.positions.extend(posed.iter());
+            out.normals.extend(normals.into_iter().map(|n| n.normalize_or(Vec3::Y)));
+            out.shade.extend((0..sheet.positions.len()).map(|i| [sheet.thickness.get(i).copied().unwrap_or(0.0), lit]));
+            out.indices.extend(sheet.indices.iter().map(|i| base + i));
+        }
+        out
+    }
 }
 
 const fn bits(v: u32) -> f32 {
@@ -174,7 +232,7 @@ fn hard_part(part: &HardPart, model: &[Affine3A], highlight: bool) -> Option<Pac
 
 impl BodyField {
     /// Packs the field for `sdf_preview.wesl`, plus stand-ins for `anatomy`'s hard parts (eyes,
-    /// claws, horns: see `hard_part`) on its rest pose. Primitives of a part for which `highlight`
+    /// claws, horns: see `hard_part`) and its wing sheets, on its rest pose. Primitives of a part for which `highlight`
     /// is true are flagged (the shader tints them). Creases are left out (they are shading-scale).
     #[must_use]
     pub fn preview(&self, anatomy: &Anatomy, highlight: impl Fn(u16) -> bool) -> PreviewField {
@@ -229,12 +287,12 @@ impl BodyField {
                 aabb: prim.aabb,
             });
         }
-        // Hard parts, after the skin (a hard union: blend 0), present where their part is.
-        let model = anatomy.skeleton.model_rest();
+        // Hard parts, after the skin (a hard union: blend 0), in the field's pose.
+        let model = self.bone_model();
         for (pi, part) in (0u16..).zip(&anatomy.parts) {
             let lit = highlight(pi);
             for hard in anatomy.hard_parts.get(part.hard_parts.start.idx()..part.hard_parts.end.idx()).unwrap_or_default() {
-                packed.extend(hard_part(hard, &model, lit));
+                packed.extend(hard_part(hard, model, lit));
             }
         }
 
@@ -244,7 +302,9 @@ impl BodyField {
             self.distance_of(&skin, p)
         };
         let hard = |list: &[u32]| list.iter().any(|i| i.idx() >= self.prims.len());
-        assemble(&packed, segments, grids, self.bounds, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w)
+        let mut field = assemble(&packed, segments, grids, self.bounds, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
+        field.sheets = PreviewSheets::new(anatomy, self.bone_model(), &highlight);
+        field
     }
 }
 
@@ -344,7 +404,7 @@ fn assemble(
     words.extend(items.iter().map(|&i| word_u32(i, 0, 0, 0)));
     words.extend(bricks.iter().map(|&i| word_u32(i, 0, 0, 0)));
     let hull = hull(&surface, dims, min, cell);
-    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks: bricks.len().clamp_u32(), hull }
+    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks: bricks.len().clamp_u32(), hull, sheets: PreviewSheets::default() }
 }
 
 /// The faces between cells that may hold surface (`surface`, one flag per cell, x fastest) and

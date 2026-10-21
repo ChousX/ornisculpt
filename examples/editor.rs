@@ -25,10 +25,10 @@
 //! so its comments and formatting are lost. The file is watched: a save from another editor
 //! replaces unsaved edits here.
 //!
-//! Every edit shows on the next frame: the anatomy is rebuilt (a fraction of a millisecond) and its
+//! Every edit shows on the next frame: the anatomy is rebuilt (about a millisecond) and its
 //! primitives are ray-marched on the GPU (`SdfPreview`), clay coloured, the selected part tinted,
-//! without the coat, hard parts or wing membranes. Once edits pause the body is meshed at full
-//! quality in the background and replaces the preview. With one body to build it gets every core
+//! wing sheets drawn as the anatomy's own triangles, the coat left out. Once edits pause the body
+//! is meshed at full quality in the background and replaces the preview. With one body to build it gets every core
 //! but one, and bodies not shown recently are dropped from the generation cache so a long session
 //! doesn't fill memory.
 
@@ -156,7 +156,7 @@ struct Editor {
 struct PreviewBody {
     anatomy: Anatomy,
     field: BodyField,
-    /// Rest pose, model space, per bone.
+    /// Idle pose (as the field), model space, per bone.
     model: Vec<Affine3A>,
 }
 
@@ -494,7 +494,7 @@ impl Editor {
         let root = |a: &Anatomy| -> Option<Vec3> {
             let part = a.part(&built.path)?;
             let bone = usize::from(part.bones.start);
-            a.skeleton.model_rest().get(bone).map(|m| Vec3::from(m.translation))
+            a.skeleton.model_from(&a.idle_pose()).get(bone).map(|m| Vec3::from(m.translation))
         };
         let base = root(&body.anatomy)?;
         let mut columns = [Vec3::ZERO; 3];
@@ -791,7 +791,6 @@ fn setup(
     mut commands: Commands,
     mut editor: ResMut<Editor>,
     assets: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut preview_assets: SdfPreviewAssets,
     mut gizmo_config: ResMut<GizmoConfigStore>,
 ) {
@@ -804,7 +803,9 @@ fn setup(
     ));
     commands.spawn((
         Mesh3d(preview_assets.meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
+        MeshMaterial3d(
+            preview_assets.standard.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() }),
+        ),
     ));
     editor.handle = assets.load(editor.path.clone());
     editor.mob = commands.spawn(Mob::new(editor.handle.clone())).id();
@@ -986,7 +987,9 @@ fn update_preview(
             return;
         }
     };
-    let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+    // In the idle pose (wings folded by their rest fold), as the mob's mesh stands.
+    let pose = anatomy.idle_pose();
+    let field = BodyField::with_pose(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false }, &pose);
     // The selected authored part matches its expanded copies (`leg` matches `leg.l` and `leg.r`).
     let selected = editor.parts.get(editor.part).filter(|p| p.reflect != "tone").map(|p| &p.path);
     let packed = field.preview(&anatomy, |part| {
@@ -994,7 +997,7 @@ fn update_preview(
     });
     let Ok(mut preview) = previews.get_mut(editor.preview) else { return };
     preview.show(&packed, &mut preview_assets);
-    let model = anatomy.skeleton.model_rest();
+    let model = anatomy.skeleton.model_from(&pose);
     editor.preview_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
     editor.body = Some(PreviewBody { anatomy, field, model });
     if new_version {
