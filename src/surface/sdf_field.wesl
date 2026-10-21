@@ -124,7 +124,14 @@ struct Sample {
     d: f32,
     // index of the nearest union primitive, or NO_LIMB
     nearest: u32,
+    // distance to the nearest eye, and to the nearest other hard part (FAR: none listed)
+    eye: f32,
+    hard: f32,
 };
+
+// Flag bits (word 3.w of a primitive), as in `surface/preview.rs`.
+const EYE: u32 = 2u;
+const HARD: u32 = 4u;
 
 // The field at `p` over `count` primitives: from `first` on (`listed` false: the whole field is
 // `field(p, 0, primitive count, false)`), or the ones listed from item `first` on (a cell's list:
@@ -139,6 +146,8 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
     var best = FAR;
     var nearest = NO_LIMB;
     var nearest_limb = NO_LIMB;
+    var eye = FAR;
+    var hard = FAR;
     for (var k = 0u; k < count; k++) {
         var index = first + k;
         if listed {
@@ -185,6 +194,11 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
                     nearest = index;
                     nearest_limb = info.z;
                 }
+                if (info.w & EYE) != 0u {
+                    eye = min(eye, dl);
+                } else if (info.w & HARD) != 0u {
+                    hard = min(hard, dl);
+                }
             }
             case 1u: {
                 if have {
@@ -202,7 +216,7 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
             default: {}
         }
     }
-    return Sample(d - raised, nearest);
+    return Sample(d - raised, nearest, eye, hard);
 }
 
 struct Grid {
@@ -232,6 +246,12 @@ fn exit_t(o: vec3<f32>, inv: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> f32 {
     let t1 = (hi - o) * inv;
     let far = max(t0, t1);
     return min(far.x, min(far.y, far.z));
+}
+
+// Whether part `part` is selected (the parts' words, header word 4).
+fn part_lit(part: u32) -> bool {
+    let b = word_u(4u);
+    return part < b.z && word_u(b.y + part).x != 0u;
 }
 
 // The brick lattice: `voxels` per brick edge (`samples` = voxels + 1 a side, walls included).

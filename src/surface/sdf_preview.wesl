@@ -6,8 +6,10 @@
 // distance bricks baked from the field after each change (`sdf_bake.wesl`), read trilinearly: a
 // texture fetch a step rather than an evaluation of the primitives (several times dearer on a
 // laptop GPU). Cells without a brick hold no surface and are crossed in one step. Details thinner
-// than a voxel soften or drop out; the mesh that follows has them. The primitives are evaluated
-// once, at the hit, for what is there.
+// than a voxel soften or drop out; the mesh that follows has them. What is there (an eye, a hard
+// part, which part) comes from the bricks too: the primitives are never evaluated here, which keeps
+// the shader small (evaluating them once at the hit cost more than the rest of the shading, mostly
+// by slowing the march around it).
 
 import bevy_pbr::render::{
     mesh_view_bindings::view,
@@ -15,10 +17,7 @@ import bevy_pbr::render::{
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::VertexOutput,
 };
-import package::surface::sdf_field::{
-    Bricks, FAR, Grid, HEADER_WORDS, NO_LIMB, PRIM_WORDS, Sample, brick_origin, bricks_info, cell_at, cell_list, exit_t, field,
-    grid_info, word_u,
-};
+import package::surface::sdf_field::{Bricks, Grid, brick_origin, bricks_info, cell_at, cell_list, exit_t, grid_info, part_lit};
 
 struct PreviewUniform {
     model_from_world: mat4x4<f32>,
@@ -38,11 +37,28 @@ struct FragmentOutput {
     @builtin(frag_depth) depth: f32,
 };
 
-// The baked distance at `p`, in cell `c` whose brick is `brick` (trilinear between lattice points).
-fn brick_distance(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) -> f32 {
+// Where `p` falls in the brick `brick` of cell `c`, in atlas texels.
+fn brick_texel(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) -> vec3<f32> {
     let local = clamp((p - (g.min + vec3<f32>(c) * g.cell)) / g.cell, vec3<f32>(0.0), vec3<f32>(1.0)) * f32(b.voxels);
-    let texel = vec3<f32>(brick_origin(b, brick)) + local + vec3<f32>(0.5);
-    return textureSampleLevel(atlas, atlas_sampler, texel / vec3<f32>(textureDimensions(atlas)), 0.0).x;
+    return vec3<f32>(brick_origin(b, brick)) + local;
+}
+
+// The baked values at `p`, in cell `c` whose brick is `brick` (trilinear between lattice points):
+// distance, distance to the nearest eye, to the nearest other hard part, and a part (meaningless
+// between lattice points: see `brick_part`).
+fn brick_sample(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) -> vec4<f32> {
+    let texel = brick_texel(g, b, c, brick, p) + vec3<f32>(0.5);
+    return textureSampleLevel(atlas, atlas_sampler, texel / vec3<f32>(textureDimensions(atlas)), 0.0);
+}
+
+fn brick_distance(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) -> f32 {
+    return brick_sample(g, b, c, brick, p).x;
+}
+
+// The part of the primitive nearest the lattice point closest to `p`.
+fn brick_part(g: Grid, b: Bricks, c: vec3<u32>, brick: u32, p: vec3<f32>) -> u32 {
+    let texel = vec3<u32>(round(brick_texel(g, b, c, brick, p)));
+    return u32(textureLoad(atlas, texel, 0).w + 0.5);
 }
 
 @fragment
@@ -58,7 +74,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // From just before the hull face this fragment is on.
     var t = max(dot(surface - camera, dir) - g.cell * 1e-3, 0.0);
     var hit = false;
-    var sample = Sample(FAR, NO_LIMB);
     var p = camera;
     var list = vec4<u32>(0u);
     let b = bricks_info();
@@ -81,7 +96,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if d < max(2e-4, t * 4e-4) {
             hit = true;
             list = w;
-            sample = field(p, w.x, w.y, true);
             break;
         }
         t += d * 0.9;
@@ -128,21 +142,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr.V = normalize(view.world_position - world);
     pbr.frag_coord = vec4<f32>(in.position.xy, depth, in.position.w);
 
-    if sample.nearest != NO_LIMB {
-        let flags = word_u(HEADER_WORDS + sample.nearest * PRIM_WORDS + 3u).w;
-        var color = pbr.material.base_color.rgb;
-        if (flags & 2u) != 0u {
-            color = vec3<f32>(0.03, 0.02, 0.015);
-            pbr.material.perceptual_roughness = 0.1;
-        } else if (flags & 4u) != 0u {
-            color = vec3<f32>(0.85, 0.8, 0.68);
-            pbr.material.perceptual_roughness = 0.4;
-        }
-        if (flags & 1u) != 0u {
-            color = mix(color, preview.highlight.rgb, preview.highlight.w);
-        }
-        pbr.material.base_color = vec4<f32>(color, pbr.material.base_color.a);
+    // What the surface here is: an eye or a hard part where that is as near as the field (hard
+    // parts join it with a hard union, so on one its distance is the field's), skin otherwise; and
+    // tinted where its part is selected.
+    let at = brick_sample(g, b, c, list.z - 1u, p);
+    let near = at.x + voxel * 0.1;
+    var color = pbr.material.base_color.rgb;
+    if at.y <= near {
+        color = vec3<f32>(0.03, 0.02, 0.015);
+        pbr.material.perceptual_roughness = 0.1;
+    } else if at.z <= near {
+        color = vec3<f32>(0.85, 0.8, 0.68);
+        pbr.material.perceptual_roughness = 0.4;
     }
+    if part_lit(brick_part(g, b, c, list.z - 1u, p)) {
+        color = mix(color, preview.highlight.rgb, preview.highlight.w);
+    }
+    pbr.material.base_color = vec4<f32>(color, pbr.material.base_color.a);
 
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr, apply_pbr_lighting(pbr));

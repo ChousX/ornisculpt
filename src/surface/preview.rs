@@ -9,21 +9,23 @@
 //! 1          grid minimum (xyz), cell size
 //! 2          cells per axis (xyz, bit-cast)
 //! 3          teardrop keel (CrossSection::KEEL)
-//! 4          distance bricks: voxels along a brick's edge
+//! 4          voxels along a brick's edge, first part word, part count
 //! 5..        primitives, PRIM_WORDS each: model → local rows (3), kind / op / limb / flags,
 //!            shape parameters, more parameters (a sweep's largest radius), blend / min scale /
-//!            displace height, blend anchor
+//!            displace height / part, blend anchor
 //! segments   one word per sweep point: position (xyz), radius
 //! grids      per authored grid: origin (xyz) and cell, then dims (xyz), then values 4 per word
 //! cells      one word per cell: first item, item count, brick + 1 (0: no surface in the cell)
 //! items      primitive indices, one per word (x), each cell's in field order
+//! parts      one word per part of the anatomy: 1 (x) where it is selected
 //! ```
 //!
 //! Each cell lists the primitives whose padded bounds come near it, in field order, so evaluating
 //! a cell's list gives what [`BodyField`] gives there (as a meshing [`ChunkView`](super::ChunkView)
 //! does). Cells that may hold surface get a brick: the field sampled on a lattice over the cell
-//! (`BRICK_VOXELS` + 1 samples a side, walls included), which a compute pass bakes into a 3D
-//! texture atlas (`sdf_bake.wesl`) for the preview to march (`sdf_preview.wesl`).
+//! (`BRICK_VOXELS` + 1 samples a side, walls included), with the distances to the nearest eye and
+//! other hard part and the nearest primitive's part, which a compute pass bakes into a 3D texture
+//! atlas (`sdf_bake.wesl`) for the preview to march and colour (`sdf_preview.wesl`).
 //!
 //! The cells lie on a lattice that holds still while edits move the body's bounds, and each brick
 //! comes with a key: a hash of its cell's position and of everything its list evaluates (the
@@ -198,20 +200,22 @@ struct Packed {
     op: u32,
     limb: u32,
     flags: u32,
+    /// The anatomy part it belongs to.
+    part: u16,
     blend: f32,
     height: f32,
     anchor: (Vec3A, f32),
     aabb: Aabb3d,
 }
 
-/// Flag bits (word 3.w): tinted as selected; an eye; a hard part.
-const HIGHLIGHT: u32 = 1;
+/// Flag bits (word 3.w): an eye; a hard part (`EYE` and `HARD` in `sdf_field.wesl`).
 const EYE: u32 = 2;
 const HARD: u32 = 4;
 
-/// A hard part as a stand-in primitive: eyes as spheres, plates as ellipsoids, everything
-/// horn-like as a straight round cone (curl and twist left out). Authored meshes are skipped.
-fn hard_part(part: &HardPart, model: &[Affine3A], highlight: bool) -> Option<Packed> {
+/// A hard part of anatomy part `of` as a stand-in primitive: eyes as spheres, plates as ellipsoids,
+/// everything horn-like as a straight round cone (curl and twist left out). Authored meshes are
+/// skipped.
+fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     let s = part.params.size;
     let (kind, params, flag) = match &part.params.kind {
         HardKind::Eye => (SPHERE, [s, 0.0, 0.0, 0.0], EYE),
@@ -246,7 +250,8 @@ fn hard_part(part: &HardPart, model: &[Affine3A], highlight: bool) -> Option<Pac
         more: [0.0; 4],
         op: UNION,
         limb: NO_LIMB,
-        flags: flag | if highlight { HIGHLIGHT } else { 0 },
+        flags: flag,
+        part: of,
         blend: 0.0,
         height: 0.0,
         anchor: (Vec3A::ZERO, 0.0),
@@ -257,7 +262,7 @@ fn hard_part(part: &HardPart, model: &[Affine3A], highlight: bool) -> Option<Pac
 impl BodyField {
     /// Packs the field for `sdf_preview.wesl`, plus stand-ins for `anatomy`'s hard parts (eyes,
     /// claws, horns: see `hard_part`) and its wing sheets, in the pose the field was built in.
-    /// Primitives of a part for which `highlight` is true are flagged (the shader tints them).
+    /// Parts for which `highlight` is true are listed as selected (the shader tints them).
     /// Creases are left out (they are shading-scale).
     #[must_use]
     pub fn preview(&self, anatomy: &Anatomy, highlight: impl Fn(u16) -> bool) -> PreviewField {
@@ -305,7 +310,8 @@ impl BodyField {
                 more,
                 op,
                 limb: prim.limb.map_or(NO_LIMB, u32::from),
-                flags: if highlight(prim.part) { HIGHLIGHT } else { 0 },
+                flags: 0,
+                part: prim.part,
                 blend: prim.blend,
                 height,
                 anchor: prim.anchor.unwrap_or((Vec3A::ZERO, 0.0)),
@@ -315,9 +321,8 @@ impl BodyField {
         // Hard parts, after the skin (a hard union: blend 0), in the field's pose.
         let model = self.bone_model();
         for (pi, part) in (0u16..).zip(&anatomy.parts) {
-            let lit = highlight(pi);
             for hard in anatomy.hard_parts.get(part.hard_parts.start.idx()..part.hard_parts.end.idx()).unwrap_or_default() {
-                packed.extend(hard_part(hard, model, lit));
+                packed.extend(hard_part(hard, pi, model));
             }
         }
 
@@ -336,7 +341,8 @@ impl BodyField {
             self.distance_of(&skin, p - up)
         };
         let hard = |list: &[u32]| list.iter().any(|i| i.idx() >= self.prims.len());
-        let mut field = assemble(&packed, segments, grids, fallback, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
+        let lit: Vec<bool> = (0..anatomy.parts.len()).map(|i| highlight(u16::try_from(i).unwrap_or(u16::MAX))).collect();
+        let mut field = assemble(&packed, segments, grids, &lit, fallback, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
         field.offset = (-up).into();
         field.sheets = PreviewSheets::new(anatomy, self.bone_model(), &highlight);
         field
@@ -352,6 +358,7 @@ fn assemble(
     packed: &[Packed],
     segments: Vec<[f32; 4]>,
     grids: Vec<[f32; 4]>,
+    lit: &[bool],
     fallback: Aabb3d,
     may_hold_surface: impl Fn(&[u32], Vec4) -> bool + Sync,
 ) -> PreviewField {
@@ -409,12 +416,13 @@ fn assemble(
     let grid_start = seg_start + segments.len();
     let cell_start = grid_start + grids.len();
     let item_start = cell_start + cells.len();
-    let mut words = Vec::with_capacity(item_start + items.len());
+    let part_start = item_start + items.len();
+    let mut words = Vec::with_capacity(part_start + lit.len());
     words.push(word_u32(packed.len().clamp_u32(), seg_start.clamp_u32(), cell_start.clamp_u32(), item_start.clamp_u32()));
     words.push(min.extend(cell).to_array());
     words.push(word_u32(dims.x, dims.y, dims.z, grid_start.clamp_u32()));
     words.push(CrossSection::KEEL.extend(0.0).to_array());
-    words.push(word_u32(BRICK_VOXELS, 0, 0, 0));
+    words.push(word_u32(BRICK_VOXELS, part_start.clamp_u32(), lit.len().clamp_u32(), 0));
     for p in packed {
         let m = p.to_local;
         let row = |r: usize| {
@@ -428,7 +436,7 @@ fn assemble(
             word_u32(p.kind, p.op, p.limb, p.flags),
             p.params,
             p.more,
-            [p.blend, p.min_scale, p.height, 0.0],
+            [p.blend, p.min_scale, p.height, bits(u32::from(p.part))],
             [p.anchor.0.x, p.anchor.0.y, p.anchor.0.z, p.anchor.1],
         ]);
     }
@@ -437,6 +445,7 @@ fn assemble(
     words.extend(cells);
     // One per word: picking a vector component by a runtime index is slow on some GPUs.
     words.extend(items.iter().map(|&i| word_u32(i, 0, 0, 0)));
+    words.extend(lit.iter().map(|&on| word_u32(u32::from(on), 0, 0, 0)));
     let hull = hull(&surface, dims, min, cell);
     PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks, hull, sheets: PreviewSheets::default(), offset: Vec3::ZERO }
 }
@@ -480,14 +489,14 @@ fn hash_bits(h: &mut Xxh3, bits: &[u32]) {
     }
 }
 
-/// What a primitive contributes to the field, hashed: its values (rounded) and integers, without
-/// the highlight bit or the offsets of its sweep points and grid (those move when data before
+/// What a primitive contributes to the field and the bricks, hashed: its values (rounded) and
+/// integers (its part's index too), without the offsets of its sweep points and grid (those move when data before
 /// them changes), plus that data itself.
 fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]]) -> u64 {
     let mut h = Xxh3::new();
     hash_values(&mut h, &p.to_local.matrix3.to_cols_array());
     hash_values(&mut h, &p.to_local.translation.to_array());
-    hash_bits(&mut h, &[p.kind, p.op, p.limb, p.flags & !HIGHLIGHT]);
+    hash_bits(&mut h, &[p.kind, p.op, p.limb, p.flags, u32::from(p.part)]);
     let [offset, count, more @ ..] = p.params;
     match p.kind {
         SWEEP => {
