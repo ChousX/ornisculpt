@@ -31,6 +31,9 @@ struct PreviewUniform {
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var atlas_sampler: sampler;
 
 const MAX_STEPS: u32 = 128u;
+// Of the baked distance, per step: a whole step (the trilinear distance only overshoots by
+// fractions of a voxel, and nothing thinner than that survives the lattice anyway).
+const STEP: f32 = 1.0;
 
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
@@ -98,7 +101,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             list = w;
             break;
         }
-        t += d * 0.9;
+        t += d * STEP;
     }
     if !hit {
         discard;

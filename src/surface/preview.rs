@@ -61,8 +61,10 @@ const MAX_CELLS: u32 = 128;
 /// edits cost about what they did. 16 marches 1-2 ms dearer for little more.
 pub const BRICK_VOXELS: u32 = 12;
 /// Cells list every primitive within this many voxels of them, so a cell's list gives the field
-/// exactly that far beyond its walls (`LIST_PAD_VOXELS` in `sdf_bake.wesl`).
-const LIST_PAD_VOXELS: f32 = 2.0;
+/// exactly that far beyond its walls (`LIST_PAD_VOXELS` in `sdf_bake.wesl`). Bricks cap their
+/// distances there, so a wider pad lets the march take longer steps near cell walls (4 over 2:
+/// 0.3-0.5 ms a frame) for longer lists to bake.
+const LIST_PAD_VOXELS: f32 = 4.0;
 
 /// Shape kinds (word 3.x of a primitive).
 const SPHERE: u32 = 0;
@@ -384,8 +386,9 @@ fn assemble(
         }
     }
     // A cell holds no surface when the field at its centre is further out than the centre is
-    // from its corners (with room for the field's bounds not being exact distances).
-    let margin = cell * 0.5 * 3f32.sqrt() * 1.5;
+    // from its corners (with room for the field's bounds not being exact distances: blends and
+    // displacement; at exactly the half-diagonal the test below still passes, below it fails).
+    let margin = cell * 0.5 * 3f32.sqrt() * 1.2;
     let centre = |i: usize| {
         let i = i.clamp_u32();
         let at = UVec3::new(i % dims.x, (i / dims.x) % dims.y, i / (dims.x * dims.y));

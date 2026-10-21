@@ -15,7 +15,7 @@ import package::surface::sdf_field::{PRIM_WORDS, HEADER_WORDS, bricks_info, bric
 @group(0) @binding(2) var<storage, read> list: array<vec2<u32>>;
 
 // As `LIST_PAD_VOXELS` in `surface/preview.rs`.
-const LIST_PAD_VOXELS: f32 = 2.0;
+const LIST_PAD_VOXELS: f32 = 4.0;
 // As `NO_LIMB`: no primitive.
 const NONE: u32 = 0xffffffffu;
 
