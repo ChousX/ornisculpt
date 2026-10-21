@@ -39,8 +39,10 @@ pub use mesh_data::{
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;
 pub use octree::AdaptiveContour;
-pub use preview::{BRICK_VOXELS, PRIM_WORDS, PreviewField, PreviewSheets};
-pub use preview_material::{SdfPreview, SdfPreviewAssets, SdfPreviewExt, SdfPreviewMaterial, SdfPreviewPlugin, SdfPreviewUniform};
+pub use preview::{BRICK_VOXELS, Brick, PRIM_WORDS, PreviewField, PreviewSheets};
+pub use preview_material::{
+    SdfPreview, SdfPreviewAssets, SdfPreviewBake, SdfPreviewExt, SdfPreviewMaterial, SdfPreviewPlugin, SdfPreviewUniform, SlotBrick,
+};
 pub use process::{merge, remap_to_crowd, simplify, skin_and_attrs, smooth, weld};
 
 use bevy::prelude::*;

@@ -9,7 +9,7 @@
 //! 1          grid minimum (xyz), cell size
 //! 2          cells per axis (xyz, bit-cast)
 //! 3          teardrop keel (CrossSection::KEEL)
-//! 4          distance bricks: voxels along a brick's edge, first brick word, brick count
+//! 4          distance bricks: voxels along a brick's edge
 //! 5..        primitives, PRIM_WORDS each: model → local rows (3), kind / op / limb / flags,
 //!            shape parameters, more parameters (a sweep's largest radius), blend / min scale /
 //!            displace height, blend anchor
@@ -17,7 +17,6 @@
 //! grids      per authored grid: origin (xyz) and cell, then dims (xyz), then values 4 per word
 //! cells      one word per cell: first item, item count, brick + 1 (0: no surface in the cell)
 //! items      primitive indices, one per word (x), each cell's in field order
-//! bricks     one word per brick: its cell's index
 //! ```
 //!
 //! Each cell lists the primitives whose padded bounds come near it, in field order, so evaluating
@@ -25,12 +24,19 @@
 //! does). Cells that may hold surface get a brick: the field sampled on a lattice over the cell
 //! (`BRICK_VOXELS` + 1 samples a side, walls included), which a compute pass bakes into a 3D
 //! texture atlas (`sdf_bake.wesl`) for the preview to march (`sdf_preview.wesl`).
+//!
+//! The cells lie on a lattice that holds still while edits move the body's bounds, and each brick
+//! comes with a key: a hash of its cell's position and of everything its list evaluates (the
+//! primitives in order, their sweep points and grids; not the highlight). Equal keys mean equal
+//! distances, so after an edit only the bricks whose key changed are baked again (see
+//! [`SdfPreview`](super::SdfPreview)), and a change of selection bakes none.
 
 use bevy::math::Vec3A;
 use bevy::prelude::*;
 
 use bevy::math::Affine3A;
 use bevy::shape::{Aabb3d, BoundingVolume};
+use xxhash_rust::xxh3::Xxh3;
 
 use super::BodyField;
 use super::body::{PreparedShape, local_bounds, transform_aabb};
@@ -75,8 +81,10 @@ pub struct PreviewField {
     pub words: Vec<[f32; 4]>,
     pub min: Vec3,
     pub max: Vec3,
-    /// Cells holding surface, each with a brick of distances to bake.
-    pub bricks: u32,
+    /// Cells holding surface, each with a brick of distances to bake, in cell order. Their cell
+    /// words (z) count them from 1 until [`SdfPreview::show`](super::SdfPreview::show) gives each
+    /// its slot in the atlas.
+    pub bricks: Vec<Brick>,
     /// The outer faces of the cells that may hold surface, as quads (four corners each, wound
     /// counter-clockwise seen from outside) with their outward normals. Rays start where they
     /// enter it, so the empty space around the body is neither drawn nor marched.
@@ -84,6 +92,15 @@ pub struct PreviewField {
     /// Wing sheets (membranes, flight feathers, insect wings): thin, so drawn as the triangles
     /// the anatomy already has rather than marched.
     pub sheets: PreviewSheets,
+}
+
+/// A cell holding surface, and the key of the distances in its brick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Brick {
+    /// Index of the cell (x fastest).
+    pub cell: u32,
+    /// Hash of what the brick's distances depend on; equal keys, equal distances. Never 0.
+    pub key: u64,
 }
 
 /// Wing sheets as one triangle list, model space, in the field's pose.
@@ -321,11 +338,7 @@ fn assemble(
     may_hold_surface: impl Fn(&[u32], Vec4) -> bool + Sync,
 ) -> PreviewField {
     let bounds = packed.iter().map(|p| p.aabb).reduce(|a, b| a.merge(&b)).unwrap_or(fallback);
-    let min = Vec3::from(bounds.min);
-    let size = (Vec3::from(bounds.max) - min).max(Vec3::splat(1e-3));
-    let cell = CELL_SIZE * (size.max_element() / super::lod::REFERENCE_EXTENT).max(1.0);
-    let dims = (size / cell).ceil().as_uvec3().clamp(UVec3::ONE, UVec3::splat(MAX_CELLS));
-    let cell = (size / dims.as_vec3()).max_element();
+    let (min, cell, dims) = lattice(Vec3::from(bounds.min), Vec3::from(bounds.max));
 
     // Cell lists: every primitive whose padded bounds come within the list pad of the cell, in
     // field order.
@@ -355,12 +368,17 @@ fn assemble(
     };
     let indices: Vec<usize> = (0..cell_count).collect();
     let surface = super::par_map(&indices, |&i| lists.get(i).is_some_and(|list| !list.is_empty() && may_hold_surface(list, centre(i))));
+    // The grid's corner in whole cells from the model origin: bricks are keyed by where they are
+    // on the lattice, not by their index in this grid.
+    let origin = (min / cell).round().as_ivec3();
+    let prim_keys: Vec<u64> = packed.iter().map(|p| prim_key(p, &segments, &grids)).collect();
     let mut cells = Vec::with_capacity(cell_count);
     let mut items: Vec<u32> = Vec::new();
-    let mut bricks: Vec<u32> = Vec::new();
+    let mut bricks: Vec<Brick> = Vec::new();
     for ((i, list), &surface) in (0u32..).zip(&lists).zip(&surface) {
         let brick = if surface {
-            bricks.push(i);
+            let at = UVec3::new(i % dims.x, (i / dims.x) % dims.y, i / (dims.x * dims.y));
+            bricks.push(Brick { cell: i, key: brick_key(origin + at.as_ivec3(), cell, list, &prim_keys) });
             bricks.len().clamp_u32()
         } else {
             0
@@ -373,13 +391,12 @@ fn assemble(
     let grid_start = seg_start + segments.len();
     let cell_start = grid_start + grids.len();
     let item_start = cell_start + cells.len();
-    let brick_start = item_start + items.len();
-    let mut words = Vec::with_capacity(brick_start + bricks.len());
+    let mut words = Vec::with_capacity(item_start + items.len());
     words.push(word_u32(packed.len().clamp_u32(), seg_start.clamp_u32(), cell_start.clamp_u32(), item_start.clamp_u32()));
     words.push(min.extend(cell).to_array());
     words.push(word_u32(dims.x, dims.y, dims.z, grid_start.clamp_u32()));
     words.push(CrossSection::KEEL.extend(0.0).to_array());
-    words.push(word_u32(BRICK_VOXELS, brick_start.clamp_u32(), bricks.len().clamp_u32(), 0));
+    words.push(word_u32(BRICK_VOXELS, 0, 0, 0));
     for p in packed {
         let m = p.to_local;
         let row = |r: usize| {
@@ -402,9 +419,87 @@ fn assemble(
     words.extend(cells);
     // One per word: picking a vector component by a runtime index is slow on some GPUs.
     words.extend(items.iter().map(|&i| word_u32(i, 0, 0, 0)));
-    words.extend(bricks.iter().map(|&i| word_u32(i, 0, 0, 0)));
     let hull = hull(&surface, dims, min, cell);
-    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks: bricks.len().clamp_u32(), hull, sheets: PreviewSheets::default() }
+    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks, hull, sheets: PreviewSheets::default() }
+}
+
+/// The cell grid over `lo..hi`: its corner, cell size and cells per axis. Cells are
+/// [`CELL_SIZE`] scaled up with the body in steps of a quarter octave (as meshing scales its
+/// voxels, but stepped), and the corner sits on a multiple of the cell size, so edits that move the
+/// bounds leave the cells they don't reach where they were.
+fn lattice(lo: Vec3, hi: Vec3) -> (Vec3, f32, UVec3) {
+    let size = (hi - lo).max(Vec3::splat(1e-3));
+    let scale = (size.max_element() / super::lod::REFERENCE_EXTENT).max(1.0);
+    let mut cell = CELL_SIZE * ((scale.log2() * 4.0).ceil() / 4.0).exp2();
+    loop {
+        let min = (lo / cell).floor() * cell;
+        let dims = ((hi - min) / cell).ceil().as_uvec3().max(UVec3::ONE);
+        if dims.max_element() <= MAX_CELLS {
+            return (min, cell, dims);
+        }
+        cell *= 0.25f32.exp2();
+    }
+}
+
+fn hash_words(h: &mut Xxh3, words: &[[f32; 4]]) {
+    for w in words {
+        for v in w {
+            h.update(&v.to_bits().to_le_bytes());
+        }
+    }
+}
+
+/// What a primitive contributes to the field, hashed: its words without the highlight bit or the
+/// offsets of its sweep points and grid (those move when data before them changes), plus that
+/// data itself.
+fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]]) -> u64 {
+    let mut h = Xxh3::new();
+    let m = p.to_local;
+    let mut params = p.params;
+    let mut data: &[[f32; 4]] = &[];
+    match p.kind {
+        SWEEP => {
+            let (first, count) = (params[0].to_bits().idx(), params[1].to_bits().idx());
+            data = segments.get(first..first + count).unwrap_or_default();
+            params[0] = 0.0;
+        }
+        GRID => {
+            let at = params[0].to_bits().idx();
+            if let Some(dims) = grids.get(at + 1) {
+                let n = dims[..3].iter().map(|d| d.to_bits().idx()).product::<usize>().div_ceil(4);
+                data = grids.get(at..at + 2 + n).unwrap_or_default();
+            }
+            params[0] = 0.0;
+        }
+        _ => {}
+    }
+    hash_words(
+        &mut h,
+        &[
+            m.matrix3.x_axis.extend(m.translation.x).to_array(),
+            m.matrix3.y_axis.extend(m.translation.y).to_array(),
+            m.matrix3.z_axis.extend(m.translation.z).to_array(),
+            word_u32(p.kind, p.op, p.limb, p.flags & !HIGHLIGHT),
+            params,
+            p.more,
+            [p.blend, p.min_scale, p.height, 0.0],
+            [p.anchor.0.x, p.anchor.0.y, p.anchor.0.z, p.anchor.1],
+        ],
+    );
+    hash_words(&mut h, data);
+    h.digest()
+}
+
+/// The key of the brick of the cell at `at` on the lattice (whole cells of edge `cell` from the
+/// model origin) listing `list`.
+fn brick_key(at: IVec3, cell: f32, list: &[u32], prim_keys: &[u64]) -> u64 {
+    let mut h = Xxh3::new();
+    let at = at.as_uvec3();
+    hash_words(&mut h, &[word_u32(at.x, at.y, at.z, cell.to_bits()), CrossSection::KEEL.extend(0.0).to_array(), word_u32(BRICK_VOXELS, 0, 0, 0)]);
+    for &i in list {
+        h.update(&prim_keys.get(i.idx()).copied().unwrap_or(0).to_le_bytes());
+    }
+    h.digest() | 1
 }
 
 /// The faces between cells that may hold surface (`surface`, one flag per cell, x fastest) and
@@ -496,5 +591,33 @@ mod tests {
         }
         assert!(checked > 50, "only {checked} points near the surface");
     }
-}
+    /// Bricks are keyed by what their distances depend on: an edit to a small part changes the
+    /// keys of the bricks around it only, and changing the selection (the highlight) changes none.
+    #[test]
+    fn brick_keys_follow_local_edits() {
+        let build = |src: &str| {
+            let plan: BodyPlan = ron::from_str(src).unwrap();
+            build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap()
+        };
+        let opts = BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false };
+        let src = include_str!("../../assets/mobs/quadruped.body.ron");
+        let anatomy = build(src);
+        let field = BodyField::new(&anatomy, &opts);
+        let plain = field.preview(&anatomy, |_| false);
+        let keys = |f: &PreviewField| f.bricks.iter().map(|b| b.key).collect::<std::collections::HashSet<u64>>();
+        assert!(plain.bricks.iter().all(|b| b.key != 0));
+        assert_eq!(keys(&plain).len(), plain.bricks.len(), "keys are unique");
 
+        let lit = field.preview(&anatomy, |part| part % 2 == 0);
+        assert_eq!(plain.bricks, lit.bricks, "highlight leaves the keys alone");
+        assert_ne!(plain.words, lit.words, "but not the words");
+
+        // Larger ears: a few bricks around the ears change, the rest keep their keys.
+        let ears = build(&src.replacen("length: 0.08,", "length: 0.09,", 1));
+        let edited = BodyField::new(&ears, &opts).preview(&ears, |_| false);
+        let before = keys(&plain);
+        let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();
+        assert!(changed > 0, "the ears' bricks change");
+        assert!(changed * 10 < edited.bricks.len(), "{changed} of {} bricks changed", edited.bricks.len());
+    }
+}

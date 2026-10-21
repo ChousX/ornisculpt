@@ -5,6 +5,7 @@
 //! built.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::asset::{RenderAssetUsages, load_embedded_asset};
 use bevy::camera::visibility::NoFrustumCulling;
@@ -20,9 +21,10 @@ use bevy::render::RenderApp;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{storage_buffer_read_only_sized, texture_storage_3d};
 use bevy::render::render_resource::{
-    AsBindGroup, BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, CachedComputePipelineId,
-    ComputePassDescriptor, ComputePipelineDescriptor, Extent3d, PipelineCache, RenderPipelineDescriptor, ShaderStages, ShaderType,
-    SpecializedMeshPipelineError, StorageTextureAccess, TextureDimension, TextureFormat, TextureUsages,
+    AsBindGroup, BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BufferInitDescriptor, BufferUsages,
+    CachedComputePipelineId, ComputePassDescriptor, ComputePipelineDescriptor, Extent3d, PipelineCache, RenderPipelineDescriptor,
+    ShaderStages, ShaderType, SpecializedMeshPipelineError, StorageTextureAccess, TextureDimension, TextureFormat, TextureId,
+    TextureUsages,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice};
 use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
@@ -31,6 +33,7 @@ use bevy::render::texture::GpuImage;
 use bevy::shader::{ShaderDefVal, ShaderRef};
 
 use super::{BRICK_VOXELS, PreviewField, PreviewSheets};
+use crate::num::Idx;
 
 pub const SDF_PREVIEW_SHADER: &str = "embedded://ornisculpt/surface/sdf_preview.wesl";
 
@@ -138,27 +141,65 @@ pub struct SdfPreview {
     pub buffer: Handle<ShaderBuffer>,
     pub hull: Handle<Mesh>,
     pub atlas: Handle<Image>,
+    /// Counts [`show`](Self::show)s.
+    pub shown: u64,
     /// The wing sheets, drawn as triangles by a child entity.
     pub sheets: Handle<Mesh>,
     /// Clay colour of the body (the sheets' vertex colours start from it).
     pub color: Color,
-    /// Bricks the field in `buffer` has (the atlas may hold more).
-    pub bricks: u32,
-    /// Counts [`show`](Self::show)s: the render world bakes the bricks when it changes.
-    pub generation: u64,
+    /// The field's bricks as the render world bakes them: atlas slot, cell, key. The render world
+    /// bakes a slot again only when its key changes (or the atlas is new).
+    pub bricks: Arc<[SlotBrick]>,
+    /// The atlas slot of each brick key shown last, the slots free for reuse, and slots in use so
+    /// far (the atlas holds at least that many).
+    slots: HashMap<u64, u32>,
+    free: Vec<u32>,
+    capacity: u32,
+    /// Bake every brick after every change, not only those whose key changed (for checking that
+    /// the keys miss nothing: the two must look the same).
+    pub rebake_all: bool,
+}
+
+/// A brick in the atlas: its slot, its cell (index in the field's grid) and its key
+/// ([`Brick::key`](super::Brick::key)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotBrick {
+    pub slot: u32,
+    pub cell: u32,
+    pub key: u64,
+}
+
+/// What the render world needs of an [`SdfPreview`] to bake its bricks.
+#[derive(Component, Clone, Debug)]
+pub struct SdfPreviewBake {
+    buffer: Handle<ShaderBuffer>,
+    atlas: Handle<Image>,
+    bricks: Arc<[SlotBrick]>,
+    /// Slots the atlas must hold.
+    capacity: u32,
+    rebake_all: bool,
+    /// Counts `show`s (with `rebake_all`, every one bakes everything).
+    shown: u64,
 }
 
 impl SyncComponent<RenderApp> for SdfPreview {
-    type Target = Self;
+    type Target = SdfPreviewBake;
 }
 
 impl ExtractComponent<RenderApp> for SdfPreview {
     type QueryData = &'static Self;
     type QueryFilter = ();
-    type Out = Self;
+    type Out = SdfPreviewBake;
 
-    fn extract_component(item: &Self) -> Option<Self> {
-        Some(item.clone())
+    fn extract_component(item: &Self) -> Option<SdfPreviewBake> {
+        Some(SdfPreviewBake {
+            buffer: item.buffer.clone(),
+            atlas: item.atlas.clone(),
+            bricks: item.bricks.clone(),
+            capacity: item.capacity,
+            rebake_all: item.rebake_all,
+            shown: item.shown,
+        })
     }
 }
 
@@ -184,7 +225,12 @@ fn atlas(layers: u32) -> Image {
 
 /// Bricks an atlas this deep holds.
 const fn atlas_bricks(image: &Image) -> u32 {
-    image.texture_descriptor.size.depth_or_array_layers / BRICK_SAMPLES * BRICK_ROW * BRICK_ROW
+    atlas_slots(image.texture_descriptor.size.depth_or_array_layers)
+}
+
+/// Bricks an atlas `depth` texels deep holds.
+const fn atlas_slots(depth: u32) -> u32 {
+    depth / BRICK_SAMPLES * BRICK_ROW * BRICK_ROW
 }
 
 impl SdfPreview {
@@ -203,7 +249,14 @@ impl SdfPreview {
         let sheet_material =
             assets.standard.add(StandardMaterial { perceptual_roughness: 0.6, double_sided: true, cull_mode: None, ..default() });
         (
-            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, sheets: sheets.clone(), color, bricks: 0, generation: 0 },
+            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, sheets: sheets.clone(), color,
+                bricks: Arc::new([]),
+                slots: HashMap::new(),
+                free: Vec::new(),
+                capacity: 0,
+                rebake_all: false,
+                shown: 0,
+            },
             Mesh3d(hull),
             MeshMaterial3d(material),
             Visibility::Hidden,
@@ -211,12 +264,22 @@ impl SdfPreview {
         )
     }
 
-    /// Uploads `field` and its hull; the render world bakes the bricks before the next draw. The
-    /// buffer keeps a power-of-two size and the atlas grows by layers, so most edits overwrite
-    /// both in place rather than re-creating them (and rebinding the material).
+    /// Uploads `field` and its hull; the render world bakes the bricks whose keys are new before
+    /// the next draw. A brick whose key was shown last time keeps its atlas slot (so its baked
+    /// distances stand); the others take the slots freed. The buffer keeps a power-of-two size and
+    /// the atlas grows by layers, so most edits overwrite both in place rather than re-creating
+    /// them (and rebinding the material).
     pub fn show(&mut self, field: &PreviewField, assets: &mut SdfPreviewAssets) {
+        let bricks = self.assign_slots(field);
         if let Some(mut buffer) = assets.buffers.get_mut(&self.buffer) {
             let mut words = field.words.clone();
+            // Point each brick's cell at its slot.
+            let cell_start = field.words.first().map_or(0, |h| h[2].to_bits().idx());
+            for b in &bricks {
+                if let Some(w) = words.get_mut(cell_start + b.cell.idx()) {
+                    w[2] = f32::from_bits(b.slot + 1);
+                }
+            }
             words.resize(field.words.len().next_power_of_two().max(64), [0.0; 4]);
             *buffer = ShaderBuffer::new(words, RenderAssetUsages::RENDER_WORLD);
         }
@@ -227,17 +290,48 @@ impl SdfPreview {
         if let Some(mut mesh) = assets.meshes.get_mut(&self.sheets) {
             *mesh = sheets_mesh(&field.sheets, self.color, highlight);
         }
-        if assets.images.get(&self.atlas).is_some_and(|image| atlas_bricks(image) < field.bricks) {
+        if assets.images.get(&self.atlas).is_some_and(|image| atlas_bricks(image) < self.capacity) {
+            // A new texture: the render world bakes every brick into it.
             if let Some(mut image) = assets.images.get_mut(&self.atlas) {
-                *image = atlas(field.bricks.div_ceil(BRICK_ROW * BRICK_ROW));
+                *image = atlas(self.capacity.div_ceil(BRICK_ROW * BRICK_ROW));
             }
             // The material binds the texture itself, not the asset: rebind it.
             if let Some(material) = assets.materials.get_mut(&self.material) {
                 material.into_inner();
             }
         }
-        self.bricks = field.bricks;
-        self.generation += 1;
+        self.bricks = bricks.into();
+        self.shown += 1;
+    }
+
+    /// Slots for `field`'s bricks: a key shown last time keeps its slot, new keys take the lowest
+    /// free ones.
+    fn assign_slots(&mut self, field: &PreviewField) -> Vec<SlotBrick> {
+        let mut slots = HashMap::with_capacity(field.bricks.len());
+        let mut out = Vec::with_capacity(field.bricks.len());
+        let mut new = Vec::new();
+        for b in &field.bricks {
+            match self.slots.remove(&b.key) {
+                Some(slot) => {
+                    slots.insert(b.key, slot);
+                    out.push(SlotBrick { slot, cell: b.cell, key: b.key });
+                }
+                None => new.push(*b),
+            }
+        }
+        self.free.extend(self.slots.drain().map(|(_, slot)| slot));
+        // Lowest last, so `pop` takes it.
+        self.free.sort_unstable_by(|a, b| b.cmp(a));
+        for b in new {
+            let slot = self.free.pop().unwrap_or_else(|| {
+                self.capacity += 1;
+                self.capacity - 1
+            });
+            slots.insert(b.key, slot);
+            out.push(SlotBrick { slot, cell: b.cell, key: b.key });
+        }
+        self.slots = slots;
+        out
     }
 }
 
@@ -316,6 +410,7 @@ impl FromWorld for BakePipeline {
                 ShaderStages::COMPUTE,
                 (
                     (1, texture_storage_3d(ATLAS_FORMAT, StorageTextureAccess::WriteOnly)),
+                    (2, storage_buffer_read_only_sized(false, None)),
                     (100, storage_buffer_read_only_sized(false, None)),
                 ),
             ),
@@ -335,18 +430,24 @@ impl FromWorld for BakePipeline {
     }
 }
 
-/// Bakes to run this frame (with their brick counts), and the generation each preview was last
-/// baked at.
+/// Bakes to run this frame (with their brick counts), and what each preview's atlas holds.
 #[derive(Resource, Default)]
 struct Bakes {
     ready: Vec<(BindGroup, u32)>,
-    baked: HashMap<MainEntity, u64>,
+    baked: HashMap<MainEntity, Baked>,
 }
 
-/// Bind groups for the previews whose field changed since their last bake (once their buffer,
-/// atlas and the pipeline are ready on the GPU).
+/// An atlas texture and the key baked into each of its slots (0: none).
+struct Baked {
+    texture: TextureId,
+    keys: Vec<u64>,
+    shown: u64,
+}
+
+/// Bind groups for the previews with bricks whose key differs from what their atlas holds (once
+/// their buffer, atlas and the pipeline are ready on the GPU), each with the list of those bricks.
 fn prepare_bakes(
-    previews: Query<(&MainEntity, &SdfPreview)>,
+    previews: Query<(&MainEntity, &SdfPreviewBake)>,
     mut bakes: ResMut<Bakes>,
     pipeline: Res<BakePipeline>,
     pipeline_cache: Res<PipelineCache>,
@@ -360,22 +461,44 @@ fn prepare_bakes(
     }
     let layout = pipeline_cache.get_bind_group_layout(&pipeline.layout);
     for (entity, preview) in &previews {
-        if bakes.baked.get(entity) == Some(&preview.generation) || preview.bricks == 0 {
-            continue;
-        }
         let (Some(buffer), Some(image)) = (buffers.get(&preview.buffer), images.get(&preview.atlas)) else { continue };
-        let layers = image.texture_descriptor.size.depth_or_array_layers / BRICK_SAMPLES;
-        if layers * BRICK_ROW * BRICK_ROW < preview.bricks {
+        if atlas_slots(image.texture_descriptor.size.depth_or_array_layers) < preview.capacity {
             // The grown atlas isn't on the GPU yet.
             continue;
         }
+        let texture = image.texture.id();
+        let held = bakes.baked.entry(*entity).or_insert_with(|| Baked { texture, keys: Vec::new(), shown: 0 });
+        if held.texture != texture || (preview.rebake_all && held.shown != preview.shown) {
+            *held = Baked { texture, keys: Vec::new(), shown: preview.shown };
+        }
+        held.keys.resize(preview.capacity.idx(), 0);
+        let mut dirty: Vec<[u32; 2]> = Vec::new();
+        for b in preview.bricks.iter() {
+            if let Some(key) = held.keys.get_mut(b.slot.idx())
+                && *key != b.key
+            {
+                *key = b.key;
+                dirty.push([b.slot, b.cell]);
+            }
+        }
+        if dirty.is_empty() {
+            continue;
+        }
+        let list = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("ornisculpt sdf bake list"),
+            contents: bytemuck::cast_slice(&dirty),
+            usage: BufferUsages::STORAGE,
+        });
         let bind_group = device.create_bind_group(
             "ornisculpt sdf bake",
             &layout,
-            &BindGroupEntries::with_indices(((1, &image.texture_view), (100, buffer.buffer.as_entire_binding()))),
+            &BindGroupEntries::with_indices((
+                (1, &image.texture_view),
+                (2, list.as_entire_binding()),
+                (100, buffer.buffer.as_entire_binding()),
+            )),
         );
-        bakes.ready.push((bind_group, preview.bricks));
-        bakes.baked.insert(*entity, preview.generation);
+        bakes.ready.push((bind_group, u32::try_from(dirty.len()).unwrap_or(u32::MAX)));
     }
     let live: Vec<MainEntity> = previews.iter().map(|(e, _)| *e).collect();
     bakes.baked.retain(|e, _| live.contains(e));
@@ -393,5 +516,56 @@ fn dispatch_bakes(bakes: Res<Bakes>, pipeline: Res<BakePipeline>, pipeline_cache
         let groups = (bricks * BRICK_SAMPLES.pow(3)).div_ceil(BAKE_WORKGROUP);
         pass.set_bind_group(0, bind_group, &[]);
         pass.dispatch_workgroups(groups.min(MAX_GROUPS_X), groups.div_ceil(MAX_GROUPS_X), 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::Brick;
+
+    fn field(keys: &[u64]) -> PreviewField {
+        PreviewField { bricks: (0u32..).zip(keys).map(|(cell, &key)| Brick { cell, key }).collect(), ..default() }
+    }
+
+    fn preview() -> SdfPreview {
+        SdfPreview {
+            material: Handle::default(),
+            buffer: Handle::default(),
+            hull: Handle::default(),
+            atlas: Handle::default(),
+            shown: 0,
+            sheets: Handle::default(),
+            color: Color::WHITE,
+            bricks: Arc::new([]),
+            slots: HashMap::new(),
+            free: Vec::new(),
+            capacity: 0,
+            rebake_all: false,
+        }
+    }
+
+    /// Keys shown before keep their slots; new keys fill the slots freed, lowest first, before
+    /// the atlas grows.
+    #[test]
+    fn bricks_keep_their_slots() {
+        let mut p = preview();
+        let slot_of = |bricks: &[SlotBrick], key: u64| bricks.iter().find(|b| b.key == key).map(|b| b.slot);
+        let first = p.assign_slots(&field(&[11, 21, 31, 41]));
+        assert_eq!(first.iter().map(|b| b.slot).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        // 21 and 41 go, 51 and 61 come.
+        let second = p.assign_slots(&field(&[11, 51, 31, 61]));
+        assert_eq!(slot_of(&second, 11), Some(0));
+        assert_eq!(slot_of(&second, 31), Some(2));
+        assert_eq!(slot_of(&second, 51), Some(1));
+        assert_eq!(slot_of(&second, 61), Some(3));
+        assert_eq!(p.capacity, 4);
+        let third = p.assign_slots(&field(&[11, 51, 31, 61, 71]));
+        assert_eq!(slot_of(&third, 71), Some(4));
+        assert_eq!(p.capacity, 5);
+        let mut slots: Vec<u32> = third.iter().map(|b| b.slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), 5, "no slot shared");
     }
 }

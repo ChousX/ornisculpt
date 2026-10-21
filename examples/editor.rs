@@ -17,7 +17,8 @@
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits.
 //! `ORNISCULPT_EDITOR_TEST=1` first steps through a few edits by itself (held key, a drag over
 //! the parent, a pause, undo), logs what each one cost, then takes the screenshot of the final
-//! body.
+//! body. `ORNISCULPT_PREVIEW_FULL_BAKE=1` bakes every preview brick after every edit rather than
+//! only those that changed (for checking the two look the same).
 //!
 //! The fields come from reflection over the plan, so every number, flag and unit enum variant in a
 //! part is editable; strings and `None` are shown but fixed. Mirrored and repeated parts are one
@@ -148,6 +149,8 @@ struct Editor {
     ignore_until: f64,
     status: String,
     gizmos: bool,
+    /// `ORNISCULPT_PREVIEW_FULL_BAKE`: rebake every brick of the preview after every edit.
+    full_bake: bool,
     /// Frames since the body became ready (for screenshots).
     ready_frames: Option<u32>,
 }
@@ -237,6 +240,7 @@ impl Editor {
             ignore_until: 0.0,
             status: "loading".into(),
             gizmos: false,
+            full_bake: std::env::var_os("ORNISCULPT_PREVIEW_FULL_BAKE").is_some(),
             ready_frames: None,
         }
     }
@@ -996,6 +1000,7 @@ fn update_preview(
         selected.is_some_and(|sel| anatomy.parts.get(usize::from(part)).is_some_and(|p| path_matches(sel, &p.path)))
     });
     let Ok(mut preview) = previews.get_mut(editor.preview) else { return };
+    preview.rebake_all = editor.full_bake;
     preview.show(&packed, &mut preview_assets);
     let model = anatomy.skeleton.model_from(&pose);
     editor.preview_ms = Some(started.elapsed().as_secs_f64() * 1000.0);

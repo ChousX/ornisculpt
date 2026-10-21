@@ -238,16 +238,14 @@ fn exit_t(o: vec3<f32>, inv: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> f32 {
 struct Bricks {
     voxels: u32,
     samples: u32,
-    first: u32,
-    count: u32,
 };
 
 fn bricks_info() -> Bricks {
     let b = word_u(4u);
-    return Bricks(b.x, b.x + 1u, b.y, b.z);
+    return Bricks(b.x, b.x + 1u);
 }
 
-// The first texel of brick `brick` in the atlas.
+// The first texel of the brick in atlas slot `brick`.
 fn brick_origin(bricks: Bricks, brick: u32) -> vec3<u32> {
     return vec3<u32>(brick % BRICK_ROW, (brick / BRICK_ROW) % BRICK_ROW, brick / (BRICK_ROW * BRICK_ROW)) * bricks.samples;
 }
