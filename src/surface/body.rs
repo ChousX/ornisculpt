@@ -23,14 +23,14 @@ pub struct BodyFieldOptions {
 /// The whole-body SDF: smooth union of the anatomy's primitives present at `level`, plus
 /// fold displacement. Built once per (anatomy, level); meshers evaluate it through [`ChunkView`]s.
 pub struct BodyField {
-    prims: Vec<PreparedPrim>,
+    pub(super) prims: Vec<PreparedPrim>,
     /// Parent of every bone, for keeping skin weights on one limb.
     bone_parent: Vec<Option<BoneId>>,
     /// Per bone, the spread pose → rest pose transform (empty when built at rest).
     unbind: Vec<Affine3A>,
     /// Model transform of every bone in the pose the field was built in.
     bone_model: Vec<Affine3A>,
-    bounds: Aabb3d,
+    pub(super) bounds: Aabb3d,
     creases: Option<Creases>,
 }
 
@@ -74,28 +74,30 @@ impl Creases {
 }
 
 /// A primitive moved into model space at rest pose, ready for evaluation.
-struct PreparedPrim {
+pub(super) struct PreparedPrim {
     /// Model space → primitive local space.
-    to_local: Affine3A,
+    pub(super) to_local: Affine3A,
     /// Smallest axis scale of the local → model transform (keeps distances conservative).
-    min_scale: f32,
-    shape: PreparedShape,
-    blend: f32,
+    pub(super) min_scale: f32,
+    pub(super) shape: PreparedShape,
+    pub(super) blend: f32,
     /// Local anchor point and reach for blend fading (see `Primitive::blend_anchor`).
-    anchor: Option<(Vec3A, f32)>,
-    op: PrimOp,
+    pub(super) anchor: Option<(Vec3A, f32)>,
+    pub(super) op: PrimOp,
     layer: PrimLayer,
     region: RegionId,
     bone: BoneId,
+    /// The part this primitive belongs to (index into [`Anatomy::parts`]).
+    pub(super) part: u16,
     /// The limb (part index) this primitive belongs to, if it is on one: different limbs meet
     /// with a hard union, so an arm hanging by a thigh never webs onto it.
-    limb: Option<u16>,
+    pub(super) limb: Option<u16>,
     /// Model-space bounds padded by `blend` (and fold amplitude) for culling.
-    aabb: Aabb3d,
+    pub(super) aabb: Aabb3d,
 }
 
 /// [`PrimShape`] with sweeps pre-converted for fast evaluation.
-enum PreparedShape {
+pub(super) enum PreparedShape {
     Simple(PrimShape),
     Sweep { points: Vec<Vec3A>, radii: Vec<f32>, cross: CrossSection },
 }
@@ -118,7 +120,7 @@ impl PreparedPrim {
 }
 
 /// Local-space bounds of a shape.
-fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
+pub(super) fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
     match shape {
         PrimShape::Sphere { r } => (Vec3::splat(-r), Vec3::splat(*r)),
         PrimShape::Ellipsoid { radii } => (-*radii, *radii),
@@ -140,7 +142,7 @@ fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
     }
 }
 
-fn transform_aabb(m: &Affine3A, (lo, hi): (Vec3, Vec3)) -> Aabb3d {
+pub(super) fn transform_aabb(m: &Affine3A, (lo, hi): (Vec3, Vec3)) -> Aabb3d {
     let mut min = Vec3A::INFINITY;
     let mut max = Vec3A::NEG_INFINITY;
     for i in 0..8 {
@@ -236,6 +238,7 @@ impl BodyField {
                 layer: p.layer,
                 region: p.region,
                 bone: p.bone,
+                part,
                 limb: limb_of(part.idx()),
                 aabb,
             });
@@ -257,6 +260,11 @@ impl BodyField {
         self.eval(self.subset(prims), std::iter::empty(), p).0
     }
 
+    /// Distance to the smooth union of the listed primitives (this field's indices, in order).
+    pub(super) fn distance_of(&self, prims: &[usize], p: Vec3A) -> f32 {
+        self.eval(prims.iter().filter_map(|&i| self.prims.get(i)), std::iter::empty(), p).0
+    }
+
     /// [`Field::surface_info`] over a subset of primitives (see [`distance_among`](Self::distance_among)).
     #[must_use]
     pub fn surface_info_among(&self, prims: std::ops::Range<usize>, p: Vec3A) -> SurfaceInfo {
@@ -267,6 +275,12 @@ impl BodyField {
     fn subset(&self, range: std::ops::Range<usize>) -> std::slice::Iter<'_, PreparedPrim> {
         let len = self.prims.len();
         self.prims.get(range.start.min(len)..range.end.min(len)).unwrap_or_default().iter()
+    }
+
+    /// The part owning the union primitive nearest to `p` (an index into [`Anatomy::parts`]).
+    #[must_use]
+    pub fn part_at(&self, p: Vec3A) -> Option<u16> {
+        self.eval(self.prims.iter(), std::iter::empty(), p).1.map(|n| n.part)
     }
 
     /// Restricts evaluation to primitives that can affect `region` (a meshing chunk).

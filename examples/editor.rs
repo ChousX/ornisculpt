@@ -1,18 +1,23 @@
-//! Live body plan editor: one mob with every value of its plan on screen, adjusted from the
-//! keyboard, regenerated as you go and written back to the RON on save.
+//! Live body plan editor: one mob with every value of its plan on screen, shaped with the mouse
+//! or adjusted from the keyboard, shown as you go and written back to the RON on save.
 //!
 //! ```text
 //! cargo run --release --example editor [mobs/plan.body.ron]
 //! ```
 //!
-//! Controls: Tab / Shift+Tab part · Up / Down field (`PageUp` / `PageDown` jump) · Left / Right
+//! Mouse: click a part to select it · drag it over its parent's skin (parts on fixed slots move
+//! freely, in the view plane) · Shift+drag turns it · scroll over it to scale it · drag empty
+//! space or right-drag to orbit · scroll elsewhere to zoom.
+//!
+//! Keys: Tab / Shift+Tab part · Up / Down field (`PageUp` / `PageDown` jump) · Left / Right
 //! adjust (Shift x10, Ctrl x0.1; toggles bools, cycles enum variants) · Delete remove the part ·
-//! Ctrl+Z undo · Ctrl+S save · left-drag orbit · scroll zoom · G skeleton gizmos. The selected
-//! part's bones are always drawn (every copy of a mirrored or repeated part).
+//! Ctrl+Z undo · Ctrl+S save · G skeleton gizmos. The selected part's bones are always drawn
+//! (every copy of a mirrored or repeated part).
 //!
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits.
-//! `ORNISCULPT_EDITOR_TEST=1` first steps through a few edits by itself (held key, pause, undo)
-//! and logs each preview and full rebuild, then takes the screenshot of the final body.
+//! `ORNISCULPT_EDITOR_TEST=1` first steps through a few edits by itself (held key, a drag over
+//! the parent, a pause, undo), logs what each one cost, then takes the screenshot of the final
+//! body.
 //!
 //! The fields come from reflection over the plan, so every number, flag and unit enum variant in a
 //! part is editable; strings and `None` are shown but fixed. Mirrored and repeated parts are one
@@ -20,24 +25,33 @@
 //! so its comments and formatting are lost. The file is watched: a save from another editor
 //! replaces unsaved edits here.
 //!
-//! Regeneration is two-speed. Every edit goes straight to a coarse preview (one in flight at a
-//! time, so held keys stream previews as fast as they are made); once edits pause the body is
-//! rebuilt at full quality. With one body to build it gets every core but one, and bodies not
-//! shown recently are dropped from the generation cache so a long session doesn't fill memory.
+//! Every edit shows on the next frame: the anatomy is rebuilt (a fraction of a millisecond) and its
+//! primitives are ray-marched on the GPU (`SdfPreview`), clay coloured, the selected part tinted,
+//! without the coat, hard parts or wing membranes. Once edits pause the body is meshed at full
+//! quality in the background and replaces the preview. With one body to build it gets every core
+//! but one, and bodies not shown recently are dropped from the generation cache so a long session
+//! doesn't fill memory.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 
 use bevy::asset::AssetPlugin;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::math::{Affine3A, Vec3A};
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo, VariantType};
 use bevy::reflect::{GetPath, PartialReflect, ReflectMut, ReflectRef, TypeInfo};
+use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::window::{PresentMode, PrimaryWindow};
 use ornisculpt::OrnisculptPlugin;
-use ornisculpt::anatomy::{BodyPlan, Form, PartNode, PartPath, Repeat, apply_form, path_matches};
-use ornisculpt::mob::{BodyFailed, BodyKey, BodyReady, GenBudget, GenCache, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSkeleton};
-use ornisculpt::surface::SurfaceSettings;
+use ornisculpt::anatomy::{
+    Anatomy, AttachSlot, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, PartNode, PartPath, Repeat, apply_form, build_anatomy, mirror_point,
+    path_matches, referenced_assets, sample_axis,
+};
+use ornisculpt::num::{Idx, ToF32};
+use ornisculpt::mob::{BodyFailed, BodyKey, BodyReady, GenBudget, GenCache, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, PartAssetCache};
+use ornisculpt::surface::{BodyField, BodyFieldOptions, Field as _, SdfPreview, SdfPreviewAssets, SdfPreviewPlugin};
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
@@ -48,6 +62,7 @@ fn main() {
             .set(WindowPlugin { primary_window: Some(Window { title: "Ornisculpt editor".into(), ..default() }), ..default() })
             .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
         OrnisculptPlugin,
+        SdfPreviewPlugin,
     ))
     .insert_resource(Editor::new(path))
     // One body at a time: the meshing stages get every core but one (the main and render
@@ -59,23 +74,21 @@ fn main() {
     .add_observer(on_ready)
     .add_observer(on_failed)
     .add_systems(Startup, setup)
-    .add_systems(Update, (sync_from_asset, controls, drive_generation, orbit_camera, draw_skeleton, render_panel, screenshot).chain());
+    .add_systems(
+        Update,
+        (sync_from_asset, pointer, controls, update_preview, drive_generation, swap_views, orbit_camera, draw_skeleton, render_panel, screenshot).chain(),
+    );
     if std::env::var_os("ORNISCULPT_EDITOR_TEST").is_some() {
-        app.init_resource::<Script>().add_systems(Update, scripted_edits.before(drive_generation));
+        // Frame times are the measure: don't wait for the display.
+        app.add_systems(Startup, |mut window: Single<&mut Window, With<PrimaryWindow>>| window.present_mode = PresentMode::AutoNoVsync);
+        app.init_resource::<Script>().add_systems(Update, scripted_edits.after(pointer).before(update_preview));
     }
     app.run();
 }
 
-/// Seconds after the last edit (and after its preview is on screen) before the full-quality
-/// rebuild starts. Short, so a pause shows the real body soon; not zero, so a slow run of key
-/// presses doesn't start a full rebuild between each pair that then steals cores from the next
-/// preview.
-const REFINE_DELAY: f32 = 0.2;
-/// Preview meshing: the hero level at this voxel size (full quality is 8 mm with two detail
-/// levels), unsimplified and without centres of rotation or muscle flex (the editor shows the
-/// rest pose). The near level is built like the far one: the editor never shows it.
-const PREVIEW_VOXEL: f32 = 0.015;
-const PREVIEW_DETAIL_LEVELS: u8 = 1;
+/// Seconds after the last edit before the full-quality mesh is built. Short, so a pause shows the
+/// real body soon; not zero, so a run of key presses doesn't start a build between each pair.
+const REFINE_DELAY: f32 = 0.25;
 /// Generated bodies kept in the cache: the ones shown most recently, so undo and a step back
 /// come up at once. Everything older is dropped with its meshes.
 const KEEP_BODIES: usize = 12;
@@ -83,8 +96,17 @@ const KEEP_BODIES: usize = 12;
 const UNDO_DEPTH: usize = 200;
 /// Fields shown at once.
 const FIELD_WINDOW: usize = 32;
+/// Scale step per scroll line over a part.
+const SCROLL_SCALE: f32 = 1.06;
+/// Degrees a part turns per pixel of Shift+drag.
+const TURN_PER_PIXEL: f32 = 0.4;
+/// 1 / φ, for golden-section searches.
+const GOLDEN: f32 = 0.618_034;
+/// The preview's clay.
+const CLAY: Color = Color::srgb(0.78, 0.66, 0.55);
 
-const HELP: &str = "Tab part  Up/Down field  Left/Right adjust (Shift x10, Ctrl x0.1)  Delete part  Ctrl+Z undo  Ctrl+S save  G skeleton";
+const HELP: &str = "click part, drag it, Shift+drag turn, scroll scale, right-drag orbit\n\
+Tab part  Up/Down field  Left/Right adjust (Shift x10, Ctrl x0.1)  Delete part  Ctrl+Z undo  Ctrl+S save  G skeleton";
 
 #[derive(Resource)]
 struct Editor {
@@ -92,6 +114,7 @@ struct Editor {
     path: String,
     handle: Handle<BodyPlan>,
     mob: Entity,
+    preview: Entity,
     /// The plan being edited: the asset as loaded, plus unsaved edits.
     plan: Option<BodyPlan>,
     parts: Vec<PartEntry>,
@@ -99,26 +122,26 @@ struct Editor {
     fields: Vec<Field>,
     field: usize,
     undo: Vec<BodyPlan>,
-    /// The plan changed since the last submission: the mob needs a new preview.
-    dirty: bool,
-    /// When the last edit was made (seconds since start).
-    edited_at: f64,
-    /// Counts edits; `stamped_version` is the last one `edited_at` was taken for, `full_failed`
-    /// the one whose full rebuild failed.
+    /// Counts edits (a load is one): what the preview and the mesh are compared by.
     version: u64,
-    stamped_version: u64,
+    /// When the preview of the latest version went up (seconds since start).
+    edited_at: f64,
+    /// Version and selected part the preview shows.
+    previewed: Option<(u64, usize)>,
+    /// The anatomy and field the preview was drawn from (bones for the gizmos, field for picking).
+    body: Option<PreviewBody>,
+    /// The full rebuild that hasn't come back yet (`BodyReady` or `BodyFailed`): its version and
+    /// when it went. Superseded submissions never come back, so this is always the latest.
+    submitted: Option<(u64, f64)>,
+    /// Version of the mesh the mob has.
+    shown: Option<u64>,
+    /// Version whose full rebuild failed.
     full_failed: Option<u64>,
-    /// Quality of the submitted generation that hasn't come back yet (`BodyReady` or
-    /// `BodyFailed`); superseded submissions never come back, so this is always the latest.
-    owed: Option<Quality>,
-    /// When it was submitted (seconds since start), for the timings shown.
-    submitted_at: f64,
-    /// Quality of the body the mob shows.
-    shown: Option<Quality>,
-    /// Quality the `SurfaceSettings` resource is set to (what the plugin's own requests build).
-    settings_quality: Quality,
-    /// Last measured submit-to-attach times in milliseconds, by quality.
-    took_ms: [Option<f64>; 2],
+    /// Last preview build (anatomy, field, packing) and full rebuild (submit to attach), in ms.
+    preview_ms: Option<f64>,
+    full_ms: Option<f64>,
+    /// The mouse is shaping a part.
+    drag: Option<Drag>,
     /// Keys of the bodies shown most recently, newest last (see `KEEP_BODIES`).
     recent: VecDeque<BodyKey>,
     /// Asset events before this time (seconds since start) are our own writes: not reloaded.
@@ -129,34 +152,31 @@ struct Editor {
     ready_frames: Option<u32>,
 }
 
-/// How a body is built: quickly for the next frame, or properly once the edit settles.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Quality {
-    Preview,
-    Full,
+/// What the preview was built from.
+struct PreviewBody {
+    anatomy: Anatomy,
+    field: BodyField,
+    /// Rest pose, model space, per bone.
+    model: Vec<Affine3A>,
 }
 
-impl Quality {
-    const fn index(self) -> usize {
-        match self {
-            Self::Preview => 0,
-            Self::Full => 1,
-        }
-    }
+/// A part being shaped with the mouse. The undo entry is taken at the first change.
+struct Drag {
+    /// The plan when the drag began.
+    start: BodyPlan,
+    changed: bool,
+    mode: DragMode,
+}
 
-    /// Surface settings for this quality.
-    fn settings(self) -> SurfaceSettings {
-        let mut settings = SurfaceSettings::default();
-        if self == Self::Preview {
-            let [hero, near, far] = &mut settings.levels;
-            hero.mesh.voxel_size = PREVIEW_VOXEL;
-            hero.mesh.detail_levels = PREVIEW_DETAIL_LEVELS;
-            hero.simplify_ratio = 1.0;
-            hero.deformation = false;
-            *near = *far;
-        }
-        settings
-    }
+enum DragMode {
+    /// Slides an `Along` or `Surface` attach over the parent: the change in the parent's
+    /// coordinates under the cursor since the grab.
+    Slide { parent: usize, mirrored: bool, grab: (f32, f32) },
+    /// Moves the offset: the cursor's motion on the view plane through the grab point, through
+    /// the inverse of how the offset moves the part's root (measured at the grab).
+    Move { grab: Vec3, normal: Vec3, inverse: Mat3 },
+    /// Shift: turns the offset by the cursor's motion.
+    Turn { cursor: Vec2 },
 }
 
 /// One part of the authored plan.
@@ -196,23 +216,23 @@ impl Editor {
             path,
             handle: Handle::default(),
             mob: Entity::PLACEHOLDER,
+            preview: Entity::PLACEHOLDER,
             plan: None,
             parts: Vec::new(),
             part: 0,
             fields: Vec::new(),
             field: 0,
             undo: Vec::new(),
-            dirty: false,
-            edited_at: 0.0,
             version: 0,
-            stamped_version: 0,
-            full_failed: None,
-            // The plugin builds the first body itself, at the default (full) settings.
-            owed: Some(Quality::Full),
-            submitted_at: 0.0,
+            edited_at: 0.0,
+            previewed: None,
+            body: None,
+            submitted: None,
             shown: None,
-            settings_quality: Quality::Full,
-            took_ms: [None; 2],
+            full_failed: None,
+            preview_ms: None,
+            full_ms: None,
+            drag: None,
             recent: VecDeque::new(),
             ignore_until: 0.0,
             status: "loading".into(),
@@ -234,27 +254,32 @@ impl Editor {
         self.field = self.field.min(self.fields.len().saturating_sub(1));
     }
 
+    /// Records `plan` (the plan before an edit) for undo.
+    fn push_undo(&mut self, plan: BodyPlan) {
+        if self.undo.len() >= UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+        self.undo.push(plan);
+    }
+
     /// Records the plan before an edit, for undo.
     fn snapshot(&mut self) {
-        if let Some(plan) = &self.plan {
-            if self.undo.len() >= UNDO_DEPTH {
-                self.undo.remove(0);
-            }
-            self.undo.push(plan.clone());
+        if let Some(plan) = self.plan.clone() {
+            self.push_undo(plan);
         }
     }
 
-    /// After an edit: refresh the panel and ask for a preview (`drive_generation` submits it, and
-    /// stamps the time).
+    /// After an edit: refresh the panel; `update_preview` shows it this frame.
     fn edited(&mut self) {
         self.rebuild();
-        self.dirty = true;
         self.version += 1;
     }
 
     fn select_part(&mut self, part: usize) {
-        self.part = part;
-        self.field = 0;
+        if part != self.part {
+            self.part = part;
+            self.field = 0;
+        }
         self.rebuild();
     }
 
@@ -272,10 +297,7 @@ impl Editor {
         if !adjust(value, dir, scale, degrees) {
             return;
         }
-        if self.undo.len() >= UNDO_DEPTH {
-            self.undo.remove(0);
-        }
-        self.undo.push(before);
+        self.push_undo(before);
         self.edited();
     }
 
@@ -321,6 +343,205 @@ impl Editor {
             Err(e) => format!("save failed: {e}"),
         };
     }
+
+    /// The authored entry an expanded part (`torso/limb.front.l`) was made from.
+    fn entry_of(&self, path: &PartPath) -> Option<usize> {
+        self.parts.iter().position(|e| e.reflect != "tone" && path_matches(&e.path, path))
+    }
+
+    /// The part the ray (model space) first hits on the preview, with the hit point.
+    fn pick(&self, ray: Ray3d) -> Option<(usize, Vec3)> {
+        let body = self.body.as_ref()?;
+        let hit = march(|p| body.field.distance(p), ray)?;
+        let part = body.field.part_at(hit.into())?;
+        Some((usize::from(part), hit))
+    }
+
+    /// Starts shaping the grabbed copy `copy`, hit at `hit` (model space). Shift turns it.
+    fn begin_drag(&mut self, copy: usize, hit: Vec3, ray: Ray3d, cursor: Vec2, turn: bool, ctx: &BuildCtx) {
+        let (Some(plan), Some(body)) = (&self.plan, &self.body) else { return };
+        let Some(built) = body.anatomy.parts.get(copy) else { return };
+        let Some(node) = self.parts.get(self.part).and_then(|e| plan.node(&e.path)) else { return };
+        if node.name == plan.root.name {
+            // The root has no attach to move; turning and scaling it are the panel's.
+            return;
+        }
+        let parent = built.parent.map(usize::from);
+        let slide = matches!(node.attach, AttachSlot::Along(_) | AttachSlot::Surface { .. });
+        let mode = if turn {
+            DragMode::Turn { cursor }
+        } else if let (true, Some(parent)) = (slide, parent)
+            && let Some(grab) = self.surface_coords(parent, built.mirrored, ray)
+        {
+            DragMode::Slide { parent, mirrored: built.mirrored, grab }
+        } else {
+            let inverse = self.move_inverse(copy, ctx).unwrap_or(Mat3::IDENTITY);
+            DragMode::Move { grab: hit, normal: ray.direction.as_vec3(), inverse }
+        };
+        self.drag = Some(Drag { start: plan.clone(), changed: false, mode });
+    }
+
+    /// Continues the drag for the cursor's `ray` (model space).
+    fn continue_drag(&mut self, ray: Ray3d, cursor: Vec2) {
+        let Some(drag) = self.drag.as_ref() else { return };
+        let Some(path) = self.parts.get(self.part).map(|e| e.path.clone()) else { return };
+        let Some(start) = drag.start.node(&path).cloned() else { return };
+        let mut node = start.clone();
+        match drag.mode {
+            DragMode::Slide { parent, mirrored, grab } => {
+                let Some((t, around)) = self.surface_coords(parent, mirrored, ray) else { return };
+                let (dt, da) = (t - grab.0, wrap_degrees(around - grab.1));
+                match (&mut node.attach, &mut node.repeat) {
+                    (AttachSlot::Along(_) | AttachSlot::Surface { .. }, Repeat::Series { from, to, .. }) => {
+                        let shift = dt.clamp(-from.min(*to), 1.0 - from.max(*to));
+                        *from += shift;
+                        *to += shift;
+                    }
+                    (AttachSlot::Along(at), _) => *at = (*at + dt).clamp(0.0, 1.0),
+                    (AttachSlot::Surface { t, .. }, _) => *t = (*t + dt).clamp(0.0, 1.0),
+                    _ => {}
+                }
+                if let AttachSlot::Surface { around_deg, .. } = &mut node.attach {
+                    *around_deg = wrap_degrees(*around_deg + da);
+                }
+            }
+            DragMode::Move { grab, normal, inverse } => {
+                let Some(t) = ray.intersect_plane(grab, InfinitePlane3d::new(normal)) else { return };
+                node.offset.translate = start.offset.translate + inverse * (ray.get_point(t) - grab);
+            }
+            DragMode::Turn { cursor: from } => {
+                let d = (cursor - from) * TURN_PER_PIXEL;
+                node.offset.rotate_deg.y = wrap_degrees(start.offset.rotate_deg.y + d.x);
+                node.offset.rotate_deg.x = wrap_degrees(start.offset.rotate_deg.x + d.y);
+            }
+        }
+        self.set_node(&path, node);
+    }
+
+    fn end_drag(&mut self) {
+        self.drag = None;
+    }
+
+    /// Replaces the authored node at `path` (keeping its children) during a drag.
+    fn set_node(&mut self, path: &PartPath, node: PartNode) {
+        let Some(target) = self.plan.as_mut().and_then(|p| p.node_mut(path)) else { return };
+        if target.attach == node.attach && target.offset == node.offset && target.repeat == node.repeat {
+            return;
+        }
+        target.attach = node.attach;
+        target.offset = node.offset;
+        target.repeat = node.repeat;
+        if let Some(drag) = self.drag.as_mut()
+            && !drag.changed
+        {
+            drag.changed = true;
+            let start = drag.start.clone();
+            self.push_undo(start);
+        }
+        self.edited();
+    }
+
+    /// Scales the selected part's offset by `factor`.
+    fn scale_selected(&mut self, factor: f32) {
+        let Some(path) = self.parts.get(self.part).map(|e| e.path.clone()) else { return };
+        let Some(plan) = self.plan.as_mut() else { return };
+        let before = plan.clone();
+        let Some(node) = plan.node_mut(&path) else { return };
+        node.offset.scale = (node.offset.scale * factor).clamp(0.05, 20.0);
+        self.push_undo(before);
+        self.edited();
+    }
+
+    /// Where `ray` (model space) meets the parent copy `parent`'s own skin, as its attach
+    /// coordinates: `t` along it and degrees around it (from the back, toward the left side).
+    /// A mirrored copy is measured in its logical (left) frame.
+    fn surface_coords(&self, parent: usize, mirrored: bool, ray: Ray3d) -> Option<(f32, f32)> {
+        let body = self.body.as_ref()?;
+        let part = body.anatomy.parts.get(parent)?;
+        let prims = part.primitives.start.idx()..part.primitives.end.idx();
+        let hit = march(|p| body.field.distance_among(prims.clone(), p), ray)?;
+        let hit = if mirrored { mirror_point(hit) } else { hit };
+        let axis = &part.axis;
+        // The nearest point on the parent's axis: the best of 64 samples, then narrowed down
+        // between its neighbours (golden section), so the part glides rather than steps.
+        let d = |t: f32| sample_axis(axis, t).map_or(f32::INFINITY, |s| s.centre().distance_squared(hit));
+        let coarse = (0..=64u8).map(|i| f32::from(i) / 64.0).min_by(|a, b| d(*a).total_cmp(&d(*b)))?;
+        let (mut lo, mut hi) = ((coarse - 1.0 / 64.0).max(0.0), (coarse + 1.0 / 64.0).min(1.0));
+        for _ in 0..24 {
+            let (a, b) = ((hi - lo).mul_add(-GOLDEN, hi), (hi - lo).mul_add(GOLDEN, lo));
+            if d(a) < d(b) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        let t = f32::midpoint(lo, hi);
+        let s = sample_axis(axis, t)?;
+        let out = hit - s.centre();
+        let dorsal = s.model.rotation * Vec3::NEG_Z;
+        let side = s.model.rotation * Vec3::X;
+        Some((t, out.dot(side).atan2(out.dot(dorsal)).to_degrees()))
+    }
+
+    /// How the selected part's offset moves the root bone of copy `copy`: rebuilds the anatomy
+    /// with the offset nudged along each axis, and inverts the result.
+    fn move_inverse(&self, copy: usize, ctx: &BuildCtx) -> Option<Mat3> {
+        const NUDGE: f32 = 0.01;
+        let plan = self.plan.as_ref()?;
+        let body = self.body.as_ref()?;
+        let path = &self.parts.get(self.part)?.path;
+        let built = body.anatomy.parts.get(copy)?;
+        let root = |a: &Anatomy| -> Option<Vec3> {
+            let part = a.part(&built.path)?;
+            let bone = usize::from(part.bones.start);
+            a.skeleton.model_rest().get(bone).map(|m| Vec3::from(m.translation))
+        };
+        let base = root(&body.anatomy)?;
+        let mut columns = [Vec3::ZERO; 3];
+        for (axis, column) in columns.iter_mut().enumerate() {
+            let mut nudged = plan.clone();
+            let node = nudged.node_mut(path)?;
+            node.offset.translate += Vec3::AXES.get(axis).copied()? * NUDGE;
+            *column = (root(&ctx.build(&nudged).ok()?)? - base) / NUDGE;
+        }
+        let jacobian = Mat3::from_cols(columns[0], columns[1], columns[2]);
+        (jacobian.determinant().abs() > 1e-6).then(|| jacobian.inverse())
+    }
+}
+
+/// Signed degrees in `-180..180`.
+fn wrap_degrees(d: f32) -> f32 {
+    (d + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// First point where `ray` meets the zero set of `distance` (sphere tracing), within 50 m.
+fn march(distance: impl Fn(Vec3A) -> f32, ray: Ray3d) -> Option<Vec3> {
+    let mut t = 0.0;
+    for _ in 0..256 {
+        let p = ray.get_point(t);
+        let d = distance(p.into());
+        if d < 2e-4 {
+            return Some(p);
+        }
+        t = d.max(1e-4).mul_add(0.9, t);
+        if t > 50.0 {
+            return None;
+        }
+    }
+    None
+}
+
+/// What building an anatomy needs from the app.
+struct BuildCtx<'a> {
+    rules: &'a PartLodRules,
+    assets: &'a PartAssets,
+}
+
+impl BuildCtx<'_> {
+    fn build(&self, plan: &BodyPlan) -> Result<Anatomy, String> {
+        let live = apply_form(plan, &Form::default()).map_err(|e| e.to_string())?;
+        build_anatomy(&live, self.rules, self.assets).map_err(|e| e.to_string())
+    }
 }
 
 /// The authored parts, depth first, after a pseudo-part for the body tone.
@@ -335,9 +556,11 @@ fn collect_parts(plan: &BodyPlan) -> Vec<PartEntry> {
             ReflectRef::Enum(e) => e.variant_name().to_owned(),
             _ => String::new(),
         };
-        out.push(PartEntry { path, reflect: reflect.clone(), depth, kind, copies: if copies > 1 { format!("x{copies}") } else { String::new() } });
-        for (i, child) in node.children.iter().enumerate() {
-            go(child, out.last().map_or_else(|| PartPath::root(&child.name), |p| p.path.child(&child.name)), format!("{reflect}.children[{i}]"), depth + 1, out);
+        let children: Vec<(PartPath, String)> =
+            node.children.iter().enumerate().map(|(i, child)| (path.child(&child.name), format!("{reflect}.children[{i}]"))).collect();
+        out.push(PartEntry { path, reflect, depth, kind, copies: if copies > 1 { format!("x{copies}") } else { String::new() } });
+        for (child, (path, reflect)) in node.children.iter().zip(children) {
+            go(child, path, reflect, depth + 1, out);
         }
     }
     let mut out = vec![PartEntry { path: PartPath::root("tone"), reflect: "tone".into(), depth: 0, kind: "body tone".into(), copies: String::new() }];
@@ -503,6 +726,7 @@ fn adjust(value: &mut dyn PartialReflect, dir: f32, scale: f32, degrees: bool) -
     true
 }
 
+
 #[derive(Component)]
 struct Panel;
 
@@ -512,11 +736,15 @@ struct Orbit {
     pitch: f32,
     distance: f32,
     target: Vec3,
+    /// A left-drag that began on empty space orbits.
+    dragging: bool,
+    /// This frame's scroll scaled a part instead of zooming.
+    scroll_used: bool,
 }
 
 impl Default for Orbit {
     fn default() -> Self {
-        Self { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0) }
+        Self { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0), dragging: false, scroll_used: false }
     }
 }
 
@@ -558,12 +786,13 @@ impl KeyRepeat {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
     mut editor: ResMut<Editor>,
     assets: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut preview_assets: SdfPreviewAssets,
     mut gizmo_config: ResMut<GizmoConfigStore>,
 ) {
     // Bones are inside the body: draw them over it.
@@ -574,11 +803,13 @@ fn setup(
         Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
+        Mesh3d(preview_assets.meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
     ));
     editor.handle = assets.load(editor.path.clone());
     editor.mob = commands.spawn(Mob::new(editor.handle.clone())).id();
+    // The preview shares the mob's model space: both sit at the origin.
+    editor.preview = commands.spawn(SdfPreview::bundle(&mut preview_assets, CLAY)).id();
     commands
         .spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(8.0), top: Val::Px(8.0), padding: UiRect::all(Val::Px(8.0)), ..default() },
@@ -609,11 +840,66 @@ fn sync_from_asset(mut events: MessageReader<AssetEvent<BodyPlan>>, plans: Res<A
     }
     editor.plan = Some(plan.clone());
     editor.status = if first { "loaded".into() } else { "reloaded from disk".into() };
+    editor.drag = None;
+    editor.edited();
     if first {
-        editor.rebuild();
-    } else {
-        // The plugin regenerates on its own too; our submission supersedes it.
-        editor.edited();
+        // The plugin builds the first body itself, from the asset.
+        editor.submitted = Some((editor.version, time.elapsed_secs_f64()));
+    }
+}
+
+/// The mouse: picks, drags, turns and scales parts; leaves the rest to `orbit_camera`.
+#[allow(clippy::too_many_arguments)]
+fn pointer(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    scroll: Res<AccumulatedMouseScroll>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
+    mobs: Query<&GlobalTransform, With<Mob>>,
+    rules: Res<PartLodRules>,
+    cache: Res<PartAssetCache>,
+    mut editor: ResMut<Editor>,
+    mut orbit: ResMut<Orbit>,
+) {
+    orbit.scroll_used = false;
+    if buttons.just_released(MouseButton::Left) {
+        editor.bypass_change_detection().end_drag();
+        orbit.dragging = false;
+    }
+    let Some(cursor) = window.cursor_position() else { return };
+    let (camera, camera_transform) = *camera;
+    let Ok(world_ray) = camera.viewport_to_world(camera_transform, cursor) else { return };
+    // Into the mob's model space (where the preview's field lives).
+    let model_from_world = mobs.get(editor.mob).map_or(Affine3A::IDENTITY, |g| g.affine().inverse());
+    let Ok(direction) = Dir3::new(model_from_world.transform_vector3(world_ray.direction.as_vec3())) else { return };
+    let ray = Ray3d::new(model_from_world.transform_point3(world_ray.origin), direction);
+    let ctx = BuildCtx { rules: &rules, assets: &cache.assets };
+
+    if editor.drag.is_some() && buttons.pressed(MouseButton::Left) {
+        editor.continue_drag(ray, cursor);
+        return;
+    }
+    let picked = editor.pick(ray).and_then(|(copy, hit)| {
+        let path = &editor.body.as_ref()?.anatomy.parts.get(copy)?.path;
+        Some((copy, hit, editor.entry_of(path)?))
+    });
+    if buttons.just_pressed(MouseButton::Left) {
+        if let Some((copy, hit, entry)) = picked {
+            editor.select_part(entry);
+            let turn = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+            editor.begin_drag(copy, hit, ray, cursor, turn, &ctx);
+        } else {
+            orbit.dragging = true;
+        }
+    }
+    // Scroll over a part scales it (and selects it); anywhere else it zooms.
+    if scroll.delta.y != 0.0
+        && let Some((_, _, entry)) = picked
+    {
+        editor.select_part(entry);
+        editor.scale_selected(SCROLL_SCALE.powf(scroll.delta.y));
+        orbit.scroll_used = true;
     }
 }
 
@@ -632,6 +918,7 @@ fn controls(
         return;
     }
     if ctrl && keys.just_pressed(KeyCode::KeyZ) {
+        editor.end_drag();
         editor.undo();
         return;
     }
@@ -639,6 +926,7 @@ fn controls(
         editor.gizmos = !editor.gizmos;
     }
     if keys.just_pressed(KeyCode::Delete) {
+        editor.end_drag();
         editor.delete_selected();
     }
     if keys.just_pressed(KeyCode::Tab) {
@@ -665,47 +953,92 @@ fn controls(
     }
 }
 
-/// Submits generations: a preview as soon as the plan changes (unless one is already on its way,
-/// in which case the next starts the moment it lands), and the full rebuild once edits pause with
-/// the preview on screen. A full rebuild in progress is superseded by a preview rather than
-/// waited for; the plugin finishes it in the background and the result is only cached.
-fn drive_generation(mut commands: Commands, mut editor: ResMut<Editor>, mut settings: ResMut<SurfaceSettings>, time: Res<Time>) {
-    let now = time.elapsed_secs_f64();
-    if editor.dirty && editor.version != editor.stamped_version {
-        editor.edited_at = now;
-        editor.stamped_version = editor.version;
-    }
-    // Only writes below mark the editor changed (the panel re-renders on change).
-    let editor = editor.into_inner();
-    let quality = if editor.dirty && editor.owed != Some(Quality::Preview) {
-        Quality::Preview
-    } else if !editor.dirty
-        && editor.owed.is_none()
-        && editor.shown == Some(Quality::Preview)
-        && now - editor.edited_at >= f64::from(REFINE_DELAY)
-        && editor.full_failed != Some(editor.version)
-    {
-        Quality::Full
-    } else {
+/// Rebuilds the anatomy and the ray-marched preview whenever the plan or the selection changed:
+/// the same frame as the edit.
+fn update_preview(
+    mut editor: ResMut<Editor>,
+    rules: Res<PartLodRules>,
+    cache: Res<PartAssetCache>,
+    mut previews: Query<&mut SdfPreview>,
+    mut preview_assets: SdfPreviewAssets,
+    time: Res<Time>,
+) {
+    let key = (editor.version, editor.part);
+    if editor.plan.is_none() || editor.previewed == Some(key) {
         return;
-    };
+    }
+    // Authored meshes (sculpted parts) load with the mob's first generation; wait for them.
+    if let Some(plan) = &editor.plan
+        && referenced_assets(plan).iter().any(|path| !cache.assets.meshes.contains_key(path))
+    {
+        editor.bypass_change_detection().status = "loading part meshes".into();
+        return;
+    }
+    let new_version = editor.previewed.is_none_or(|(v, _)| v != editor.version);
+    editor.previewed = Some(key);
+    let started = Instant::now();
+    let ctx = BuildCtx { rules: &rules, assets: &cache.assets };
     let Some(plan) = &editor.plan else { return };
-    let live = match apply_form(plan, &Form::default()) {
-        Ok(live) => live,
+    let anatomy = match ctx.build(plan) {
+        Ok(a) => a,
         Err(e) => {
-            editor.dirty = false;
             editor.status = format!("failed: {e}");
             return;
         }
     };
-    if editor.settings_quality != quality {
-        *settings = quality.settings();
-        editor.settings_quality = quality;
+    let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+    // The selected authored part matches its expanded copies (`leg` matches `leg.l` and `leg.r`).
+    let selected = editor.parts.get(editor.part).filter(|p| p.reflect != "tone").map(|p| &p.path);
+    let packed = field.preview(&anatomy, |part| {
+        selected.is_some_and(|sel| anatomy.parts.get(usize::from(part)).is_some_and(|p| path_matches(sel, &p.path)))
+    });
+    let Ok(mut preview) = previews.get_mut(editor.preview) else { return };
+    preview.show(&packed, &mut preview_assets);
+    let model = anatomy.skeleton.model_rest();
+    editor.preview_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+    editor.body = Some(PreviewBody { anatomy, field, model });
+    if new_version {
+        editor.edited_at = time.elapsed_secs_f64();
     }
+}
+
+/// Builds the full mesh once edits pause (not mid-drag). A full rebuild in progress is
+/// superseded by the next; the plugin finishes it in the background and the result is only cached.
+fn drive_generation(mut commands: Commands, mut editor: ResMut<Editor>, time: Res<Time>) {
+    let now = time.elapsed_secs_f64();
+    let version = editor.version;
+    let pending = editor.submitted.is_some_and(|(v, _)| v == version);
+    if editor.plan.is_none()
+        || editor.shown == Some(version)
+        || pending
+        || editor.full_failed == Some(version)
+        || editor.drag.is_some()
+        || now - editor.edited_at < f64::from(REFINE_DELAY)
+    {
+        return;
+    }
+    let Some(plan) = &editor.plan else { return };
+    let live = match apply_form(plan, &Form::default()) {
+        Ok(live) => live,
+        Err(e) => {
+            editor.full_failed = Some(version);
+            editor.status = format!("failed: {e}");
+            return;
+        }
+    };
     commands.entity(editor.mob).insert((LiveBody(live), GenRequest));
-    editor.dirty = false;
-    editor.owed = Some(quality);
-    editor.submitted_at = now;
+    editor.submitted = Some((version, now));
+}
+
+/// Shows the mesh when it is of the latest plan, the preview otherwise.
+fn swap_views(editor: Res<Editor>, mut visibility: Query<&mut Visibility>) {
+    let mesh = editor.shown == Some(editor.version);
+    let preview = !mesh && editor.body.is_some();
+    for (entity, show) in [(editor.mob, mesh), (editor.preview, preview)] {
+        if let Ok(mut v) = visibility.get_mut(entity) {
+            v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+        }
+    }
 }
 
 fn on_ready(
@@ -720,15 +1053,13 @@ fn on_ready(
     if ev.entity != editor.mob {
         return;
     }
-    // A body we didn't ask for (the plugin's own hot reload) was built at the resource's settings.
-    let quality = editor.owed.take().unwrap_or(editor.settings_quality);
-    let first = editor.shown.is_none();
-    editor.shown = Some(quality);
-    let took = (time.elapsed_secs_f64() - editor.submitted_at) * 1000.0;
-    if let Some(slot) = editor.took_ms.get_mut(quality.index()) {
-        *slot = Some(took);
-    }
-    if quality == Quality::Full {
+    let first = editor.shown.is_none() && editor.full_ms.is_none();
+    // A body we didn't ask for (the plugin's own hot reload) is of no version we know.
+    editor.shown = editor.submitted.take().map(|(version, at)| {
+        editor.full_ms = Some((time.elapsed_secs_f64() - at) * 1000.0);
+        version
+    });
+    if editor.shown == Some(editor.version) {
         editor.ready_frames = Some(0);
     }
     let Some(body) = mobs.get(editor.mob).ok().and_then(|b| bodies.get(&b.0)) else { return };
@@ -752,9 +1083,7 @@ fn on_failed(ev: On<BodyFailed>, mut editor: ResMut<Editor>) {
     if ev.entity != editor.mob {
         return;
     }
-    if editor.owed.take() == Some(Quality::Full) {
-        editor.full_failed = Some(editor.version);
-    }
+    editor.full_failed = editor.submitted.take().map(|(v, _)| v);
     editor.status = format!("failed: {}", ev.error);
 }
 
@@ -763,17 +1092,16 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
         return;
     }
     let mut s = String::new();
-    let state = match (editor.owed, editor.shown) {
-        (Some(Quality::Preview), _) => "   [previewing]",
-        (Some(Quality::Full), None) => "   [generating]",
-        (Some(Quality::Full), Some(_)) => "   [refining]",
-        (None, Some(Quality::Preview)) => "   [preview]",
-        (None, _) => "",
+    let state = if editor.shown == Some(editor.version) {
+        ""
+    } else if editor.submitted.is_some_and(|(v, _)| v == editor.version) {
+        "   [preview, meshing]"
+    } else {
+        "   [preview]"
     };
     let _ = writeln!(s, "{}{state}", editor.path);
-    let ms = |t: Option<f64>| t.map_or_else(|| "-".to_owned(), |t| format!("{t:.0} ms"));
-    let [preview_ms, full_ms] = editor.took_ms;
-    let _ = writeln!(s, "{}   preview {}, full {}", editor.status, ms(preview_ms), ms(full_ms));
+    let ms = |t: Option<f64>| t.map_or_else(|| "-".to_owned(), |t| format!("{t:.1} ms"));
+    let _ = writeln!(s, "{}   preview {}, full {}", editor.status, ms(editor.preview_ms), ms(editor.full_ms));
     let _ = writeln!(s, "{HELP}\n");
     for (i, p) in editor.parts.iter().enumerate() {
         let mark = if i == editor.part { '>' } else { ' ' };
@@ -800,44 +1128,133 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
     }
 }
 
-/// Scripted edits (`ORNISCULPT_EDITOR_TEST`): a held key on the root part's first number, a
-/// pause, then undo back. Frames count from the first body.
+/// Scripted edits (`ORNISCULPT_EDITOR_TEST`): a held key on the first number of the first
+/// child part, a drag of the first part attached to its parent's skin, a pause, then undo back.
+/// Frames count from the first preview.
 #[derive(Resource, Default)]
 struct Script {
     frame: u32,
     done: bool,
     logged: String,
+    /// Preview build times (ms) over the edits.
+    preview_ms: Vec<f64>,
+    /// Where the dragged part's root was at the grab.
+    grab: Option<Vec3>,
+    /// Frame times (ms): the preview standing, the preview rebuilt that frame, the mesh.
+    frames: [Vec<f64>; 3],
+    /// The preview version last frame.
+    last_previewed: Option<(u64, usize)>,
 }
 
-fn scripted_edits(mut script: ResMut<Script>, mut editor: ResMut<Editor>) {
-    if script.done || editor.shown.is_none() {
+fn scripted_edits(
+    mut commands: Commands,
+    mut script: ResMut<Script>,
+    mut editor: ResMut<Editor>,
+    rules: Res<PartLodRules>,
+    cache: Res<PartAssetCache>,
+    time: Res<Time>,
+) {
+    if script.done || editor.body.is_none() {
         return;
     }
     script.frame += 1;
+    // Skip the first frames: pipelines compile.
+    // Frame time is the time since the last frame: the frame before this one, which rebuilt the
+    // preview if the version moved since the frame before it.
+    if script.frame > 30 {
+        let kind = if editor.shown == Some(editor.version) {
+            2
+        } else {
+            usize::from(script.last_previewed != editor.previewed)
+        };
+        if let Some(frames) = script.frames.get_mut(kind) {
+            frames.push(time.delta_secs_f64() * 1000.0);
+        }
+    }
+    script.last_previewed = editor.previewed;
     let frame = script.frame;
+    // The part to drag: the first whose attach slides, and a ray straight down onto its root.
+    let slider = || {
+        let plan = editor.plan.as_ref()?;
+        let body = editor.body.as_ref()?;
+        let entry = editor.parts.iter().position(|e| {
+            plan.node(&e.path).is_some_and(|n| matches!(n.attach, AttachSlot::Surface { .. }) && n.name != plan.root.name)
+        })?;
+        let authored = &editor.parts.get(entry)?.path;
+        let copy = body.anatomy.parts.iter().position(|p| path_matches(authored, &p.path) && !p.mirrored)?;
+        let root = body.model.get(usize::from(body.anatomy.parts.get(copy)?.bones.start))?.translation;
+        Some((entry, copy, Vec3::from(root)))
+    };
+    let down = |p: Vec3| Ray3d::new(p + Vec3::Y * 2.0, Dir3::NEG_Y);
     match frame {
         1 => {
             editor.select_part(1);
             editor.field = editor.fields.iter().position(|f| f.kind == FieldKind::Float).unwrap_or(0);
         }
-        // Held key: an edit every third frame (the key repeat rate), then undo one per 8 frames.
+        // Held key: an edit every third frame (the key repeat rate).
         10..=100 if frame % 3 == 0 => editor.adjust_selected(1.0, 1.0),
-        180..=260 if frame % 8 == 0 => editor.undo(),
-        320 => {
+        // A drag: grab the part, then slide the cursor backwards 2 mm a frame.
+        120 => {
+            if let Some((entry, copy, root)) = slider() {
+                editor.select_part(entry);
+                let ctx = BuildCtx { rules: &rules, assets: &cache.assets };
+                let hit = editor.pick(down(root)).map_or(root, |(_, hit)| hit);
+                editor.begin_drag(copy, hit, down(root), Vec2::ZERO, false, &ctx);
+                script.grab = Some(root);
+                script.logged.clear();
+                info!("test: dragging {}", editor.parts.get(entry).map_or("?", |e| e.path.0.as_str()));
+            }
+        }
+        121..=180 => {
+            if let Some(Drag { mode: DragMode::Slide { .. }, .. }) = &editor.drag
+                && let Some(root) = script.grab
+            {
+                let at = root - Vec3::Z * 0.002 * (frame - 120).to_f32();
+                editor.continue_drag(down(at), Vec2::ZERO);
+            }
+            // The preview mid-drag, beside the final screenshot.
+            if frame == 170
+                && let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT")
+            {
+                let path = std::path::Path::new(&path).with_extension("preview.png");
+                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+            }
+        }
+        181 => editor.end_drag(),
+        260..=340 if frame % 8 == 0 => editor.undo(),
+        // Then wait for the full mesh (up to a while), so its frames are measured too.
+        420.. if script.frames.last().is_some_and(|m| m.len() >= 60) || frame > 3000 => {
             script.done = true;
+            let stats = |mut ms: Vec<f64>| {
+                ms.sort_by(f64::total_cmp);
+                let pick = |percent: usize| ms.get(ms.len().saturating_sub(1) * percent / 100).copied().unwrap_or_default();
+                format!("{} samples, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms", ms.len(), pick(50), pick(95), pick(100))
+            };
+            info!("test: preview builds: {}", stats(script.preview_ms.clone()));
+            let [standing, rebuilt, mesh] = script.frames.clone();
+            info!("test: frames with the preview standing: {}", stats(standing));
+            info!("test: frames with the preview rebuilt: {}", stats(rebuilt));
+            info!("test: frames with the mesh: {}", stats(mesh));
             // The screenshot counts from the full body: the one shown, or the one on its way.
-            editor.ready_frames = (editor.shown == Some(Quality::Full) && editor.owed.is_none()).then_some(0);
+            editor.ready_frames = (editor.shown == Some(editor.version)).then_some(0);
         }
         _ => {}
     }
+    if editor.is_changed()
+        && let Some(ms) = editor.preview_ms
+        && editor.previewed.is_some_and(|(v, _)| v == editor.version)
+    {
+        script.preview_ms.push(ms);
+    }
+    let attach = editor.parts.get(editor.part).and_then(|e| editor.plan.as_ref()?.node(&e.path)).map(|n| format!("{:?}", n.attach));
     let line = format!(
-        "{} [{}] preview {:?} ms, full {:?} ms ({} = {})",
+        "{} [{}] full {:?} ms ({} = {}, attach {})",
         editor.status,
-        editor.owed.map_or("idle", |_| "waiting"),
-        editor.took_ms.first().copied().flatten().map(f64::round),
-        editor.took_ms.last().copied().flatten().map(f64::round),
+        if editor.shown == Some(editor.version) { "mesh" } else { "preview" },
+        editor.full_ms.map(f64::round),
         editor.fields.get(editor.field).map_or("", |f| f.label.as_str()),
         editor.fields.get(editor.field).map_or("", |f| f.value.as_str()),
+        attach.unwrap_or_default(),
     );
     if script.logged != line {
         info!("test frame {frame}: {line}");
@@ -868,11 +1285,13 @@ fn orbit_camera(
     scroll: Res<AccumulatedMouseScroll>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
-    if buttons.pressed(MouseButton::Left) {
+    if (orbit.dragging && buttons.pressed(MouseButton::Left)) || buttons.pressed(MouseButton::Right) {
         orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
         orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
+    if !orbit.scroll_used {
+        orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
+    }
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     for mut t in &mut camera {
         *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
@@ -880,26 +1299,18 @@ fn orbit_camera(
 }
 
 /// The selected part's bones (in every copy of it) in cyan, always; the whole skeleton and the
-/// sockets in yellow with `G`.
-fn draw_skeleton(
-    editor: Res<Editor>,
-    bodies: Res<Assets<GeneratedBody>>,
-    mobs: Query<(&MobBody, &MobSkeleton)>,
-    joints: Query<&GlobalTransform, With<MobJoint>>,
-    mut gizmos: Gizmos,
-) {
-    let Ok((body, skeleton)) = mobs.get(editor.mob) else { return };
-    let Some(body) = bodies.get(&body.0) else { return };
+/// sockets in yellow with `G`. Drawn from the preview's anatomy, so they follow every edit.
+fn draw_skeleton(editor: Res<Editor>, mobs: Query<&GlobalTransform, With<Mob>>, mut gizmos: Gizmos) {
+    let Some(body) = &editor.body else { return };
+    let world = mobs.get(editor.mob).map_or(Affine3A::IDENTITY, GlobalTransform::affine);
     let a = &body.anatomy;
-    // The selected authored part matches its expanded copies (`leg` matches `leg.l` and `leg.r`).
     let selected = editor.parts.get(editor.part).filter(|p| p.reflect != "tone").map(|p| &p.path);
     let highlighted = |bone: usize| {
         selected.is_some_and(|sel| {
             a.parts.iter().any(|p| path_matches(sel, &p.path) && p.bones.contains(&u8::try_from(bone).unwrap_or(u8::MAX)))
         })
     };
-    for (i, (bone, &joint)) in a.skeleton.bones.iter().zip(&skeleton.0).enumerate() {
-        let Ok(g) = joints.get(joint) else { continue };
+    for (i, (bone, model)) in a.skeleton.bones.iter().zip(&body.model).enumerate() {
         let (line, dot) = if highlighted(i) {
             (Color::srgb(0.2, 0.95, 1.0), Color::srgb(0.6, 1.0, 1.0))
         } else if editor.gizmos {
@@ -907,14 +1318,16 @@ fn draw_skeleton(
         } else {
             continue;
         };
-        gizmos.line(g.translation(), g.transform_point(Vec3::Y * bone.length), line);
-        gizmos.sphere(Isometry3d::from_translation(g.translation()), 0.008, dot);
+        let g = world * *model;
+        let start = Vec3::from(g.translation);
+        gizmos.line(start, g.transform_point3(Vec3::Y * bone.length), line);
+        gizmos.sphere(Isometry3d::from_translation(start), 0.008, dot);
     }
     if !editor.gizmos {
         return;
     }
     for socket in &a.sockets {
-        let Some(Ok(g)) = skeleton.0.get(socket.bone.index()).map(|&joint| joints.get(joint)) else { continue };
-        gizmos.sphere(Isometry3d::from_translation(g.transform_point(socket.local.translation)), 0.02, Color::srgb(0.2, 0.8, 1.0));
+        let Some(model) = body.model.get(socket.bone.index()) else { continue };
+        gizmos.sphere(Isometry3d::from_translation((world * *model).transform_point3(socket.local.translation)), 0.02, Color::srgb(0.2, 0.8, 1.0));
     }
 }

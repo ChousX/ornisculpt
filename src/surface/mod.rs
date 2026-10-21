@@ -19,6 +19,8 @@ mod mesh_data;
 mod mesher;
 mod muscle;
 mod octree;
+mod preview;
+mod preview_material;
 mod process;
 pub mod sdf;
 
@@ -37,6 +39,8 @@ pub use mesh_data::{
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;
 pub use octree::AdaptiveContour;
+pub use preview::{BRICK_VOXELS, PRIM_WORDS, PreviewField};
+pub use preview_material::{SdfPreview, SdfPreviewAssets, SdfPreviewExt, SdfPreviewMaterial, SdfPreviewPlugin, SdfPreviewUniform};
 pub use process::{merge, remap_to_crowd, simplify, skin_and_attrs, smooth, weld};
 
 use bevy::prelude::*;
