@@ -141,6 +141,8 @@ struct Editor {
     /// Last preview build (anatomy, field, packing) and full rebuild (submit to attach), in ms.
     preview_ms: Option<f64>,
     full_ms: Option<f64>,
+    /// Bricks of the last preview baked anew, of all its bricks.
+    rebaked: (u32, u32),
     /// The mouse is shaping a part.
     drag: Option<Drag>,
     /// Keys of the bodies shown most recently, newest last (see `KEEP_BODIES`).
@@ -235,6 +237,7 @@ impl Editor {
             full_failed: None,
             preview_ms: None,
             full_ms: None,
+            rebaked: (0, 0),
             drag: None,
             recent: VecDeque::new(),
             ignore_until: 0.0,
@@ -1002,6 +1005,7 @@ fn update_preview(
     let Ok(mut preview) = previews.get_mut(editor.preview) else { return };
     preview.rebake_all = editor.full_bake;
     preview.show(&packed, &mut preview_assets);
+    editor.rebaked = (preview.rebaked, u32::try_from(packed.bricks.len()).unwrap_or(u32::MAX));
     let model = anatomy.skeleton.model_from(&pose);
     editor.preview_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
     editor.body = Some(PreviewBody { anatomy, field, model });
@@ -1109,7 +1113,15 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
     };
     let _ = writeln!(s, "{}{state}", editor.path);
     let ms = |t: Option<f64>| t.map_or_else(|| "-".to_owned(), |t| format!("{t:.1} ms"));
-    let _ = writeln!(s, "{}   preview {}, full {}", editor.status, ms(editor.preview_ms), ms(editor.full_ms));
+    let _ = writeln!(
+        s,
+        "{}   preview {} ({} of {} bricks baked), full {}",
+        editor.status,
+        ms(editor.preview_ms),
+        editor.rebaked.0,
+        editor.rebaked.1,
+        ms(editor.full_ms)
+    );
     let _ = writeln!(s, "{HELP}\n");
     for (i, p) in editor.parts.iter().enumerate() {
         let mark = if i == editor.part { '>' } else { ' ' };
@@ -1146,12 +1158,40 @@ struct Script {
     logged: String,
     /// Preview build times (ms) over the edits.
     preview_ms: Vec<f64>,
+    /// Per preview built: percentage of its bricks baked anew, outside a drag (the held key edits
+    /// the body tone: every brick) and during it.
+    rebaked: [Vec<f64>; 2],
     /// Where the dragged part's root was at the grab.
     grab: Option<Vec3>,
     /// Frame times (ms): the preview standing, the preview rebuilt that frame, the mesh.
     frames: [Vec<f64>; 3],
     /// The preview version last frame.
     last_previewed: Option<(u64, usize)>,
+}
+
+/// Files the last frame's time (`ms`) by what was on screen, and how much of a preview that went
+/// up then was baked anew.
+fn measure_frame(script: &mut Script, editor: &Editor, ms: f64) {
+    // Skip the first frames: pipelines compile.
+    // Frame time is the time since the last frame: the frame before this one, which rebuilt the
+    // preview if the version moved since the frame before it.
+    if script.frame > 30 {
+        let kind = if editor.shown == Some(editor.version) {
+            2
+        } else {
+            usize::from(script.last_previewed != editor.previewed)
+        };
+        if let Some(frames) = script.frames.get_mut(kind) {
+            frames.push(ms);
+        }
+    }
+    if script.last_previewed != editor.previewed && editor.previewed.is_some_and(|(v, _)| v == editor.version) {
+        let share = f64::from(editor.rebaked.0) * 100.0 / f64::from(editor.rebaked.1.max(1));
+        if let Some(shares) = script.rebaked.get_mut(usize::from(editor.drag.is_some())) {
+            shares.push(share);
+        }
+    }
+    script.last_previewed = editor.previewed;
 }
 
 fn scripted_edits(
@@ -1166,20 +1206,7 @@ fn scripted_edits(
         return;
     }
     script.frame += 1;
-    // Skip the first frames: pipelines compile.
-    // Frame time is the time since the last frame: the frame before this one, which rebuilt the
-    // preview if the version moved since the frame before it.
-    if script.frame > 30 {
-        let kind = if editor.shown == Some(editor.version) {
-            2
-        } else {
-            usize::from(script.last_previewed != editor.previewed)
-        };
-        if let Some(frames) = script.frames.get_mut(kind) {
-            frames.push(time.delta_secs_f64() * 1000.0);
-        }
-    }
-    script.last_previewed = editor.previewed;
+    measure_frame(&mut script, &editor, time.delta_secs_f64() * 1000.0);
     let frame = script.frame;
     // The part to drag: the first whose attach slides, and a ray straight down onto its root.
     let slider = || {
@@ -1233,12 +1260,16 @@ fn scripted_edits(
         // Then wait for the full mesh (up to a while), so its frames are measured too.
         420.. if script.frames.last().is_some_and(|m| m.len() >= 60) || frame > 3000 => {
             script.done = true;
-            let stats = |mut ms: Vec<f64>| {
+            let stats_in = |mut ms: Vec<f64>, unit: &str| {
                 ms.sort_by(f64::total_cmp);
                 let pick = |percent: usize| ms.get(ms.len().saturating_sub(1) * percent / 100).copied().unwrap_or_default();
-                format!("{} samples, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms", ms.len(), pick(50), pick(95), pick(100))
+                format!("{} samples, p50 {:.2}{unit}, p95 {:.2}{unit}, max {:.2}{unit}", ms.len(), pick(50), pick(95), pick(100))
             };
+            let stats = |ms: Vec<f64>| stats_in(ms, " ms");
             info!("test: preview builds: {}", stats(script.preview_ms.clone()));
+            let [still, dragged] = script.rebaked.clone();
+            info!("test: bricks rebaked per preview, not dragging: {}", stats_in(still, "%"));
+            info!("test: bricks rebaked per preview, dragging: {}", stats_in(dragged, "%"));
             let [standing, rebuilt, mesh] = script.frames.clone();
             info!("test: frames with the preview standing: {}", stats(standing));
             info!("test: frames with the preview rebuilt: {}", stats(rebuilt));

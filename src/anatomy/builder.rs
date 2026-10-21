@@ -629,6 +629,7 @@ impl AnatomyBuilder {
         for leg in &mut self.anatomy.legs {
             leg.rest_foot.y -= min_y;
         }
+        self.anatomy.ground = min_y;
     }
 
     /// Resolves `BuiltPart::lod` from size, clamped so no part outlives its parent.

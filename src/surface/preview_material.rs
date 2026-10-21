@@ -92,6 +92,7 @@ pub struct SdfPreviewExt {
 
 #[derive(ShaderType, Reflect, Clone, Copy, Debug, PartialEq)]
 pub struct SdfPreviewUniform {
+    /// World → the field's space (the mob's model space before the field's offset), and back.
     pub model_from_world: Mat4,
     pub world_from_model: Mat4,
     /// Tint of highlighted primitives: linear rgb, strength.
@@ -143,6 +144,11 @@ pub struct SdfPreview {
     pub atlas: Handle<Image>,
     /// Counts [`show`](Self::show)s.
     pub shown: u64,
+    /// Bricks with keys new in the last [`show`](Self::show): the ones the render world bakes
+    /// (all of them after the atlas grows).
+    pub rebaked: u32,
+    /// The field's space → the mob's model space ([`PreviewField::offset`]).
+    pub offset: Vec3,
     /// The wing sheets, drawn as triangles by a child entity.
     pub sheets: Handle<Mesh>,
     /// Clay colour of the body (the sheets' vertex colours start from it).
@@ -256,6 +262,8 @@ impl SdfPreview {
                 capacity: 0,
                 rebake_all: false,
                 shown: 0,
+                rebaked: 0,
+                offset: Vec3::ZERO,
             },
             Mesh3d(hull),
             MeshMaterial3d(material),
@@ -301,6 +309,7 @@ impl SdfPreview {
             }
         }
         self.bricks = bricks.into();
+        self.offset = field.offset;
         self.shown += 1;
     }
 
@@ -322,6 +331,7 @@ impl SdfPreview {
         self.free.extend(self.slots.drain().map(|(_, slot)| slot));
         // Lowest last, so `pop` takes it.
         self.free.sort_unstable_by(|a, b| b.cmp(a));
+        self.rebaked = u32::try_from(new.len()).unwrap_or(u32::MAX);
         for b in new {
             let slot = self.free.pop().unwrap_or_else(|| {
                 self.capacity += 1;
@@ -337,7 +347,7 @@ impl SdfPreview {
 
 /// The hull's quads as a mesh.
 fn hull_mesh(field: &PreviewField) -> Mesh {
-    let positions: Vec<[f32; 3]> = field.hull.iter().flat_map(|(q, _)| q.map(|v| v.to_array())).collect();
+    let positions: Vec<[f32; 3]> = field.hull.iter().flat_map(|(q, _)| q.map(|v| (v + field.offset).to_array())).collect();
     let normals: Vec<[f32; 3]> = field.hull.iter().flat_map(|(_, n)| [n.to_array(); 4]).collect();
     let indices: Vec<u32> = (0..u32::try_from(field.hull.len()).unwrap_or(0)).flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * 4 + i)).collect();
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
@@ -376,14 +386,16 @@ fn sheets_mesh(sheets: &PreviewSheets, color: Color, highlight: Vec4) -> Mesh {
         .with_inserted_indices(Indices::U32(indices))
 }
 
-/// Keeps each preview's model ↔ world transforms (its parent's: the mob's) in its material.
+/// Keeps each preview's field ↔ world transforms (its parent's, the mob's, after the field's
+/// offset) in its material.
 fn sync_transforms(
     previews: Query<(&SdfPreview, Option<&ChildOf>)>,
     parents: Query<&GlobalTransform>,
     mut materials: ResMut<Assets<SdfPreviewMaterial>>,
 ) {
     for (preview, parent) in &previews {
-        let world_from_model = parent.and_then(|p| parents.get(p.parent()).ok()).map_or(Mat4::IDENTITY, GlobalTransform::to_matrix);
+        let world_from_model = parent.and_then(|p| parents.get(p.parent()).ok()).map_or(Mat4::IDENTITY, GlobalTransform::to_matrix)
+            * Mat4::from_translation(preview.offset);
         let Some(material) = materials.get(&preview.material) else { continue };
         if material.extension.params.world_from_model == world_from_model {
             continue;
@@ -535,6 +547,8 @@ mod tests {
             hull: Handle::default(),
             atlas: Handle::default(),
             shown: 0,
+            rebaked: 0,
+            offset: Vec3::ZERO,
             sheets: Handle::default(),
             color: Color::WHITE,
             bricks: Arc::new([]),

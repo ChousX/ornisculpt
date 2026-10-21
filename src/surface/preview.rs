@@ -52,8 +52,12 @@ const HEADER_WORDS: usize = 5;
 const CELL_SIZE: f32 = 0.064;
 /// Most cells along any side.
 const MAX_CELLS: u32 = 128;
-/// Voxels along a brick's edge (`BRICK_VOXELS` in `sdf_field.wesl`): 8 mm on a human-sized body.
-pub const BRICK_VOXELS: u32 = 8;
+/// Voxels along a brick's edge: about 5 mm on a human-sized body.
+///
+/// At 8 (8 mm) folded wing fingers beaded and thin claws dropped out; 12 keeps them for 0.2-0.5 ms
+/// more a frame on the march (laptop GPU), and since only the bricks an edit changes are baked,
+/// edits cost about what they did. 16 marches 1-2 ms dearer for little more.
+pub const BRICK_VOXELS: u32 = 12;
 /// Cells list every primitive within this many voxels of them, so a cell's list gives the field
 /// exactly that far beyond its walls (`LIST_PAD_VOXELS` in `sdf_bake.wesl`).
 const LIST_PAD_VOXELS: f32 = 2.0;
@@ -74,8 +78,8 @@ const DISPLACE: u32 = 2;
 /// "No limb" (word 3.z).
 const NO_LIMB: u32 = u32::MAX;
 
-/// A [`BodyField`] as GPU words, the bounds it covers, and the hull to draw it with (model
-/// space).
+/// A [`BodyField`] as GPU words, the bounds it covers, and the hull to draw it with, in the
+/// body's model space before grounding: `offset` takes it to model space.
 #[derive(Clone, Debug, Default)]
 pub struct PreviewField {
     pub words: Vec<[f32; 4]>,
@@ -92,6 +96,9 @@ pub struct PreviewField {
     /// Wing sheets (membranes, flight feathers, insect wings): thin, so drawn as the triangles
     /// the anatomy already has rather than marched.
     pub sheets: PreviewSheets,
+    /// Field space → model space: the body's grounding (`-Anatomy::ground` along y). The sheets
+    /// are in model space already.
+    pub offset: Vec3,
 }
 
 /// A cell holding surface, and the key of the distances in its brick.
@@ -249,8 +256,9 @@ fn hard_part(part: &HardPart, model: &[Affine3A], highlight: bool) -> Option<Pac
 
 impl BodyField {
     /// Packs the field for `sdf_preview.wesl`, plus stand-ins for `anatomy`'s hard parts (eyes,
-    /// claws, horns: see `hard_part`) and its wing sheets, on its rest pose. Primitives of a part for which `highlight`
-    /// is true are flagged (the shader tints them). Creases are left out (they are shading-scale).
+    /// claws, horns: see `hard_part`) and its wing sheets, in the pose the field was built in.
+    /// Primitives of a part for which `highlight` is true are flagged (the shader tints them).
+    /// Creases are left out (they are shading-scale).
     #[must_use]
     pub fn preview(&self, anatomy: &Anatomy, highlight: impl Fn(u16) -> bool) -> PreviewField {
         let mut segments: Vec<[f32; 4]> = Vec::new();
@@ -313,13 +321,23 @@ impl BodyField {
             }
         }
 
+        // Packed as built, before grounding (`Anatomy::ground`): an edit that moves the lowest
+        // point (a longer leg) moves the whole body, but not its bricks.
+        let up = Vec3A::Y * anatomy.ground;
+        for p in &mut packed {
+            p.to_local *= Affine3A::from_translation((-up).into());
+            p.aabb = Aabb3d { min: p.aabb.min + up, max: p.aabb.max + up };
+        }
+        let fallback = Aabb3d { min: self.bounds.min + up, max: self.bounds.max + up };
+
         // The first `self.prims.len()` packed primitives are the field's own, in its order.
         let skin = |list: &[u32], p: Vec3A| {
             let skin: Vec<usize> = list.iter().map(|i| i.idx()).filter(|&i| i < self.prims.len()).collect();
-            self.distance_of(&skin, p)
+            self.distance_of(&skin, p - up)
         };
         let hard = |list: &[u32]| list.iter().any(|i| i.idx() >= self.prims.len());
-        let mut field = assemble(&packed, segments, grids, self.bounds, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
+        let mut field = assemble(&packed, segments, grids, fallback, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
+        field.offset = (-up).into();
         field.sheets = PreviewSheets::new(anatomy, self.bone_model(), &highlight);
         field
     }
@@ -420,7 +438,7 @@ fn assemble(
     // One per word: picking a vector component by a runtime index is slow on some GPUs.
     words.extend(items.iter().map(|&i| word_u32(i, 0, 0, 0)));
     let hull = hull(&surface, dims, min, cell);
-    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks, hull, sheets: PreviewSheets::default() }
+    PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks, hull, sheets: PreviewSheets::default(), offset: Vec3::ZERO }
 }
 
 /// The cell grid over `lo..hi`: its corner, cell size and cells per axis. Cells are
@@ -441,52 +459,65 @@ fn lattice(lo: Vec3, hi: Vec3) -> (Vec3, f32, UVec3) {
     }
 }
 
-fn hash_words(h: &mut Xxh3, words: &[[f32; 4]]) {
-    for w in words {
-        for v in w {
-            h.update(&v.to_bits().to_le_bytes());
-        }
+/// Steps per metre (and per unit of a matrix entry) that keys tell apart: changes finer than a
+/// quarter millimetre, far under a voxel, keep a brick's key. Exact bits would not do: grounding
+/// and ungrounding a body leaves its transforms a few ulps off.
+const KEY_STEPS: f32 = 4096.0;
+
+/// Values into a key, rounded to [`KEY_STEPS`].
+fn hash_values(h: &mut Xxh3, values: &[f32]) {
+    for v in values {
+        let r = (v * KEY_STEPS).round();
+        // Integers in f32: exact below 2^24 steps (4 km). -0 and 0 alike.
+        h.update(&(if r == 0.0 { 0 } else { r.to_bits() }).to_le_bytes());
     }
 }
 
-/// What a primitive contributes to the field, hashed: its words without the highlight bit or the
-/// offsets of its sweep points and grid (those move when data before them changes), plus that
-/// data itself.
+/// Integers (and bit-cast words) into a key, exactly.
+fn hash_bits(h: &mut Xxh3, bits: &[u32]) {
+    for b in bits {
+        h.update(&b.to_le_bytes());
+    }
+}
+
+/// What a primitive contributes to the field, hashed: its values (rounded) and integers, without
+/// the highlight bit or the offsets of its sweep points and grid (those move when data before
+/// them changes), plus that data itself.
 fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]]) -> u64 {
     let mut h = Xxh3::new();
-    let m = p.to_local;
-    let mut params = p.params;
-    let mut data: &[[f32; 4]] = &[];
+    hash_values(&mut h, &p.to_local.matrix3.to_cols_array());
+    hash_values(&mut h, &p.to_local.translation.to_array());
+    hash_bits(&mut h, &[p.kind, p.op, p.limb, p.flags & !HIGHLIGHT]);
+    let [offset, count, more @ ..] = p.params;
     match p.kind {
         SWEEP => {
-            let (first, count) = (params[0].to_bits().idx(), params[1].to_bits().idx());
-            data = segments.get(first..first + count).unwrap_or_default();
-            params[0] = 0.0;
+            let first = offset.to_bits().idx();
+            hash_bits(&mut h, &[count.to_bits()]);
+            hash_values(&mut h, &more);
+            let count = count.to_bits().idx();
+            for point in segments.get(first..first + count).unwrap_or_default() {
+                hash_values(&mut h, point);
+            }
         }
         GRID => {
-            let at = params[0].to_bits().idx();
-            if let Some(dims) = grids.get(at + 1) {
-                let n = dims[..3].iter().map(|d| d.to_bits().idx()).product::<usize>().div_ceil(4);
-                data = grids.get(at..at + 2 + n).unwrap_or_default();
+            // The second parameter is the mirror flag, not a count.
+            hash_values(&mut h, &p.params[1..]);
+            let at = offset.to_bits().idx();
+            if let (Some(origin), Some(dims)) = (grids.get(at), grids.get(at + 1)) {
+                let dims = dims.map(f32::to_bits);
+                hash_values(&mut h, origin);
+                hash_bits(&mut h, &dims);
+                let n = dims[..3].iter().map(|d| d.idx()).product::<usize>().div_ceil(4);
+                for values in grids.get(at + 2..at + 2 + n).unwrap_or_default() {
+                    hash_values(&mut h, values);
+                }
             }
-            params[0] = 0.0;
         }
-        _ => {}
+        _ => hash_values(&mut h, &p.params),
     }
-    hash_words(
-        &mut h,
-        &[
-            m.matrix3.x_axis.extend(m.translation.x).to_array(),
-            m.matrix3.y_axis.extend(m.translation.y).to_array(),
-            m.matrix3.z_axis.extend(m.translation.z).to_array(),
-            word_u32(p.kind, p.op, p.limb, p.flags & !HIGHLIGHT),
-            params,
-            p.more,
-            [p.blend, p.min_scale, p.height, 0.0],
-            [p.anchor.0.x, p.anchor.0.y, p.anchor.0.z, p.anchor.1],
-        ],
-    );
-    hash_words(&mut h, data);
+    hash_values(&mut h, &p.more);
+    hash_values(&mut h, &[p.blend, p.min_scale, p.height]);
+    hash_values(&mut h, &[p.anchor.0.x, p.anchor.0.y, p.anchor.0.z, p.anchor.1]);
     h.digest()
 }
 
@@ -495,7 +526,8 @@ fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]]) -> u64 {
 fn brick_key(at: IVec3, cell: f32, list: &[u32], prim_keys: &[u64]) -> u64 {
     let mut h = Xxh3::new();
     let at = at.as_uvec3();
-    hash_words(&mut h, &[word_u32(at.x, at.y, at.z, cell.to_bits()), CrossSection::KEEL.extend(0.0).to_array(), word_u32(BRICK_VOXELS, 0, 0, 0)]);
+    hash_bits(&mut h, &[at.x, at.y, at.z, cell.to_bits(), BRICK_VOXELS]);
+    hash_values(&mut h, &CrossSection::KEEL.to_array());
     for &i in list {
         h.update(&prim_keys.get(i.idx()).copied().unwrap_or(0).to_le_bytes());
     }
@@ -571,20 +603,23 @@ mod tests {
             // A deterministic scatter through the bounds.
             let scatter = |k: u32| f32::from(u16::try_from(i.wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(i).wrapping_mul(40503)) % 10007).unwrap()) / 10007.0;
             let p = packed.min + (packed.max - packed.min) * Vec3::new(scatter(1), scatter(2), scatter(3));
-            let d = field.distance(p.into());
+            // The packed field is before grounding; the body field after.
+            let m = p + packed.offset;
+            let d = field.distance(m.into());
             if d.abs() > 0.002 {
                 continue;
             }
             let at = ((p - packed.min) / cell).floor().as_uvec3().min(dims - UVec3::ONE);
             let lo = packed.min + at.as_vec3() * cell;
             let pad = Vec3::splat(cell / BRICK_VOXELS.to_f32() * LIST_PAD_VOXELS);
+            let lo = lo + packed.offset;
             let chunk = field.view(Aabb3d { min: (lo - pad).into(), max: (lo + Vec3::splat(cell) + pad).into() });
             let w = packed.words[cell_start + (at.x + dims.x * (at.y + dims.y * at.z)).idx()].map(f32::to_bits);
             assert!(w[2] > 0, "the cell at {p} holds surface but has no brick");
             let list: Vec<usize> = (0..w[1].idx()).map(|k| item(w[0].idx() + k).idx()).filter(|&k| k < field.prims.len()).collect();
             assert!(list.windows(2).all(|w| w[0] < w[1]), "field order");
-            let sub = field.distance_of(&list, p.into());
-            let want = chunk.distance(p.into());
+            let sub = field.distance_of(&list, m.into());
+            let want = chunk.distance(m.into());
             assert!((sub - want).abs() < 1e-5, "at {p}: cell {sub}, chunk {want}");
             assert!((sub - d).abs() < 0.005, "at {p}: cell {sub}, field {d}");
             checked += 1;
@@ -619,5 +654,14 @@ mod tests {
         let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();
         assert!(changed > 0, "the ears' bricks change");
         assert!(changed * 10 < edited.bricks.len(), "{changed} of {} bricks changed", edited.bricks.len());
+
+        // Longer front legs lift the whole body (grounding), but the bricks are keyed before it:
+        // the legs' bricks change, the rest keep their keys.
+        let legs = build(&src.replacen("length: 0.42,", "length: 0.45,", 1));
+        assert!((legs.ground - anatomy.ground).abs() > 1e-3, "the edit regrounds the body");
+        let edited = BodyField::new(&legs, &opts).preview(&legs, |_| false);
+        let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();
+        assert!(changed * 2 < edited.bricks.len(), "{changed} of {} bricks changed", edited.bricks.len());
+        assert!((edited.offset.y + legs.ground).abs() < 1e-6);
     }
 }

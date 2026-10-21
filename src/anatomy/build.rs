@@ -41,6 +41,9 @@ pub struct Anatomy {
     pub mass: super::BodyMass,
     /// Depth-first order; a parent precedes its children.
     pub parts: Vec<BuiltPart>,
+    /// How far the body was lowered so its lowest point rests on y = 0 (metres; negative when
+    /// raised). Everything above is stored after it.
+    pub ground: f32,
 }
 
 /// What one part produced, as index ranges into [`Anatomy`]'s arrays.
