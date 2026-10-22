@@ -30,6 +30,12 @@ const CREASE: (f32, f32) = (0.35, 0.85);
 const SPREAD: f32 = 1.6;
 /// Smoothing passes over the per-vertex amplitudes.
 const SMOOTHING: usize = 12;
+/// At full flex a belly swells at most this share of its long radius. Without it the gain, set
+/// for slim limb muscles, swells a broad flat one (a glute, a pectoral) many times its own
+/// thickness: a walker's buttock ballooned out at each push-off.
+const MAX_SWELL: f32 = 0.4;
+/// Contraction at full flex: the shader clamps it there (`muscle_offset` in `coat/deform.wesl`).
+const FULL_FLEX: f32 = 0.3;
 
 /// One muscle belly, in the rest pose.
 struct Belly {
@@ -160,7 +166,7 @@ fn bellies(anatomy: &Anatomy, level: LodLevel) -> Vec<Belly> {
             Some(Belly {
                 to_local: model.inverse(),
                 radii: Vec3A::from(*radii),
-                amplitude: GAIN * scale * THICKNESS.mul_add(radii.z, height),
+                amplitude: (GAIN * scale * THICKNESS.mul_add(radii.z, height)).min(MAX_SWELL * scale * radii.x.max(radii.y) / FULL_FLEX),
                 insertion,
                 length: centre.distance(insertion).max(skeleton.get(joint)?.length * 0.5).max(1e-3),
                 head,
