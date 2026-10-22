@@ -219,11 +219,17 @@ existing `MobMaterial`, with colours from `Coat` plus a new `WingCoat`.
     bones. Weights ease into the next bone over the last 20 % of a bone, so the membrane
     bends round a joint. (The trailing edge used to ride the last finger bone right up to
     the body, so a folded wing stood up as a sail.)
-  - The main membrane's weights are then **fitted to its folded shape**: the same ruled
-    panel between the folded arm + finger and the body line, bowed out from the flank. Per
+  - The main membrane's weights are then **fitted to its folded shape**: each vertex where
+    its edge bones carry it in the folded pose, laid onto the flank (along the nearest
+    cross-section's radius, a little outside the skin) away from the arm. (A ruled panel
+    between the folded arm and the body line twisted over itself: the folded arm zig-zags
+    back, forward and back while the body line runs straight.) The half pose's target is that
+    ruled panel, bowed and kept outside the body. Per
     vertex, the weights over the panel's bones (arm, last finger, body) that carry it nearest
     its folded place, kept near the weights above (projected gradient on the simplex, at most
-    four bones). No bone carries a membrane's middle: weighted to the body it stays where the
+    four bones). The fit counts the half pose too (at half weight), and the fitted weights
+    are smoothed over the panel grid (12 rounds, leading edge and body line held): fitted
+    one vertex at a time, neighbours picked different bone mixes and frayed the folded edge. No bone carries a membrane's middle: weighted to the body it stays where the
     spread wing held it; weighted to the wing it swings up over the back as the plane turns
     down the flank. Linear blending is exact at the bind pose whatever the weights, so the
     spread wing is unchanged.
@@ -241,6 +247,11 @@ existing `MobMaterial`, with colours from `Coat` plus a new `WingCoat`.
     shoulder turns the plane, down the flank when closed. A single-axis hinge slerps exactly
     as its angle lerps, so a half fold is half-way at every joint. Earlier folded frames were
     free directions, whose slerp swung the fingers down through the ground mid-fold.
+  - A third pose, `half`, is where the fold passes at 0.5: wings lifted and half closed.
+    `WingRig::apply` blends rest → half → folded piecewise (`WingRig::half`, empty for bird
+    and insect wings, which blend straight). Folding from open to closed lowers the plane
+    by about 70°; without the lifted half pose a part fold left long wings drooping to the
+    ground, and a take-off (fold → 0) now raises the wings as it opens them.
   - `WingRig` stores folded *local* rotations, relative to the folded parent.
   - The pose solver slerps rest → folded by `fold`, and the crowd bake's idle frame does the
     same, so distant mobs show folded wings.

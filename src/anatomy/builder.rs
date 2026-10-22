@@ -512,12 +512,20 @@ impl AnatomyBuilder {
     }
 
     /// Records a wing's folded pose: `folded` gives each wing bone's folded logical model
-    /// transform (parents before children). Stored as local rotations, relative to the folded
-    /// parent where the parent is a wing bone too.
-    pub fn wing_rig(&mut self, fold: f32, folded: &[(BoneId, Transform)]) {
-        let mut stored: Vec<(BoneId, Transform)> = Vec::with_capacity(folded.len());
-        let mut bones = Vec::with_capacity(folded.len());
-        for (bone, model) in folded {
+    /// transform (parents before children); `half`, if given, the same bones half-way through the
+    /// fold. Stored as local rotations, relative to the posed parent where the parent is a wing
+    /// bone too.
+    pub fn wing_rig(&mut self, fold: f32, folded: &[(BoneId, Transform)], half: Option<&[(BoneId, Transform)]>) {
+        let bones = self.local_rotations(folded);
+        let half = half.map_or_else(Vec::new, |h| self.local_rotations(h).into_iter().map(|(_, r)| r).collect());
+        self.anatomy.wings.push(WingRig { part: self.current(), fold: fold.clamp(0.0, 1.0), bones, half });
+    }
+
+    /// Local rotations of posed bones given as logical model transforms (parents before children).
+    fn local_rotations(&self, posed: &[(BoneId, Transform)]) -> Vec<(BoneId, Quat)> {
+        let mut stored: Vec<(BoneId, Transform)> = Vec::with_capacity(posed.len());
+        let mut bones = Vec::with_capacity(posed.len());
+        for (bone, model) in posed {
             let model = self.to_stored(Transform { scale: Vec3::ONE, ..*model });
             let parent = self.anatomy.skeleton.get(*bone).and_then(|b| b.parent);
             let parent_model = parent.map(|p| stored.iter().find(|(b, _)| *b == p).map_or_else(|| self.bone_model(p), |(_, m)| *m));
@@ -525,7 +533,7 @@ impl AnatomyBuilder {
             bones.push((*bone, local.rotation));
             stored.push((*bone, model));
         }
-        self.anatomy.wings.push(WingRig { part: self.current(), fold: fold.clamp(0.0, 1.0), bones });
+        bones
     }
 
     /// Axis samples of the part the current part grows from (logical model space).

@@ -82,11 +82,7 @@ impl Anatomy {
     pub fn idle_pose(&self) -> Vec<Transform> {
         let mut pose: Vec<Transform> = self.skeleton.bones.iter().map(|b| b.rest).collect();
         for w in &self.wings {
-            for (bone, folded) in &w.bones {
-                if let Some(r) = pose.get_mut(bone.index()) {
-                    r.rotation = r.rotation.slerp(*folded, w.fold);
-                }
-            }
+            w.apply(w.fold, &mut pose);
         }
         pose
     }
