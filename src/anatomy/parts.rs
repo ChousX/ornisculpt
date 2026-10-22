@@ -13,7 +13,7 @@ use crate::num::ToF32;
 use super::builder::{AxisSample, SkullFrame, frame_y_z};
 use super::{
     AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, ChainParams, ChainPart,
-    ChainRole, CrossSection, DigitParams, FaceParams, HandDef, HardParams, HeadParams, LimbEnd, LimbJoints, LimbParams, LimbRole,
+    ChainRole, CrossSection, DigitParams, FaceParams, ClothFollow, HandDef, HardParams, HeadParams, JointPlan, LimbEnd, LimbJoints, LimbParams, LimbRole,
     HardKind, LookDef, MassParams, MassShape, MuzzleParams, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
     SculptParams,
     RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams, Weigh,
@@ -536,7 +536,13 @@ impl PartBuild for LimbParams {
                 (_, Some(h), Some(f)) => off_axis(f.rotation * h.flexes.points()).try_normalize().unwrap_or(Vec3::Z),
                 (k, ..) => k.unwrap_or(Vec3::Z),
             };
+            let leg = b.leg_count();
             b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
+            if self.joints.as_ref().is_some_and(|j| j.plan == JointPlan::Leg)
+                && let (Some(pelvis), Ok(leg)) = (at.bone, u8::try_from(leg))
+            {
+                glute(b, pelvis, hip, radius_at(&self.chain.radius, 0.0), leg, cx)?;
+            }
         }
 
         let mut slots = chain_slots(&bones, &frames, axis_samples)?;
@@ -545,6 +551,24 @@ impl PartBuild for LimbParams {
         }
         Ok(slots)
     }
+}
+
+/// Share of the thigh's swing a glute takes: enough that the buttock and its fold travel with the
+/// leg, not so much that the pelvis seems to come apart.
+const GLUTE_FOLLOW: f32 = 0.45;
+
+/// An upright leg's glute: a short bone from the hip joint back into the buttock, turning with the
+/// thigh by [`GLUTE_FOLLOW`], so the buttock and its fold move with the leg instead of the thigh
+/// sliding under a buttock fixed to the pelvis. Skin weights come from distance to bone segments,
+/// so the buttock binds to it; its muscle stays on the pelvis and still firms as the hip extends.
+fn glute(b: &mut AnatomyBuilder, pelvis: BoneId, hip: Vec3, thigh_radius: f32, leg: u8, cx: &BuildCx) -> Result<(), AnatomyError> {
+    // Back from the hip joint and a little up, into the middle of the buttock.
+    let dir = Vec3::new(0.0, 0.2, -1.0).normalize();
+    let frame = Transform::from_translation(hip).with_rotation(frame_y_z(dir, Vec3::Y));
+    let region = b.bone_region(pelvis);
+    let bone = b.bone(Some(pelvis), &suffixed("glute", cx), frame, thigh_radius * 2.0, region)?;
+    b.follow(ClothFollow { root: bone, leg, weight: GLUTE_FOLLOW });
+    Ok(())
 }
 
 /// A jointed limb's rest bends (as [`limb_bends`] gives them), checked against its joints: one

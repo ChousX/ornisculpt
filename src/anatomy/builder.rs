@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use crate::num::{Clamp, Idx};
 
 use super::{
-    Anatomy, AnatomyError, AttachSlot, BoneDef, BoneId, BuiltPart, HardParams,
+    Anatomy, AnatomyError, AttachSlot, BoneDef, BoneId, BuiltPart, ClothFollow, HardParams,
     HardPart, JointLimit, LegInfo, LimbRole, LodLevel, LookDef, MAX_BONES, PartKind,
     PartLodRules, PartNode, PartPath, PrimLayer, PrimOp, PrimShape, Primitive, RegionDef,
     PartAssets, RegionId, RegionKind, Sheet, Side, SocketDef, SocketKind, SpringChainDef, Stance, Tone,
@@ -469,6 +469,17 @@ impl AnatomyBuilder {
     pub fn socket(&mut self, name: &str, kind: SocketKind, side: Side, bone: BoneId, model: Transform, radius: f32) {
         let local = relative(&self.bone_model(bone), &self.to_stored(model));
         self.anatomy.sockets.push(SocketDef { name: name.to_owned(), kind, side, bone, local, size: radius });
+    }
+
+    /// A bone that turns with a leg's upper bone (see [`ClothFollow`]).
+    pub fn follow(&mut self, follow: ClothFollow) {
+        self.anatomy.cloth_follow.push(follow);
+    }
+
+    /// Legs registered so far: the index the next [`leg`](Self::leg) gets.
+    #[must_use]
+    pub const fn leg_count(&self) -> usize {
+        self.anatomy.legs.len()
     }
 
     /// Registers a leg. Points/directions are logical model space; `pair` is assigned in `finish`.

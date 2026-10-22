@@ -32,8 +32,10 @@ pub struct SpringChainDef {
     pub gravity: f32,
 }
 
-/// A loose-cloth chain whose root turns with a leg's upper bone, so skirts and robes swing with
-/// the thighs instead of being walked through.
+/// A bone whose root turns with a leg's upper bone.
+///
+/// Loose cloth chains, so skirts and robes swing with the thighs instead of being walked through,
+/// and an upright body's glutes, so the buttock moves with the leg.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClothFollow {
     pub root: BoneId,
