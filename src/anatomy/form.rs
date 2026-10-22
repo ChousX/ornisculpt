@@ -2,7 +2,9 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{BodyPlan, Lever, LeverError, PartPath};
+use std::collections::HashMap;
+
+use super::{BodyPlan, Lever, LeverError, LeverKind, PartPath};
 
 /// An individual's proportions: ordered patches applied over an expanded [`BodyPlan`].
 ///
@@ -38,6 +40,11 @@ pub enum FormError {
     UnknownPart(PartPath),
     #[error("part `{part}`: {source}")]
     Lever { part: PartPath, source: LeverError },
+    /// Each patch was within its lever's range, but together they take the part out of it.
+    #[error("part `{part}`: lever {lever:?} patches combine to {value}, outside {lo}..={hi}")]
+    Combined { part: PartPath, lever: Lever, value: f32, lo: f32, hi: f32 },
+    #[error("overall scale {value} is outside {lo}..={hi}")]
+    Scale { value: f32, lo: f32, hi: f32 },
 }
 
 /// Expands symmetry, then applies `form` (patches in order, then overall scale).
@@ -47,7 +54,13 @@ pub enum FormError {
 ///
 /// When a patch names no part, or its lever doesn't apply to the part.
 pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError> {
+    let (lo, hi) = Lever::Scale.range();
+    if !(lo..=hi).contains(&form.overall_scale) {
+        return Err(FormError::Scale { value: form.overall_scale, lo, hi });
+    }
     let mut live = plan.expand_symmetry();
+    // Each part's levers combined so far, so stacked patches stay in range too.
+    let mut combined: HashMap<(PartPath, Lever), f32> = HashMap::new();
     for patch in &form.patches {
         let mut hit = false;
         let mut err = None;
@@ -56,6 +69,14 @@ pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError> {
                 hit = true;
                 if let Err(source) = node.apply_lever(patch.lever, patch.value) {
                     err = Some(FormError::Lever { part: path.clone(), source });
+                    return;
+                }
+                let lever = patch.lever;
+                let total = combined.entry((path.clone(), lever)).or_insert_with(|| lever.identity());
+                *total = lever.combine(*total, patch.value);
+                let (lo, hi) = lever.range();
+                if lever.kind() != LeverKind::Count && !(lo..=hi).contains(total) {
+                    err = Some(FormError::Combined { part: path.clone(), lever, value: *total, lo, hi });
                 }
             }
         });
@@ -115,6 +136,44 @@ fn strip_suffixes(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quadruped() -> BodyPlan {
+        ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap()
+    }
+
+    fn form(patches: &[(&str, Lever, f32)]) -> Form {
+        let patches = patches.iter().map(|(p, lever, value)| FormPatch { part: PartPath((*p).into()), lever: *lever, value: *value }).collect();
+        Form { overall_scale: 1.0, patches }
+    }
+
+    #[test]
+    fn levers_stay_in_range() {
+        let q = quadruped();
+        let leg = "torso/limb.front";
+        // A leg turned inside out, shrunk to nothing, swung onto the back: all refused.
+        for (lever, value) in [(Lever::Length, -1.0), (Lever::Length, 0.0), (Lever::Girth, -1.0), (Lever::Splay, 400.0), (Lever::Around, 180.0), (Lever::Flatten, 0.0), (Lever::Length, f32::NAN)] {
+            let err = apply_form(&q, &form(&[(leg, lever, value)])).unwrap_err();
+            assert!(matches!(err, FormError::Lever { source: LeverError::OutOfRange { .. }, .. }), "{lever:?} {value}: {err}");
+        }
+        assert!(apply_form(&q, &form(&[(leg, Lever::Length, 1.5), (leg, Lever::Splay, 20.0)])).is_ok());
+        // Each patch in range, but stacked past it.
+        let err = apply_form(&q, &form(&[(leg, Lever::Length, 3.0), (leg, Lever::Length, 3.0)])).unwrap_err();
+        assert!(matches!(err, FormError::Combined { lever: Lever::Length, .. }), "{err}");
+        let err = apply_form(&q, &Form { overall_scale: 0.0, patches: vec![] }).unwrap_err();
+        assert!(matches!(err, FormError::Scale { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_jaw_lever_needs_a_jaw() {
+        let mut q = quadruped();
+        q.visit_mut(|_, n| {
+            if let crate::anatomy::PartKind::Head(h) = &mut n.kind {
+                h.jaw = None;
+            }
+        });
+        let err = apply_form(&q, &form(&[("torso/neck/head", Lever::Jaw, 1.2)])).unwrap_err();
+        assert!(matches!(err, FormError::Lever { source: LeverError::Unsupported(Lever::Jaw), .. }), "{err}");
+    }
 
     #[test]
     fn patch_paths_match_copies() {

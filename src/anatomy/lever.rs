@@ -113,6 +113,52 @@ impl Lever {
         self.kind() == LeverKind::Count
     }
 
+    /// The values this lever may take, in its [`kind`](Self::kind)'s terms: a factor's
+    /// multiplier, a delta's change, a count's value. Every patch must lie within it, and so must
+    /// all the patches on one part combined ([`apply_form`](super::apply_form) checks both).
+    ///
+    /// Factors stay positive, so a part can't be turned inside out or shrunk to nothing; angles
+    /// stay under a quarter or so of a turn, so a leg can't be swung onto the back.
+    #[must_use]
+    pub const fn range(self) -> (f32, f32) {
+        match self {
+            // Sizes: a quarter to four times the authored.
+            Self::Scale | Self::Length | Self::Girth | Self::Skull | Self::Jaw | Self::EndSize | Self::Width | Self::Height | Self::Depth
+            | Self::Size => (0.25, 4.0),
+            // A tip far finer than its base; a blend kept from vanishing.
+            Self::Taper | Self::Blend => (0.1, 4.0),
+            Self::Flatten => (0.2, 5.0),
+            Self::EyeSpacing => (0.25, 3.0),
+            // Amounts that may go to nothing: no fat, no snout.
+            Self::Muscle | Self::Fat | Self::Folds | Self::Snout => (0.0, 4.0),
+            // A flat back, digits closed up.
+            Self::Arch | Self::Spread => (0.0, 3.0),
+            // Degrees.
+            Self::Pitch | Self::Yaw | Self::Roll => (-90.0, 90.0),
+            Self::Around | Self::Splay => (-60.0, 60.0),
+            // Degrees per metre.
+            Self::Curl => (-360.0, 360.0),
+            // `t` along the parent, and changes to `0..=1` amounts (each result is clamped to
+            // `0..=1`).
+            Self::Position | Self::Belly | Self::EyeLateral | Self::Webbing | Self::Curve => (-1.0, 1.0),
+            // Turns.
+            Self::Twist => (-2.0, 2.0),
+            Self::Segments | Self::Tines => (1.0, 8.0),
+            Self::Count => (1.0, 6.0),
+        }
+    }
+
+    /// Two patches of this lever on one part, combined as [`apply_lever`](PartNode::apply_lever)
+    /// combines them: factors multiply, deltas add, a count replaces.
+    #[must_use]
+    pub fn combine(self, before: f32, value: f32) -> f32 {
+        match self.kind() {
+            LeverKind::Factor => before * value,
+            LeverKind::Delta => before + value,
+            LeverKind::Count => value,
+        }
+    }
+
     /// Value meaning "no change" for this lever's kind (not meaningful for `Count`).
     #[must_use]
     pub const fn identity(self) -> f32 {
@@ -183,8 +229,9 @@ impl PartNode {
         if !self.supports(lever) {
             return Err(LeverError::Unsupported(lever));
         }
-        if !value.is_finite() {
-            return Err(LeverError::OutOfRange { lever, value });
+        let (lo, hi) = lever.range();
+        if !(lo..=hi).contains(&value) {
+            return Err(LeverError::OutOfRange { lever, value, lo, hi });
         }
         let f = value; // Factor or Delta, depending on the lever
         let count = |min: u8, max: u8| value.round().clamp(f32::from(min), f32::from(max)).sat_u8();
@@ -260,11 +307,7 @@ fn apply_kind_lever(kind: &mut PartKind, lever: Lever, value: f32) -> Result<(),
             match lever {
                 L::Skull => h.skull.size *= f,
                 L::Snout => h.snout *= f,
-                L::Jaw => {
-                    if let Some(j) = &mut h.jaw {
-                        j.length *= f;
-                    }
-                }
+                L::Jaw => h.jaw.as_mut().ok_or(unsupported)?.length *= f,
                 L::EyeSpacing => h.eye_spacing *= f,
                 _ => h.eye_lateral = (h.eye_lateral + f).clamp(0.0, 1.0),
             }
@@ -378,8 +421,8 @@ fn scale_end(end: &mut LimbEnd, f: f32) {
 pub enum LeverError {
     #[error("lever {0:?} is not supported by this part kind")]
     Unsupported(Lever),
-    #[error("lever {lever:?} value {value} is out of range")]
-    OutOfRange { lever: Lever, value: f32 },
+    #[error("lever {lever:?} value {value} is outside {lo}..={hi}")]
+    OutOfRange { lever: Lever, value: f32, lo: f32, hi: f32 },
 }
 
 #[cfg(test)]
