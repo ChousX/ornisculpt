@@ -45,7 +45,7 @@ pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, Re
 pub use rig::{Clavicle, ClothFollow, HandDef, LegInfo, LookDef, SpringChainDef};
 pub use spread::{Spread, spread_pose};
 pub use skeleton::{
-    BoneDef, BoneId, CrowdSkeleton, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
+    BoneDef, BoneId, CrowdSkeleton, Flexes, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
     SocketKind,
 };
 pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps, upright_torso_stamps};
@@ -54,7 +54,7 @@ pub use wing::{
 };
 pub use viability::{
     BoneBudget, FeetReachGround, RestSelfIntersection, StaticBalance, Viability, ViabilityCheck,
-    ViabilityChecks, ViabilityReport,
+    ViabilityChecks, ViabilityReport, sole_heights,
 };
 
 use bevy::prelude::*;
@@ -120,7 +120,9 @@ mod tests {
         // Real limb proportions: unequal segments, elbow bending back.
         let PartKind::Limb(front) = &plan.root.children[1].kind else { panic!("front leg is a limb") };
         assert_eq!(front.chain.ratios, vec![1.0, 1.05, 0.4]);
-        assert!(front.bends[0].0 < 0.0);
+        let joints = front.joints.as_ref().expect("front leg declares its joints");
+        assert_eq!(joints.plan, JointPlan::Foreleg);
+        assert!(joints.swing < 0.0);
         assert!(
             matches!(&plan.root.children[0].kind, PartKind::Chain(c) if c.role == ChainRole::Neck)
         );
@@ -263,6 +265,84 @@ mod tests {
             RegionSelector::Kind(RegionKind::LimbUpper),
         ]);
         assert_eq!(count(left), 2);
+    }
+
+    /// Hind legs of the quadruped plan with their joints edited by `f`.
+    fn hind_joints(f: impl Fn(&mut LimbJoints)) -> Result<Anatomy, AnatomyError> {
+        let mut plan = quadruped();
+        plan.visit_mut(|p, n| {
+            if let PartKind::Limb(l) = &mut n.kind
+                && p.0.ends_with("limb.hind")
+            {
+                f(l.joints.as_mut().unwrap());
+            }
+        });
+        build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default())
+    }
+
+    #[test]
+    fn jointed_legs_limit_and_point_their_knees() {
+        let a = hind_joints(|_| {}).unwrap();
+        // Root ball plus two hinges on each of four legs.
+        assert_eq!(a.joint_limits.len(), 4 * 3);
+        for l in &a.legs {
+            // Elbows point back, stifles forward.
+            let want = if l.pair == 0 { -1.0 } else { 1.0 };
+            assert!(l.pole.z * want > 0.9, "{:?} leg {} pole {}", l.side, l.pair, l.pole);
+        }
+    }
+
+    #[test]
+    fn a_reversed_knee_does_not_build() {
+        // The stifle flexed the elbow's way: the old `bends` sign flip.
+        let err = hind_joints(|j| j.flex[0] = -72.0).unwrap_err();
+        assert!(matches!(&err, AnatomyError::InvalidParams { reason, .. } if reason.contains("stifle")), "{err}");
+        assert!(hind_joints(|j| j.flex.push(10.0)).is_err(), "one flexion per hinge");
+    }
+
+    const PLANS: [(&str, &str); 11] = [
+        ("bat", include_str!("../../assets/mobs/bat.body.ron")),
+        ("beast", include_str!("../../assets/mobs/beast.body.ron")),
+        ("beetle", include_str!("../../assets/mobs/beetle.body.ron")),
+        ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+        ("bird", include_str!("../../assets/mobs/bird.body.ron")),
+        ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
+        ("dragonfly", include_str!("../../assets/mobs/dragonfly.body.ron")),
+        ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+        ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+        ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+        ("wyvern", include_str!("../../assets/mobs/wyvern.body.ron")),
+    ];
+
+    /// Every sample limb declares its joints, and each leg's declared knee points the way its
+    /// rest pose bends (the IK pole used to be read off the rest pose).
+    #[test]
+    fn sample_limbs_declare_their_joints() {
+        for (name, src) in PLANS {
+            let plan: BodyPlan = ron::from_str(src).unwrap();
+            plan.visit(|path, n| {
+                if let PartKind::Limb(l) = &n.kind {
+                    assert!(l.joints.is_some() && l.bends.is_empty(), "{name}: {path} has no joints");
+                }
+            });
+            // Plans with authored meshes (the beast's crest) need assets loaded to build.
+            let a = match build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()) {
+                Ok(a) => a,
+                Err(AnatomyError::MissingAsset { .. }) => continue,
+                Err(e) => panic!("{name}: {e}"),
+            };
+            let model = a.skeleton.rest_model();
+            for l in &a.legs {
+                let at = |i: usize| Vec3::from(model[l.chain[i].index()].translation);
+                let (last, def) = (l.chain[l.chain.len() - 1], a.skeleton.get(l.chain[l.chain.len() - 1]).unwrap());
+                let tip = model[last.index()].transform_point3(Vec3::Y * def.length);
+                let axis = (tip - at(0)).normalize();
+                let knee = at(1) - at(0);
+                let rest_pole = (knee - axis * knee.dot(axis)).normalize();
+                println!("{name} {:?}/{} pole {:.2} rest {:.2}", l.side, l.pair, l.pole, rest_pole);
+                assert!(l.pole.dot(rest_pole) > 0.9, "{name}: {:?} leg {} pole {} vs rest {}", l.side, l.pair, l.pole, rest_pole);
+            }
+        }
     }
 
     #[test]

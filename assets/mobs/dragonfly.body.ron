@@ -40,7 +40,7 @@
             ),
             (
                 name: "leg.fore",
-                kind: Limb((chain: (segments: 3, length: 0.12, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.12, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 30.0, flex: [100.0, 20.0])))),
                 attach: Surface(t: 0.8, around_deg: 150.0),
                 offset: (rotate_deg: (40.0, 0.0, 0.0)),
                 mirror: true,
@@ -48,14 +48,14 @@
             ),
             (
                 name: "leg.mid",
-                kind: Limb((chain: (segments: 3, length: 0.14, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.14, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 30.0, flex: [100.0, 20.0])))),
                 attach: Surface(t: 0.5, around_deg: 150.0),
                 mirror: true,
                 detail: Always,
             ),
             (
                 name: "leg.hind",
-                kind: Limb((chain: (segments: 3, length: 0.16, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 30.0), (0.0, -100.0), (0.0, -20.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.16, ratios: [1.0, 1.1, 0.6], radius: (scale: 0.008)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 30.0, flex: [100.0, 20.0])))),
                 attach: Surface(t: 0.2, around_deg: 150.0),
                 offset: (rotate_deg: (-40.0, 0.0, 0.0)),
                 mirror: true,

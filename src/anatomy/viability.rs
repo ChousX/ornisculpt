@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
-use super::{Anatomy, BoneId, MAX_BONES, MAX_CROWD_BONES, measure_mass};
+use super::builder::{affine, lowest_point};
+use super::{Anatomy, BoneId, MAX_BONES, MAX_CROWD_BONES, PrimOp, measure_mass};
 
 /// A test a built body must pass to be considered viable. Used for authoring feedback now and as
 /// the fitness gate for genetics later. Gait compatibility lives in the `motion` module, since it
@@ -80,8 +81,11 @@ impl ViabilityCheck for BoneBudget {
     }
 }
 
-/// Every locomotor foot can reach the ground (the lowest rest foot) with its leg fully straightened
-/// from the rest-pose hip.
+/// Every locomotor foot can reach its planted place on the ground with its leg straightened.
+///
+/// The planted place is the rest foot, which the builder lowers until the sole touches. A leg that
+/// can't reach it from the rest-pose hip stands on nothing (the beast's hind paws were built 3.5 cm
+/// up, on legs too straight to reach down).
 pub struct FeetReachGround {
     /// Allowed gap in metres.
     pub tolerance: f32,
@@ -99,23 +103,55 @@ impl ViabilityCheck for FeetReachGround {
     }
 
     fn check(&self, anatomy: &Anatomy) -> Viability {
-        let ground = anatomy.legs.iter().map(|l| l.rest_foot.y).fold(f32::INFINITY, f32::min);
         let model = anatomy.skeleton.rest_model();
         let at = |b: &BoneId| model.get(b.index()).map(|m| Vec3::from(m.translation));
         let short: Vec<String> = anatomy
             .legs
             .iter()
             .filter_map(|l| {
-                let joints: Vec<Vec3> = l.chain.iter().filter_map(at).collect();
-                let (&hip, &foot) = (joints.first()?, joints.last()?);
-                // Bone segments, then the foot bone down to its contact point.
-                let reach = joints.array_windows().map(|[a, b]| a.distance(*b)).sum::<f32>() + foot.distance(l.rest_foot);
-                let gap = hip.y - ground - reach;
+                let hip = l.chain.first().and_then(at)?;
+                // The straightened leg (its bones end to end) against the hip's distance to where
+                // the foot plants.
+                let gap = hip.distance(l.rest_foot) - l.length;
                 (gap > self.tolerance).then(|| format!("{:?} leg {} is {gap:.3} m short", l.side, l.pair))
             })
             .collect();
         if short.is_empty() { Viability::Ok } else { Viability::Fail(short.join("; ")) }
     }
+}
+
+/// Height of each leg's sole above y = 0 in the rest pose, in `anatomy.legs` order: the lowest
+/// point of the leg below its first joint (its foot and anything hanging off it).
+#[must_use]
+pub fn sole_heights(anatomy: &Anatomy) -> Vec<f32> {
+    let model = anatomy.skeleton.rest_model();
+    let bones = anatomy.skeleton.bones.len();
+    anatomy
+        .legs
+        .iter()
+        .map(|l| {
+            // The leg below its root, and everything hanging off its last bone.
+            let mut below = vec![false; bones];
+            for b in l.chain.iter().skip(1) {
+                if let Some(m) = below.get_mut(b.index()) {
+                    *m = true;
+                }
+            }
+            for (i, def) in anatomy.skeleton.bones.iter().enumerate() {
+                if def.parent.is_some_and(|p| below.get(p.index()).copied().unwrap_or(false))
+                    && let Some(m) = below.get_mut(i)
+                {
+                    *m = true;
+                }
+            }
+            anatomy
+                .primitives
+                .iter()
+                .filter(|p| p.op == PrimOp::Union && below.get(p.bone.index()).copied().unwrap_or(false))
+                .filter_map(|p| Some(lowest_point(&p.shape, &(*model.get(p.bone.index())? * affine(&p.local)))))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .collect()
 }
 
 /// Centre of mass (from primitive volumes) lies over the feet's support polygon.

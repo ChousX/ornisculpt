@@ -15,7 +15,7 @@ use super::eval::LayerPose;
 use super::gait::BodyMotion;
 use super::heft::{Heft, HeftResponse};
 use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
-use super::{Gait, fabrik, two_bone};
+use super::{Gait, SOFT_START, fabrik, two_bone_soft};
 use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
 use crate::num::ToF32;
 
@@ -341,6 +341,26 @@ pub fn shoulder_rhythm(a: &Anatomy, pose: &mut MobPose) {
     }
 }
 
+/// How far past a leg's rest reach (as a share of its full reach) its IK starts easing toward
+/// straight, and the latest it may start: easing too close to straight snaps the knee.
+const REST_REACH_MARGIN: f32 = 0.005;
+const MAX_SOFT_START: f32 = 0.98;
+
+/// The tip of bone `last` at rest (model space).
+fn points_rest_tip(a: &Anatomy, last: BoneId, rest_model: &[Affine3A]) -> Vec3 {
+    let length = a.skeleton.get(last).map_or(0.0, |b| b.length);
+    rest_model.get(last.index()).map_or(Vec3::ZERO, |m| m.transform_point3(Vec3::Y * length))
+}
+
+/// How high (in leg lengths) a lifting foot rises before what hangs off it stops lying flat.
+const FLAT_FOOT_LIFT: f32 = 0.12;
+
+/// Hermite step from 0 at `lo` to 1 at `hi`.
+fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+    t * t * 2.0f32.mul_add(-t, 3.0)
+}
+
 /// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
 /// loose cloth swings with the thighs. Leaves the pre-IK world transforms in `pose.world`.
 pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut MobPose) {
@@ -348,6 +368,7 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
     let bones = &a.skeleton.bones;
     forward_kinematics_into(bones, &pose.local, root, &mut pose.world);
     let (local, world) = (&mut pose.local, &pose.world);
+    let rest_model = a.skeleton.rest_model();
     // World rotation of a bone's parent (the root's for a root bone).
     let parent_rotation = |b: BoneId| bones.get(b.index()).and_then(|d| d.parent).and_then(|p| world.get(p.index())).map_or_else(|| rotation(&root), rotation);
     for (i, l) in a.legs.iter().enumerate() {
@@ -373,7 +394,14 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
             let lower: SmallVec<[Vec3; 6]> = lower_points.iter().map(|p| *p - p2).collect();
             let reach = target - lower.last().copied().unwrap_or(Vec3::ZERO);
             let mut three = [*p0, *p1, p2];
-            two_bone(&mut three, reach, knee_hint);
+            // Ease toward straight only past the leg's own rest reach (plus a little), so a leg
+            // standing nearly straight still stands on its feet.
+            let at_rest = |i: usize| chain.get(i).and_then(|b| rest_model.get(b.index())).map(|m| Vec3::from(m.translation));
+            let soft = match (at_rest(0), at_rest(1), at_rest(2).or_else(|| Some(points_rest_tip(a, last, &rest_model)))) {
+                (Some(hip), Some(knee), Some(end)) => (hip.distance(end) / (hip.distance(knee) + knee.distance(end)).max(1e-6) + REST_REACH_MARGIN).clamp(SOFT_START, MAX_SOFT_START),
+                _ => SOFT_START,
+            };
+            two_bone_soft(&mut three, reach, knee_hint, soft);
             (*p0, *p1) = (three[0], three[1]);
             for (p, offset) in lower_points.iter_mut().zip(&lower) {
                 *p = three[2] + *offset;
@@ -401,6 +429,20 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
                 }
             }
         }
+        // What hangs off the foot (a bear's sole, a dog's toes, a bird's talons) keeps its rest
+        // attitude to the ground while the foot is down, so it lies flat however the shin leans,
+        // and follows the leg again as the foot lifts. Without it a rigid sole tips with the shin
+        // through every step, lifting its heel or toe off the ground.
+        let lift = foot.position.y - foot.swing_to.y.min(foot.swing_from.y);
+        let flat = 1.0 - smoothstep(0.0, FLAT_FOOT_LIFT * f.leg, lift);
+        if flat > 0.0 {
+            let foot_world = chain.iter().filter_map(|b| local.get(b.index())).fold(parent_rotation(first), |r, t| r * t.rotation);
+            for toe in a.skeleton.children(last).filter(|c| !chain.contains(c)) {
+                let (Some(t), Some(rest)) = (local.get_mut(toe.index()), rest_model.get(toe.index()).map(rotation)) else { continue };
+                let level = foot_world.inverse() * rotation(&root) * rest;
+                t.rotation = t.rotation.slerp(level, flat);
+            }
+        }
     }
     // Loose cloth swings with the legs. (`world` predates leg IK, but IK only turns leg bones, so
     // the parents' frames still hold.)
@@ -413,6 +455,17 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
         if let Some(t) = local.get_mut(c.root.index()) {
             t.rotation = Quat::IDENTITY.slerp(swing, c.weight) * t.rotation;
         }
+    }
+}
+
+/// Holds every limited joint within its limit (see [`JointLimit`](crate::anatomy::JointLimit)):
+/// hinges between their flexion limits, balls in their cone round rest. Runs last, after
+/// everything that turns bones.
+#[cfg(feature = "joint-limits")]
+pub fn limit_joints(a: &Anatomy, pose: &mut MobPose) {
+    for (bone, limit) in &a.joint_limits {
+        let (Some(def), Some(t)) = (a.skeleton.get(*bone), pose.local.get_mut(bone.index())) else { continue };
+        t.rotation = limit.clamp(def.rest.rotation, t.rotation);
     }
 }
 
@@ -625,6 +678,8 @@ impl Sim {
         shoulder_rhythm(a, &mut self.pose);
         solve_legs(f, &self.feet, None, &mut self.pose);
         look_at(f, target, &mut self.look, &mut self.pose);
+        #[cfg(feature = "joint-limits")]
+        limit_joints(a, &mut self.pose);
         &self.pose.local
     }
 }
@@ -854,5 +909,90 @@ mod shoulders {
         assert!(lift > 0.01, "the shoulder lifts: {lift}");
         let (_, _, small, clav) = raise(&a, 20.0);
         assert!(small.abs() < 1e-5 && clav.angle_between(Quat::IDENTITY) < 1e-4, "walking swings leave the clavicle alone");
+    }
+}
+
+#[cfg(test)]
+mod joint_limits {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, JointLimit, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::Gait;
+
+    /// A hinge's name, the flexion range it went through, and its limits.
+    type Seen = (String, (f32, f32), (f32, f32));
+
+    /// Walks and runs a body and returns each declared hinge's flexion range over every frame,
+    /// with its limits.
+    fn hinge_ranges(src: &str) -> Vec<Seen> {
+        let plan: BodyPlan = ron::from_str(src).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let body = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let gait = Gait::for_legs(body.legs.len());
+        let leg = leg_length(&body);
+        let hinges: Vec<_> = body
+            .joint_limits
+            .iter()
+            .filter_map(|(b, l)| match l {
+                JointLimit::Hinge { flexes, flex } => Some((*b, *flexes, *flex)),
+                JointLimit::Ball { .. } => None,
+            })
+            .collect();
+        let mut seen = vec![(f32::MAX, f32::MIN); hinges.len()];
+        let mut root = Affine3A::IDENTITY;
+        let mut sim = Sim::new(&body, root);
+        let dt = 1.0 / 60.0;
+        for speed in [0.5, 1.5, 3.0] {
+            sim.loco.velocity = Vec3::Z * speed * leg;
+            sim.loco.prev_velocity = sim.loco.velocity;
+            for i in 0..240 {
+                root.translation += Vec3A::from(sim.loco.velocity * dt);
+                let frame = Frame { a: &body, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
+                let local = sim.frame(&frame, None);
+                for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
+                    let q = local[bone.index()].rotation;
+                    let q = if q.w < 0.0 { -q } else { q };
+                    let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
+                    *s = (s.0.min(flex), s.1.max(flex));
+                }
+            }
+        }
+        hinges.iter().zip(seen).map(|((b, _, limit), s)| (body.skeleton.get(*b).unwrap().name.clone(), s, *limit)).collect()
+    }
+
+    #[test]
+    fn hinges_stay_in_range() {
+        let mut out = Vec::new();
+        for (plan, src) in [
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+            ("bird", include_str!("../../assets/mobs/bird.body.ron")),
+            ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+        ] {
+            for (name, (lo, hi), (min, max)) in hinge_ranges(src) {
+                let flag = if lo < min - 0.01 || hi > max + 0.01 { "  OUT" } else { "" };
+                println!("{plan:<10} {name:<16} flexed {lo:7.1} .. {hi:6.1}   limit {min} .. {max}{flag}");
+                if !flag.is_empty() {
+                    out.push(format!("{plan} {name}"));
+                }
+            }
+        }
+        // Left and right legs walk alike (out of step, so not identically), so each hinge's
+        // range overlaps its mirror twin's; a hinge declared the wrong way round on one side
+        // reads as the negative and doesn't.
+        for (plan, src) in [("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")), ("bird", include_str!("../../assets/mobs/bird.body.ron"))] {
+            let seen = hinge_ranges(src);
+            // Every leg pair names its bones alike, so pair left and right hinges in build order.
+            let side = |prefix: &str| seen.iter().filter(move |(n, ..)| n.starts_with(prefix)).collect::<Vec<_>>();
+            let (left, right) = (side("limb.l."), side("limb.r."));
+            assert_eq!(left.len(), right.len(), "{plan}");
+            for ((name, (lo, hi), _), (twin, (tlo, thi), _)) in left.iter().zip(&right) {
+                assert!(lo.max(*tlo) < hi.min(*thi), "{plan} {name}: {lo}..{hi} vs {twin}: {tlo}..{thi}");
+            }
+        }
+        // Without the feature this only reports; with it, nothing may leave its range.
+        if cfg!(feature = "joint-limits") {
+            assert!(out.is_empty(), "out of range: {out:?}");
+        }
     }
 }

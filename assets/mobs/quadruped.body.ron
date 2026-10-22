@@ -50,7 +50,8 @@
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    bends: [(-30.0, 0.0), (36.0, 0.0), (14.0, 0.0)],
+                    // The carpus stands a little over-extended, as a dog's does.
+                    joints: Some((plan: Foreleg, swing: -30.0, flex: [36.0, -14.0])),
                 )),
                 attach: Surface(t: 0.88, around_deg: 135.0),
                 mirror: true,
@@ -73,7 +74,7 @@
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    bends: [(32.0, 0.0), (-72.0, 0.0), (46.0, 0.0)],
+                    joints: Some((plan: Hindleg, swing: 32.0, flex: [72.0, 46.0])),
                 )),
                 attach: Surface(t: 0.1, around_deg: 120.0),
                 mirror: true,

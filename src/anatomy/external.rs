@@ -124,6 +124,29 @@ impl SdfGrid {
         (self.origin - half, self.origin + (self.dims.as_vec3() - Vec3::ONE) * self.cell + half)
     }
 
+    /// The lowest point of the surface, as `height` measures it (a grid point's height after
+    /// the part's transform), with `scale` the transform's scale: the lowest cell inside the
+    /// surface, less its distance to it. Within about a cell, where the bounding box can be far
+    /// off (padding, and a tilted box's corner dips well below the mesh). `None` if no cell is
+    /// inside.
+    #[must_use]
+    pub fn lowest(&self, height: impl Fn(Vec3) -> f32, scale: f32) -> Option<f32> {
+        let mut low: Option<f32> = None;
+        for z in 0..self.dims.z {
+            for y in 0..self.dims.y {
+                for x in 0..self.dims.x {
+                    let v = self.at(x, y, z);
+                    if v > 0.0 {
+                        continue;
+                    }
+                    let h = v.mul_add(scale, height(self.origin + UVec3::new(x, y, z).as_vec3() * self.cell));
+                    low = Some(low.map_or(h, |l| l.min(h)));
+                }
+            }
+        }
+        low
+    }
+
     fn at(&self, x: u32, y: u32, z: u32) -> f32 {
         self.values.get((x + self.dims.x * (y + self.dims.y * z)).idx()).copied().unwrap_or_default()
     }

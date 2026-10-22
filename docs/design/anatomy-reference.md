@@ -8,14 +8,17 @@ reference size per body plan, so a plan can be scaled without losing them.
 | Real feature | Plan field |
 |---|---|
 | Unequal limb bones (thigh vs shin, forearm vs cannon) | `chain.ratios` (relative segment lengths) |
-| Elbow back, knee forward, hock back | `Limb.bends` (per-joint `(forward, up)` degrees) |
+| Elbow back, knee forward, hock back | `Limb.joints`: a `JointPlan` (`Foreleg`, `Hindleg`, `Leg`, `Arm`, `Arched`) and each hinge's flexion |
 | Deep narrow chest vs wide flat chest | `cross: Ellipse(aspect)` (width = r·√aspect, depth = r/√aspect) |
 | Waist tuck-up, broad shoulders | `radius.curve` along the torso |
 | Hip joints closer than the hip's outer width | `offset.translate` (attach frame: +Y out of the skin) |
 | Insect legs on the thorax only | thorax = root `Torso`, abdomen = `Chain` at its `Start` |
 
-The IK pole (which way a joint bends while walking) is taken from each limb's rest pose, so
-`bends` also decide how the leg folds in motion.
+Each plan's hinges know which way they close and how far they turn (`JointPlan::hinges`):
+flexion is positive the way the joint bends, and a rest flexion outside the hinge's range does
+not build. The IK pole (which way a joint bends while walking) comes from the first hinge, and
+with the `joint-limits` feature every declared joint is held within its range in motion. A limb
+without `joints` falls back to raw `bends` (`(forward, up)` degrees) or the stance's defaults.
 
 ## Biped (human), reference size: stature H
 
@@ -74,8 +77,9 @@ From conformation standards and veterinary anatomy (medium breeds):
   - The tail ≈ 0.5–0.7 W.
 
 Applied (`quadruped.body.ron`, `beast.body.ron`, W ≈ 0.6 m):
-- Fore bends `[(-30), (35), (10)]`, ratios `[1, 1.05, 0.4]`.
-- Hind bends `[(30), (-70), (45)]`, ratios `[1, 1.1, 0.55]`.
+- Fore: shoulder swung back 30°, elbow flexed 35°, carpus over-extended 10–14°; ratios
+  `[1, 1.05, 0.4]`.
+- Hind: hip swung forward 30°, stifle flexed 70°, hock flexed 45°; ratios `[1, 1.1, 0.55]`.
 
 ## Quadruped ungulate (horse), reference size: withers height W
 

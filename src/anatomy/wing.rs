@@ -124,6 +124,24 @@ impl WingPose {
     pub const CLOSED: Self = Self { sweep: 78.0, raise: -68.0, elbow: 166.0, wrist: 164.0, spread: 10.0, curl: 14.0 };
 }
 
+impl WingPose {
+    /// The first joint that turns half a turn or more on the way to `to`, as (joint, from, to):
+    /// the blend would take it the short way round, the wrong way, through the body.
+    #[must_use]
+    pub fn too_far(self, to: Self) -> Option<(&'static str, f32, f32)> {
+        [
+            ("sweep", self.sweep, to.sweep),
+            ("raise", self.raise, to.raise),
+            ("elbow", self.elbow, to.elbow),
+            ("wrist", self.wrist, to.wrist),
+            ("spread", self.spread, to.spread),
+            ("curl", self.curl, to.curl),
+        ]
+        .into_iter()
+        .find(|(_, a, b)| (b - a).abs() >= 180.0)
+    }
+}
+
 impl Default for WingPose {
     fn default() -> Self {
         Self::OPEN
@@ -671,6 +689,10 @@ fn grid_indices(sheet: &mut Sheet, base: u32, rows: u32, cols: u32) {
 
 impl PartBuild for WingParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
+        if !(0.0..=1.0).contains(&self.fold) {
+            let reason = format!("fold {} is outside 0 (spread) ..= 1 (folded)", self.fold);
+            return Err(AnatomyError::InvalidParams { path: cx.path.clone(), reason });
+        }
         let axes = Axes::new(&at, cx);
         match &self.kind {
             WingKind::Membrane(m) => build_membrane(self, m, b, &at, cx, &axes),
@@ -750,6 +772,22 @@ impl MembraneFrames {
     }
 }
 
+/// A membrane wing's finger count and fold poses, checked; returns the spread pose it is built in
+/// (the bind pose: `sweep_deg` turns the whole spread wing back).
+fn check_membrane(wing: &WingParams, membrane: &MembraneWing, cx: &BuildCx) -> Result<WingPose, AnatomyError> {
+    let invalid = |reason: String| AnatomyError::InvalidParams { path: cx.path.clone(), reason };
+    if !(1..=4).contains(&membrane.fingers) {
+        return Err(invalid(format!("{} fingers; a membrane wing has 1 to 4", membrane.fingers)));
+    }
+    let open = WingPose { sweep: membrane.open.sweep + wing.sweep_deg, ..membrane.open };
+    for (from, to, leg) in [(open, membrane.half, "open → half"), (membrane.half, membrane.closed, "half → closed")] {
+        if let Some((joint, a, b)) = from.too_far(to) {
+            return Err(invalid(format!("{joint} turns {a}° → {b}° ({leg}): the fold must turn each joint under half a turn")));
+        }
+    }
+    Ok(open)
+}
+
 fn build_membrane(
     wing: &WingParams,
     membrane: &MembraneWing,
@@ -758,14 +796,13 @@ fn build_membrane(
     cx: &BuildCx,
     ax: &Axes,
 ) -> Result<PartSlots, AnatomyError> {
+    let open = check_membrane(wing, membrane, cx)?;
     let span = wing.span.max(0.05);
-    let count = usize::from(membrane.fingers.clamp(1, 4));
+    let count = usize::from(membrane.fingers);
     let lens = MembraneLens::new(span, count);
     let arm_region = b.region(RegionKind::Wing, cx.side)?;
     let sheet_region = b.region(RegionKind::WingMembrane, cx.side)?;
 
-    // Built spread (the bind pose); `sweep_deg` turns the whole spread wing back.
-    let open = WingPose { sweep: membrane.open.sweep + wing.sweep_deg, ..membrane.open };
     let spread = MembraneFrames::new(&open, ax, &lens)?;
     let arm = spread.arm;
     let arm_bones: [BoneId; 3] = fixed(chain_bones(b, at.bone, "wing", &arm, arm_region)?)?;
@@ -1301,6 +1338,10 @@ mod tests {
                 assert!((b - a).abs() < 175.0, "{joint}: {a} → {b}");
             }
         }
+        // A closed elbow authored past half a turn from open is caught (it would fold the wrong
+        // way round, through the body).
+        let over = WingPose { elbow: h.elbow + 200.0, ..c };
+        assert_eq!(h.too_far(over).map(|(joint, ..)| joint), Some("elbow"));
     }
 }
 

@@ -9,7 +9,11 @@
 //! (Shift = faster) · L heads look at the camera · F foot gizmos.
 //! Unselected mobs wander in circles.
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
-//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
+//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera; `ORNISCULPT_FOCUS=n` follows mob n
+//! with the yaw relative to its heading (`π` looks at its back); `ORNISCULPT_SHOT_FRAME=a,b,..`
+//! saves several frames (as `<path>.<frame>.png`); `ORNISCULPT_STILL=1` keeps every mob standing;
+//! `ORNISCULPT_GIZMOS=1` starts with the foot gizmos on; `ORNISCULPT_VIABILITY=1` logs each body's
+//! viability report and sole heights.
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
@@ -29,6 +33,7 @@ fn main() {
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
         .add_systems(Update, (drive, orbit_camera, draw_feet, screenshot))
+        .add_observer(report_viability)
         .run();
 }
 
@@ -131,12 +136,15 @@ fn drive(
             let pause = f32::from(u8::from(f32::mul_add(t, 0.2, w.index.to_f32()).sin() > 0.85));
             (tangent * 0.8 + pull) * (1.0 - pause)
         };
+        if std::env::var_os("ORNISCULPT_STILL").is_some() {
+            intent.velocity = Vec3::ZERO;
+        }
         intent.look_at = demo.look.then_some(cam.translation);
     }
 }
 
 fn draw_feet(demo: Res<Demo>, feet: Query<&Feet>, mut gizmos: Gizmos) {
-    if !demo.gizmos {
+    if !demo.gizmos && std::env::var_os("ORNISCULPT_GIZMOS").is_none() {
         return;
     }
     for s in &feet {
@@ -153,25 +161,50 @@ fn orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
+    walkers: Query<(&Walker, &Transform), Without<Camera3d>>,
 ) {
+    let focus: Option<usize> = std::env::var("ORNISCULPT_FOCUS").ok().and_then(|s| s.parse().ok());
+    let followed = walkers.iter().find(|(w, _)| Some(w.index) == focus).map(|(_, tf)| {
+        let f = tf.rotation * Vec3::Z;
+        (tf.translation + Vec3::Y * orbit.target.y, f.x.atan2(f.z))
+    });
     if buttons.pressed(MouseButton::Left) {
         orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
         orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
     }
     orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 100.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
+    let (target, heading) = followed.unwrap_or((orbit.target, 0.0));
+    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw + heading, -orbit.pitch, 0.0);
     for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
+        *t = Transform::from_translation(target + rot * Vec3::Z * orbit.distance).looking_at(target, Vec3::Y);
     }
 }
 
 fn screenshot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
+    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| "360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let last = frames.iter().copied().max().unwrap_or(360);
     *frame += 1;
-    if *frame == 360 {
+    if frames.contains(&*frame) {
+        let path = if frames.len() > 1 { format!("{path}.{}.png", *frame) } else { path };
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
-    if *frame == 380 {
+    if *frame == last + 20 {
         exit.write(AppExit::Success);
+    }
+}
+
+/// `ORNISCULPT_VIABILITY=1`: each body's viability report, and how high each sole stands at rest.
+fn report_viability(ready: On<ornisculpt::mob::BodyReady>, mobs: Query<(&Walker, &ornisculpt::mob::MobBody)>, bodies: Res<Assets<ornisculpt::mob::GeneratedBody>>) {
+    use ornisculpt::anatomy::{ViabilityChecks, sole_heights};
+    if std::env::var_os("ORNISCULPT_VIABILITY").is_none() {
+        return;
+    }
+    let Ok((w, body)) = mobs.get(ready.entity) else { return };
+    let Some(b) = bodies.get(&body.0) else { return };
+    let soles: Vec<String> = sole_heights(&b.anatomy).iter().map(|s| format!("{s:.3}")).collect();
+    info!("{}: soles at rest [{}]", BODIES.get(w.index).unwrap_or(&"?"), soles.join(", "));
+    for (name, v) in ViabilityChecks::with_builtins().run(&b.anatomy).results {
+        info!("  {name}: {v:?}");
     }
 }
