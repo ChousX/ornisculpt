@@ -54,7 +54,7 @@ pub use wing::{
 };
 pub use viability::{
     BoneBudget, FeetReachGround, RestSelfIntersection, StaticBalance, Viability, ViabilityCheck,
-    ViabilityChecks, ViabilityReport,
+    ViabilityChecks, ViabilityReport, sole_heights,
 };
 
 use bevy::prelude::*;

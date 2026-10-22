@@ -54,7 +54,7 @@ fn place_from_tip(joints: &mut [Vec3], lengths: &[f32], target: Vec3) {
 }
 
 /// Fraction of full extension where [`two_bone`] starts easing toward straight.
-const SOFT_START: f32 = 0.95;
+pub const SOFT_START: f32 = 0.95;
 
 /// Exact IK for a two-bone chain (`joints` = root, middle, tip): the middle joint bends toward
 /// `pole`. Bone lengths come from the current joints.
@@ -63,12 +63,20 @@ const SOFT_START: f32 = 0.95;
 /// asymptotically (the tip falls slightly short of the target) instead of locking. A hard lock
 /// snaps the knee, because near straight a tiny change in distance swings the knee a long way.
 pub fn two_bone(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3) {
+    two_bone_soft(joints, target, pole, SOFT_START);
+}
+
+/// [`two_bone`], easing toward straight from `soft` of the full reach instead of [`SOFT_START`].
+///
+/// A leg that stands nearly straight (a bear's columns) is already past [`SOFT_START`] at rest,
+/// so it would stand short of its own feet: start its easing just past its rest reach instead.
+pub fn two_bone_soft(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3, soft: f32) {
     let (l1, l2) = (joints[0].distance(joints[1]), joints[1].distance(joints[2]));
     let root = joints[0];
     let to = target - root;
     let axis = to.normalize_or(Vec3::NEG_Y);
     let full = l1 + l2;
-    let soft = full * SOFT_START;
+    let soft = full * soft.clamp(0.5, 0.995);
     let mut d = to.length();
     if d > soft {
         let span = full - soft;

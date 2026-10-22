@@ -38,7 +38,7 @@ pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePat
 pub use hand::{Hand, HandPose, pose_hands};
 pub use heft::{Heft, HeftResponse, StepShape};
 pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, SpringState, TorsoState};
-pub use ik::{fabrik, orient_to_pole, two_bone};
+pub use ik::{SOFT_START, fabrik, orient_to_pole, two_bone, two_bone_soft};
 pub use player::{Footstep, MobMotion, MotionCache, MotionParams, MotionRuntime, PlayCycle, RootMotionDelta, TRIGGER_LIFETIME};
 
 use bevy::prelude::*;

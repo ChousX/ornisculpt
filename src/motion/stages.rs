@@ -15,7 +15,7 @@ use super::eval::LayerPose;
 use super::gait::BodyMotion;
 use super::heft::{Heft, HeftResponse};
 use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
-use super::{Gait, fabrik, two_bone};
+use super::{Gait, SOFT_START, fabrik, two_bone_soft};
 use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
 use crate::num::ToF32;
 
@@ -341,6 +341,26 @@ pub fn shoulder_rhythm(a: &Anatomy, pose: &mut MobPose) {
     }
 }
 
+/// How far past a leg's rest reach (as a share of its full reach) its IK starts easing toward
+/// straight, and the latest it may start: easing too close to straight snaps the knee.
+const REST_REACH_MARGIN: f32 = 0.005;
+const MAX_SOFT_START: f32 = 0.98;
+
+/// The tip of bone `last` at rest (model space).
+fn points_rest_tip(a: &Anatomy, last: BoneId, rest_model: &[Affine3A]) -> Vec3 {
+    let length = a.skeleton.get(last).map_or(0.0, |b| b.length);
+    rest_model.get(last.index()).map_or(Vec3::ZERO, |m| m.transform_point3(Vec3::Y * length))
+}
+
+/// How high (in leg lengths) a lifting foot rises before what hangs off it stops lying flat.
+const FLAT_FOOT_LIFT: f32 = 0.12;
+
+/// Hermite step from 0 at `lo` to 1 at `hi`.
+fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+    t * t * 2.0f32.mul_add(-t, 3.0)
+}
+
 /// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
 /// loose cloth swings with the thighs. Leaves the pre-IK world transforms in `pose.world`.
 pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut MobPose) {
@@ -348,6 +368,7 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
     let bones = &a.skeleton.bones;
     forward_kinematics_into(bones, &pose.local, root, &mut pose.world);
     let (local, world) = (&mut pose.local, &pose.world);
+    let rest_model = a.skeleton.rest_model();
     // World rotation of a bone's parent (the root's for a root bone).
     let parent_rotation = |b: BoneId| bones.get(b.index()).and_then(|d| d.parent).and_then(|p| world.get(p.index())).map_or_else(|| rotation(&root), rotation);
     for (i, l) in a.legs.iter().enumerate() {
@@ -373,7 +394,14 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
             let lower: SmallVec<[Vec3; 6]> = lower_points.iter().map(|p| *p - p2).collect();
             let reach = target - lower.last().copied().unwrap_or(Vec3::ZERO);
             let mut three = [*p0, *p1, p2];
-            two_bone(&mut three, reach, knee_hint);
+            // Ease toward straight only past the leg's own rest reach (plus a little), so a leg
+            // standing nearly straight still stands on its feet.
+            let at_rest = |i: usize| chain.get(i).and_then(|b| rest_model.get(b.index())).map(|m| Vec3::from(m.translation));
+            let soft = match (at_rest(0), at_rest(1), at_rest(2).or_else(|| Some(points_rest_tip(a, last, &rest_model)))) {
+                (Some(hip), Some(knee), Some(end)) => (hip.distance(end) / (hip.distance(knee) + knee.distance(end)).max(1e-6) + REST_REACH_MARGIN).clamp(SOFT_START, MAX_SOFT_START),
+                _ => SOFT_START,
+            };
+            two_bone_soft(&mut three, reach, knee_hint, soft);
             (*p0, *p1) = (three[0], three[1]);
             for (p, offset) in lower_points.iter_mut().zip(&lower) {
                 *p = three[2] + *offset;
@@ -399,6 +427,20 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
                 {
                     t.rotation *= *post;
                 }
+            }
+        }
+        // What hangs off the foot (a bear's sole, a dog's toes, a bird's talons) keeps its rest
+        // attitude to the ground while the foot is down, so it lies flat however the shin leans,
+        // and follows the leg again as the foot lifts. Without it a rigid sole tips with the shin
+        // through every step, lifting its heel or toe off the ground.
+        let lift = foot.position.y - foot.swing_to.y.min(foot.swing_from.y);
+        let flat = 1.0 - smoothstep(0.0, FLAT_FOOT_LIFT * f.leg, lift);
+        if flat > 0.0 {
+            let foot_world = chain.iter().filter_map(|b| local.get(b.index())).fold(parent_rotation(first), |r, t| r * t.rotation);
+            for toe in a.skeleton.children(last).filter(|c| !chain.contains(c)) {
+                let (Some(t), Some(rest)) = (local.get_mut(toe.index()), rest_model.get(toe.index()).map(rotation)) else { continue };
+                let level = foot_world.inverse() * rotation(&root) * rest;
+                t.rotation = t.rotation.slerp(level, flat);
             }
         }
     }

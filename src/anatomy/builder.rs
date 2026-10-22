@@ -199,7 +199,7 @@ pub fn mirror_point(p: Vec3) -> Vec3 {
     Vec3::new(-p.x, p.y, p.z)
 }
 
-fn affine(t: &Transform) -> Affine3A {
+pub(super) fn affine(t: &Transform) -> Affine3A {
     t.compute_affine()
 }
 
@@ -640,6 +640,15 @@ impl AnatomyBuilder {
             leg.rest_foot.y -= min_y;
         }
         self.anatomy.ground = min_y;
+        // The body now stands on its lowest sole; a rest pose need not put every sole that low (a
+        // dog's fore paws were built 1.7 cm up, an insect's front feet 5.8 cm). Plant each foot
+        // where its sole touches, so a planted foot stands on the ground rather than its rest height.
+        let soles = super::sole_heights(&self.anatomy);
+        for (leg, sole) in self.anatomy.legs.iter_mut().zip(soles) {
+            if sole.is_finite() && sole > 0.0 {
+                leg.rest_foot.y -= sole;
+            }
+        }
     }
 
     /// Resolves `BuiltPart::lod` from size, clamped so no part outlives its parent.
@@ -679,7 +688,8 @@ impl AnatomyBuilder {
 }
 
 /// Lowest model-space Y of a primitive placed by `m`.
-fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
+/// Lowest model-space height of `shape` placed by `m`.
+pub(super) fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
     let col = |i: usize| Vec3::from(m.matrix3.col(i));
     let s = (0..3).map(|i| col(i).length()).fold(f32::INFINITY, f32::min);
     let at = |y: f32| m.transform_point3(Vec3::Y * y).y;
@@ -699,8 +709,11 @@ fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
             .map(|(p, r)| m.transform_point3(*p).y - r * s)
             .fold(f32::INFINITY, f32::min),
         PrimShape::Grid { grid, mirror_x } => {
-            let (lo, hi) = grid.bounds();
             let flip = if *mirror_x { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
+            if let Some(low) = grid.lowest(|p| m.transform_point3(p * flip).y, s) {
+                return low;
+            }
+            let (lo, hi) = grid.bounds();
             (0..8)
                 .map(|i| {
                     let c = Vec3::new(
