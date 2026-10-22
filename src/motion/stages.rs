@@ -155,12 +155,7 @@ pub fn rest_pose(a: &Anatomy, scales: impl Iterator<Item = Vec3>, pose: &mut Mob
 pub fn fold_wings(a: &Anatomy, cycles: Option<&LayerPose>, pose: &mut MobPose) {
     for (k, w) in a.wings.iter().enumerate() {
         let (target, weight) = cycles.and_then(|l| l.fold.get(k).copied()).unwrap_or((0.0, 0.0));
-        let fold = f32::mul_add(target - w.fold, weight, w.fold);
-        for (bone, folded) in &w.bones {
-            if let Some(t) = pose.local.get_mut(bone.index()) {
-                t.rotation = t.rotation.slerp(*folded, fold);
-            }
-        }
+        w.apply(f32::mul_add(target - w.fold, weight, w.fold), &mut pose.local);
     }
 }
 
