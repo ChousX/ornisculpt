@@ -50,7 +50,7 @@ pub use skeleton::{
 };
 pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps, upright_torso_stamps};
 pub use wing::{
-    BladeWing, FeatheredWing, MembraneWing, Planform, Sheet, SheetKind, Trailing, WingKind, WingParams, WingRig, WingShape,
+    BladeWing, FeatheredWing, MembraneWing, Planform, Sheet, SheetKind, Trailing, WingKind, WingParams, WingPose, WingRig, WingShape,
 };
 pub use viability::{
     BoneBudget, FeetReachGround, RestSelfIntersection, StaticBalance, Viability, ViabilityCheck,

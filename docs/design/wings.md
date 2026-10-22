@@ -210,9 +210,23 @@ existing `MobMaterial`, with colours from `Coat` plus a new `WingCoat`.
   - Pterosaur: humerus 0.14, forearm 0.22, metacarpal 0.12, and a single 0.52 finger.
 - **Membrane geometry:**
   - Panels are ruled grids between finger polylines, with catenary-like scallops between
-    the tips.
+    the tips and a `billow` (camber) out of the wing plane between spars.
   - The main membrane (plagiopatagium) runs between arm + last finger and body + trailing
-    edge. Each vertex is weighted between the two nearest bones.
+    edge.
+  - Skin weights: each edge segment is carried by a bone (arm, finger) or is a free span
+    (the body line, the trailing edge) blended from the bone at its start to the one at its
+    end. A vertex blends its row's carriers on both edges by its place across, up to four
+    bones. Weights ease into the next bone over the last 20 % of a bone, so the membrane
+    bends round a joint. (The trailing edge used to ride the last finger bone right up to
+    the body, so a folded wing stood up as a sail.)
+  - The main membrane's weights are then **fitted to its folded shape**: the same ruled
+    panel between the folded arm + finger and the body line, bowed out from the flank. Per
+    vertex, the weights over the panel's bones (arm, last finger, body) that carry it nearest
+    its folded place, kept near the weights above (projected gradient on the simplex, at most
+    four bones). No bone carries a membrane's middle: weighted to the body it stays where the
+    spread wing held it; weighted to the wing it swings up over the back as the plane turns
+    down the flank. Linear blending is exact at the bind pose whatever the weights, so the
+    spread wing is unchanged.
 - **Feather tracts.** Rigid feathers on folding arm bones stood up like a display fan, so
   flight feathers now ride on tract bones:
   - secondaries + tertials on the forearm;
@@ -220,6 +234,13 @@ existing `MobMaterial`, with colours from `Coat` plus a new `WingCoat`.
   - Folding turns the tracts so the rows lie back along the flank and the primary fan
     collapses to near-parallel, as a real folded wing does.
 - **Folding:**
+  - Membrane wings are posed by joint angles (`WingPose`: shoulder `sweep` and `raise`,
+    `elbow`, `wrist`, finger `spread` and knuckle `curl`), one set `open` (the bind pose)
+    and one `closed`, both editable per plan. Elbow, wrist and knuckles hinge across the wing
+    plane, as a bat's do (the fingers close like umbrella ribs under the forearm); the
+    shoulder turns the plane, down the flank when closed. A single-axis hinge slerps exactly
+    as its angle lerps, so a half fold is half-way at every joint. Earlier folded frames were
+    free directions, whose slerp swung the fingers down through the ground mid-fold.
   - `WingRig` stores folded *local* rotations, relative to the folded parent.
   - The pose solver slerps rest → folded by `fold`, and the crowd bake's idle frame does the
     same, so distant mobs show folded wings.

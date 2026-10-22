@@ -10,13 +10,14 @@
 
 use std::f32::consts::PI;
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::num::{Clamp, ToF32};
 
 use super::{
-    AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, HardKind, HardParams, LodLevel, PartBuild,
+    AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, AxisSample, BoneId, BuildCx, HardKind, HardParams, LodLevel, PartBuild,
     PartSlots, PrimLayer, PrimOp, PrimShape, RegionId, RegionKind, frame_y_z, sample_axis,
 };
 
@@ -65,13 +66,61 @@ pub struct MembraneWing {
     pub trailing: Trailing,
     /// How far the trailing edge sags between finger tips, as a fraction of the gap.
     pub scallop: f32,
+    /// How far the membrane bows out of the wing plane between its spars (camber), as a fraction
+    /// of the gap; positive bows up from the spread wing, out from the folded one.
+    pub billow: f32,
     /// A free clawed thumb at the wrist.
     pub thumb: bool,
+    /// The spread wing (the bind pose); its `sweep` adds to [`WingParams::sweep_deg`].
+    pub open: WingPose,
+    /// The folded wing, against the flank; `WingParams::fold` blends toward it at rest.
+    pub closed: WingPose,
 }
 
 impl Default for MembraneWing {
     fn default() -> Self {
-        Self { fingers: 3, trailing: Trailing::Body(0.35), scallop: 0.22, thumb: true }
+        Self { fingers: 3, trailing: Trailing::Body(0.35), scallop: 0.22, billow: 0.05, thumb: true, open: WingPose::OPEN, closed: WingPose::CLOSED }
+    }
+}
+
+/// A membrane wing's joint angles, degrees.
+///
+/// The arm and fingers lie in one plane (elbow, wrist and knuckles are hinges across it, as in a
+/// bat, whose wing folds in its own plane like an umbrella); the shoulder turns that plane.
+/// Blending two poses turns each hinge by its own angle, so a half-folded wing is half-way at
+/// every joint.
+///
+/// A joint must turn less than 180° between the open and closed poses (the blend takes the
+/// shorter way round). A pose written in a plan lists all six angles.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WingPose {
+    /// Humerus: back from straight out, in the wing plane.
+    pub sweep: f32,
+    /// The wing plane turned about the body's long axis: up from level (negative lowers the wing
+    /// down the flank).
+    pub raise: f32,
+    /// Elbow: the forearm turned forward from the humerus's line.
+    pub elbow: f32,
+    /// Wrist: the hand turned back from the forearm's line.
+    pub wrist: f32,
+    /// Fan between the first and last finger (a lone pterosaur finger turns back off the hand by a
+    /// fifth of it).
+    pub spread: f32,
+    /// Each finger's knuckle, bent back.
+    pub curl: f32,
+}
+
+impl WingPose {
+    /// Spread, as a bat in flight: elbow a little bent, fingers fanned, the plane nearly level.
+    pub const OPEN: Self = Self { sweep: 22.0, raise: 4.0, elbow: 34.0, wrist: 4.0, spread: 105.0, curl: 8.0 };
+    /// Folded: humerus back along the body, forearm forward, the fingers bundled back along it
+    /// (the ribs of a closed umbrella), the plane turned down against the flank.
+    pub const CLOSED: Self = Self { sweep: 78.0, raise: -68.0, elbow: 166.0, wrist: 164.0, spread: 10.0, curl: 14.0 };
+}
+
+impl Default for WingPose {
+    fn default() -> Self {
+        Self::OPEN
     }
 }
 
@@ -277,8 +326,8 @@ fn chain_bones(
 }
 
 /// Resamples a polyline to `n + 1` points evenly by arc length, also returning the segment
-/// each point lies on. Empty if the polyline has fewer than two points.
-fn resample(poly: &[Vec3], n: usize) -> Vec<(Vec3, usize)> {
+/// each point lies on and how far along it. Empty if the polyline has fewer than two points.
+fn resample(poly: &[Vec3], n: usize) -> Vec<(Vec3, usize, f32)> {
     let segments: Vec<(Vec3, Vec3, f32)> = poly.array_windows().map(|&[a, b]| (a, b, a.distance(b))).collect();
     let Some(last) = segments.len().checked_sub(1) else { return Vec::new() };
     let total: f32 = segments.iter().map(|s| s.2).sum::<f32>().max(1e-6);
@@ -287,7 +336,8 @@ fn resample(poly: &[Vec3], n: usize) -> Vec<(Vec3, usize)> {
             let mut d = total * k.to_f32() / n.to_f32();
             for (s, &(a, b, len)) in segments.iter().enumerate() {
                 if d <= len || s == last {
-                    return Some((a.lerp(b, (d / len.max(1e-6)).clamp(0.0, 1.0)), s));
+                    let f = (d / len.max(1e-6)).clamp(0.0, 1.0);
+                    return Some((a.lerp(b, f), s, f));
                 }
                 d -= len;
             }
@@ -296,54 +346,196 @@ fn resample(poly: &[Vec3], n: usize) -> Vec<(Vec3, usize)> {
         .collect()
 }
 
-/// A ruled grid between two polylines with matching ends; `bone_a`/`bone_b` give the bone at
-/// each polyline segment. Returns (positions, joints, weights, uvs, dirs, thickness) appended
-/// to `sheet`. `sag(c, k)` offsets interior points (scallops).
-#[allow(clippy::too_many_arguments)]
+/// What carries one segment of a membrane edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Carry {
+    /// A bone along the segment (arm, finger).
+    Bone(BoneId),
+    /// A free stretch (trailing edge, body line) between the bone at its start and the one at its
+    /// end, blended along it.
+    Span(BoneId, BoneId),
+}
+
+/// A membrane edge: a polyline and what carries each of its segments.
+#[derive(Clone, Copy)]
+struct Edge<'a> {
+    points: &'a [Vec3],
+    carry: &'a [Carry],
+}
+
+/// Fraction of a bone, at each end, over which an edge's weight eases into the next bone, so the
+/// membrane bends round a joint rather than creasing at it.
+const JOINT_EASE: f32 = 0.2;
+
+impl Edge<'_> {
+    /// Bone weights at `f` along segment `s`.
+    fn weights(&self, s: usize, f: f32) -> [(BoneId, f32); 2] {
+        let carry = |s: usize| self.carry.get(s).or_else(|| self.carry.last()).copied().unwrap_or(Carry::Bone(BoneId(0)));
+        match carry(s) {
+            Carry::Span(a, b) => [(a, 1.0 - f), (b, f)],
+            Carry::Bone(bone) => {
+                // Half-way into the neighbouring bone at the joint itself.
+                let ease = |t: f32| 0.5 * (1.0 - t / JOINT_EASE).max(0.0);
+                let next = match carry(s + 1) {
+                    Carry::Bone(n) if s + 1 < self.carry.len() && n != bone => Some((n, ease(1.0 - f))),
+                    _ => None,
+                };
+                let prev = match s.checked_sub(1).map(carry) {
+                    Some(Carry::Bone(p)) if p != bone => Some((p, ease(f))),
+                    _ => None,
+                };
+                match (next, prev) {
+                    (Some((n, w)), _) if w > 0.0 => [(bone, 1.0 - w), (n, w)],
+                    (_, Some((p, w))) if w > 0.0 => [(bone, 1.0 - w), (p, w)],
+                    _ => [(bone, 1.0), (bone, 0.0)],
+                }
+            }
+        }
+    }
+}
+
+/// Up to four bone weights from weighted contributions, summing to one (largest kept).
+fn skin(parts: impl IntoIterator<Item = (BoneId, f32)>) -> ([u16; 4], [f32; 4]) {
+    let mut merged: Vec<(BoneId, f32)> = Vec::with_capacity(4);
+    for (bone, w) in parts {
+        if w <= 0.0 {
+            continue;
+        }
+        match merged.iter_mut().find(|(b, _)| *b == bone) {
+            Some(slot) => slot.1 += w,
+            None => merged.push((bone, w)),
+        }
+    }
+    merged.sort_by(|a, b| b.1.total_cmp(&a.1));
+    merged.truncate(4);
+    let total: f32 = merged.iter().map(|m| m.1).sum();
+    let (mut joints, mut weights) = ([0u16; 4], [0.0f32; 4]);
+    if total <= 0.0 {
+        weights[0] = 1.0;
+        return (joints, weights);
+    }
+    for (i, (bone, w)) in merged.into_iter().enumerate() {
+        if let (Some(j), Some(slot)) = (joints.get_mut(i), weights.get_mut(i)) {
+            *j = u16::from(bone.0);
+            *slot = w / total;
+        }
+    }
+    (joints, weights)
+}
+
+/// The folded pose a panel's skin weights are fitted to (see [`fit_weights`]).
+struct Fold<'a> {
+    /// The panel's two edges, folded (as `ruled_panel`'s `a` and `b`, point for point).
+    a: &'a [Vec3],
+    b: &'a [Vec3],
+    /// Where the folded panel holds the vertex at (`c`, `v`), from its row's folded edge points.
+    place: &'a dyn Fn(f32, f32, Vec3, Vec3) -> Vec3,
+    /// Bones a vertex may be weighted to, each with its folded skin transform (folded model ·
+    /// bind model⁻¹).
+    bones: &'a [(BoneId, Affine3A)],
+}
+
+/// A ruled grid between two edges with matching ends, rows evenly spaced along each, appended to
+/// `sheet`. Each vertex is weighted between the bones carrying its row on either edge, by its
+/// place across (`c`). `sag(c, v, pa, pb)` offsets interior points (scallops, billow);
+/// `rib_thickness(c, v)` is the shading thickness. With `fold`, the weights are then refitted so
+/// the folded bones carry each vertex to the same place in the folded panel.
 fn ruled_panel(
     sheet: &mut Sheet,
-    edge_a: &[Vec3],
-    bone_a: &[BoneId],
-    edge_b: &[Vec3],
-    bone_b: &[BoneId],
-    rows: usize,
-    cols: usize,
+    edge_a: Edge,
+    edge_b: Edge,
+    (rows, cols): (usize, usize),
     sag: impl Fn(f32, f32, Vec3, Vec3) -> Vec3,
     rib_thickness: impl Fn(f32, f32) -> f32,
+    fold: Option<&Fold>,
 ) {
-    let ra = resample(edge_a, rows);
-    let rb = resample(edge_b, rows);
+    let ra = resample(edge_a.points, rows);
+    let rb = resample(edge_b.points, rows);
     if ra.len() != rows + 1 || rb.len() != rows + 1 {
         return;
     }
+    let folded = fold.map(|f| (resample(f.a, rows), resample(f.b, rows)));
     // Direction along a resampled edge at row `k`.
-    let along = |r: &[(Vec3, usize)], k: usize| match (r.get((k + 1).min(rows)), r.get(k.saturating_sub(1))) {
+    let along = |r: &[(Vec3, usize, f32)], k: usize| match (r.get((k + 1).min(rows)), r.get(k.saturating_sub(1))) {
         (Some(next), Some(prev)) => next.0 - prev.0,
         _ => Vec3::ZERO,
     };
-    // The bone at segment `s` of an edge (its last bone past the end).
-    let bone_at = |bones: &[BoneId], s: usize| bones.get(s).or_else(|| bones.last()).copied().unwrap_or(BoneId(0));
     let base = sheet.positions.len().clamp_u32();
-    for (k, (&(pa, sa), &(pb, sb))) in ra.iter().zip(&rb).enumerate() {
-        let v = k.to_f32() / rows.to_f32();
-        let (next_a, next_b) = (along(&ra, k), along(&rb, k));
-        let (ja, jb) = (bone_at(bone_a, sa), bone_at(bone_b, sb));
-        for m in 0..=cols {
-            let c = m.to_f32() / cols.to_f32();
-            sheet.positions.push(pa.lerp(pb, c) + sag(c, v, pa, pb));
-            if ja == jb {
-                sheet.joints.push([u16::from(ja.0), 0, 0, 0]);
-                sheet.weights.push([1.0, 0.0, 0.0, 0.0]);
-            } else {
-                sheet.joints.push([u16::from(ja.0), u16::from(jb.0), 0, 0]);
-                sheet.weights.push([1.0 - c, c, 0.0, 0.0]);
-            }
+    for (row, (&(pa, sa, fa), &(pb, sb, fb))) in ra.iter().zip(&rb).enumerate() {
+        let v = row.to_f32() / rows.to_f32();
+        let (next_a, next_b) = (along(&ra, row), along(&rb, row));
+        let (wa, wb) = (edge_a.weights(sa, fa), edge_b.weights(sb, fb));
+        let folded_row = folded.as_ref().and_then(|(fa, fb)| Some((fa.get(row)?.0, fb.get(row)?.0)));
+        for col in 0..=cols {
+            let c = col.to_f32() / cols.to_f32();
+            let pos = pa.lerp(pb, c) + sag(c, v, pa, pb);
+            let start = wa.iter().map(|&(j, w)| (j, w * (1.0 - c))).chain(wb.iter().map(|&(j, w)| (j, w * c)));
+            let (joints, weights) = match (fold, folded_row) {
+                (Some(f), Some((qa, qb))) => skin(fit_weights(pos, (f.place)(c, v, qa, qb), f.bones, start)),
+                _ => skin(start),
+            };
+            sheet.positions.push(pos);
+            sheet.joints.push(joints);
+            sheet.weights.push(weights);
             sheet.uvs.push([c, v]);
             sheet.dirs.push(next_a.lerp(next_b, c).normalize_or(Vec3::X));
-            sheet.thickness.push(rib_thickness(c, v));
+            sheet.thickness.push(rib_thickness(c, v).clamp(0.0, 1.0));
         }
     }
     grid_indices(sheet, base, rows.clamp_u32(), cols.clamp_u32());
+}
+
+/// Skin weights for a vertex at `p` (bind pose) that the folded `bones` carry as near `target` as
+/// they can, staying near the `start` weights: minimises |Σ wᵢ Mᵢ p − target|² + λ |w − w₀|² over
+/// weights that are non-negative and sum to one (projected gradient on the simplex). Linear
+/// blending is exact at the bind pose whatever the weights, so this only shapes the fold.
+///
+/// Membranes need it because no bone carries a membrane's middle: weighted to the body it stays
+/// where the spread wing held it, out in the air; weighted to the wing it swings up over the back
+/// as the wing plane turns down the flank.
+fn fit_weights(p: Vec3, target: Vec3, bones: &[(BoneId, Affine3A)], start: impl IntoIterator<Item = (BoneId, f32)>) -> Vec<(BoneId, f32)> {
+    let mut w0 = vec![0.0f32; bones.len()];
+    for (bone, w) in start {
+        if let Some(slot) = bones.iter().position(|(b, _)| *b == bone).and_then(|i| w0.get_mut(i)) {
+            *slot += w;
+        }
+    }
+    let total: f32 = w0.iter().sum();
+    if total <= 0.0 || bones.is_empty() {
+        return bones.first().map_or_else(Vec::new, |(b, _)| vec![(*b, 1.0)]);
+    }
+    for w in &mut w0 {
+        *w /= total;
+    }
+    // Where each bone alone would carry the vertex, relative to the target.
+    let d: Vec<Vec3> = bones.iter().map(|(_, m)| m.transform_point3(p) - target).collect();
+    let reach: f32 = d.iter().map(|d| d.length_squared()).sum::<f32>().max(1e-8);
+    // Keep near the start weights at about a tenth of the reach's scale.
+    let lambda = 0.01 * reach;
+    let step = 0.5 / (reach + lambda);
+    let mut w = w0.clone();
+    for _ in 0..300 {
+        let r: Vec3 = w.iter().zip(&d).map(|(w, d)| *d * *w).sum();
+        let next: Vec<f32> = w.iter().zip(&w0).zip(&d).map(|((w, w0), d)| w - step * 2.0 * lambda.mul_add(w - w0, r.dot(*d))).collect();
+        w = project_simplex(&next);
+    }
+    bones.iter().map(|(b, _)| *b).zip(w).filter(|(_, w)| *w > 1e-4).collect()
+}
+
+/// The point of the probability simplex nearest `v` (Duchi et al. 2008).
+fn project_simplex(v: &[f32]) -> Vec<f32> {
+    let mut sorted = v.to_vec();
+    sorted.sort_by(|a, b| b.total_cmp(a));
+    let mut sum = 0.0;
+    let mut theta = 0.0;
+    for (i, x) in sorted.iter().enumerate() {
+        sum += x;
+        let t = (sum - 1.0) / (i + 1).to_f32();
+        if x - t > 0.0 {
+            theta = t;
+        }
+    }
+    v.iter().map(|x| (x - theta).max(0.0)).collect()
 }
 
 /// Triangles of a `(rows + 1) × (cols + 1)` vertex grid starting at vertex `base`, row-major.
@@ -372,8 +564,71 @@ fn end_slots(bone: BoneId, tip: Transform) -> PartSlots {
     PartSlots { fixed: std::iter::once((AttachSlot::End, AttachPoint { bone: Some(bone), model: tip })).collect(), ..default() }
 }
 
-/// A membrane wing finger: frames root, knuckle, tip and its two bones.
-type Finger = ([Transform; 3], [BoneId; 2]);
+/// Membrane wing segment lengths, metres.
+struct MembraneLens {
+    humerus: f32,
+    forearm: f32,
+    hand: f32,
+    /// One per finger, root to tip.
+    fingers: Vec<f32>,
+}
+
+impl MembraneLens {
+    /// Bat/dragon: long forearm, short metacarpals, the leading finger (digit III) longest.
+    /// Pterosaur (`count` 1): one huge fourth finger on a long metacarpal.
+    fn new(span: f32, count: usize) -> Self {
+        let (humerus, forearm, hand, fingers) = if count == 1 {
+            (0.14, 0.22, 0.12, vec![0.52])
+        } else {
+            (0.16, 0.27, 0.05, (0..count).map(|i| 0.55 * 0.18f32.mul_add(-i.to_f32(), 1.0)).collect())
+        };
+        Self { humerus: humerus * span, forearm: forearm * span, hand: hand * span, fingers: fingers.into_iter().map(|f| f * span).collect() }
+    }
+}
+
+/// A membrane wing's bone frames in one pose: shoulder, elbow, wrist, hand end; and per finger
+/// its root, knuckle and tip. Y runs along each bone, Z is the wing plane's normal.
+struct MembraneFrames {
+    arm: [Transform; 4],
+    fingers: Vec<[Transform; 3]>,
+    /// The wing plane's normal (up from the spread wing's upper face).
+    normal: Vec3,
+}
+
+impl MembraneFrames {
+    /// Forward kinematics of `pose` (`sweep` already including any extra sweep).
+    fn new(pose: &WingPose, ax: &Axes, lens: &MembraneLens) -> Result<Self, AnatomyError> {
+        let side = ax.out.x.signum();
+        let plane = Quat::from_axis_angle(ax.fwd, pose.raise.to_radians() * side);
+        let normal = plane * ax.up;
+        // In the plane: `out` at 0°, back (-fwd) at 90°.
+        let dir = |deg: f32| {
+            let (s, c) = deg.to_radians().sin_cos();
+            plane * (ax.out * c - ax.fwd * s)
+        };
+        let humerus = pose.sweep;
+        let forearm = humerus - pose.elbow;
+        let hand = forearm + pose.wrist;
+        let arm = fixed(frames_along(ax.root, &[(dir(humerus), lens.humerus), (dir(forearm), lens.forearm), (dir(hand), lens.hand)], normal))?;
+        let wrist = arm[3].translation;
+        let count = lens.fingers.len();
+        // The leading finger sits a little behind the hand's line; the rest fan back by `spread`.
+        // A pterosaur's lone wing finger turns back off the hand by a fifth of `spread` (20° spread,
+        // in line with the forearm folded).
+        let lead = if count == 1 { pose.spread * 0.19 } else { 2.0 };
+        let fingers = lens
+            .fingers
+            .iter()
+            .enumerate()
+            .map(|(i, len)| {
+                let fan = if count > 1 { pose.spread * i.to_f32() / (count - 1).to_f32() } else { 0.0 };
+                let a = hand + lead + fan;
+                fixed(frames_along(wrist, &[(dir(a), len * 0.55), (dir(a + pose.curl), len * 0.45)], normal))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { arm, fingers, normal })
+    }
+}
 
 fn build_membrane(
     wing: &WingParams,
@@ -385,135 +640,132 @@ fn build_membrane(
 ) -> Result<PartSlots, AnatomyError> {
     let span = wing.span.max(0.05);
     let count = usize::from(membrane.fingers.clamp(1, 4));
-    // Bat/dragon: long forearm, short metacarpals, digit III longest. Pterosaur: one huge
-    // fourth finger on a long metacarpal.
-    let (hum, fore, meta, finger_lens): (f32, f32, f32, Vec<f32>) = if count == 1 {
-        (0.14, 0.22, 0.12, vec![0.52])
-    } else {
-        (0.16, 0.27, 0.05, (0..count).map(|i| 0.55 * 0.18f32.mul_add(-i.to_f32(), 1.0)).collect())
-    };
-    let fan = match count {
-        1 => 0.0,
-        2 => 60.0,
-        3 => 95.0,
-        _ => 110.0,
-    };
+    let lens = MembraneLens::new(span, count);
     let arm_region = b.region(RegionKind::Wing, cx.side)?;
     let sheet_region = b.region(RegionKind::WingMembrane, cx.side)?;
-    let up = ax.up;
 
-    // Spread: humerus out-and-back, forearm out-and-forward (elbow back), fingers fanning back.
-    let sweep = wing.sweep_deg;
-    let arm: [Transform; 4] = fixed(frames_along(
-        ax.root,
-        &[(ax.dir(sweep + 22.0, 8.0), hum * span), (ax.dir(sweep - 12.0, 4.0), fore * span), (ax.dir(sweep - 8.0, 0.0), meta * span)],
-        up,
-    ))?;
+    // Built spread (the bind pose); `sweep_deg` turns the whole spread wing back.
+    let open = WingPose { sweep: membrane.open.sweep + wing.sweep_deg, ..membrane.open };
+    let spread = MembraneFrames::new(&open, ax, &lens)?;
+    let arm = spread.arm;
     let arm_bones: [BoneId; 3] = fixed(chain_bones(b, at.bone, "wing", &arm, arm_region)?)?;
     let wrist = arm[3].translation;
-    let mut fingers: Vec<Finger> = Vec::with_capacity(count);
-    for (i, len) in finger_lens.iter().enumerate() {
-        let a = if count == 1 { sweep + 12.0 } else { sweep - 6.0 + i.to_f32() * (fan + 6.0) / (count - 1).to_f32() };
-        let d0 = ax.dir(a, -2.0);
-        let d1 = ax.dir(a + 8.0, -4.0);
-        let f = fixed(frames_along(wrist, &[(d0, len * span * 0.55), (d1, len * span * 0.45)], up))?;
-        let bones = fixed(chain_bones(b, Some(arm_bones[2]), &format!("wing.finger{i}"), &f, arm_region)?)?;
-        fingers.push((f, bones));
+    let mut finger_bones: Vec<[BoneId; 2]> = Vec::with_capacity(count);
+    for (i, f) in spread.fingers.iter().enumerate() {
+        finger_bones.push(fixed(chain_bones(b, Some(arm_bones[2]), &format!("wing.finger{i}"), f, arm_region)?)?);
     }
-    let (Some(&first), Some(&(tip_frames, tip_bones))) = (fingers.first(), fingers.last()) else {
+    let (Some(&first), Some(&first_bones), Some(&tip_frames), Some(&tip_bones)) =
+        (spread.fingers.first(), finger_bones.first(), spread.fingers.last(), finger_bones.last())
+    else {
         return Err(AnatomyError::Internal("membrane wing without fingers"));
     };
     let radius = wing.radius;
     tubes(b, &arm_bones, &arm, radius, radius * 0.55, arm_region, radius * 1.4);
-    for (f, bones) in &fingers {
+    for (f, bones) in spread.fingers.iter().zip(&finger_bones) {
         tubes(b, bones, f, radius * 0.42, radius * 0.12, arm_region, radius * 0.2);
     }
     if membrane.thumb {
-        let thumb = Transform::from_translation(wrist).with_rotation(frame_y_z(ax.dir(sweep - 50.0, 10.0), up));
+        let hand_dir = (wrist - arm[2].translation).normalize_or(ax.out);
+        let thumb_dir = (Quat::from_axis_angle(spread.normal, 50f32.to_radians() * ax.out.x.signum()) * hand_dir + spread.normal * 0.18).normalize();
+        let thumb = Transform::from_translation(wrist).with_rotation(frame_y_z(thumb_dir, spread.normal));
         b.hard_part(arm_bones[2], thumb, HardParams { kind: HardKind::Claw, size: span * 0.05, curve: 0.5, twist: 0.0, sclera: 0.0 }, arm_region);
     }
 
-    // Membrane panels between neighbouring fingers (dactylopatagium), scalloped between tips.
+    // Membrane panels between neighbouring fingers (dactylopatagium), scalloped between tips and
+    // bowed out of the plane by `billow`.
     let mut sheet = Sheet { kind: SheetKind::Membrane, region: sheet_region, lod: LodLevel::Far, ..default() };
-    let scallop = membrane.scallop;
-    for [(fa, ba), (fb, bb)] in fingers.array_windows() {
+    let (scallop, billow, normal) = (membrane.scallop, membrane.billow, spread.normal);
+    for ([fa, fb], [ba, bb]) in spread.fingers.array_windows().zip(finger_bones.array_windows()) {
         let pa = fa.map(|t| t.translation);
         let pb = fb.map(|t| t.translation);
+        let (ca, cb) = (ba.map(Carry::Bone), bb.map(Carry::Bone));
         let gap = pa[2].distance(pb[2]);
         ruled_panel(
             &mut sheet,
-            &pa,
-            ba,
-            &pb,
-            bb,
-            14,
-            8,
+            Edge { points: &pa, carry: &ca },
+            Edge { points: &pb, carry: &cb },
+            (14, 8),
             |c, v, pa, pb| {
                 let toward_wrist = (wrist - (pa + pb) * 0.5).normalize_or(Vec3::ZERO);
-                toward_wrist * scallop * gap * (PI * c).sin() * v.powi(3)
+                let bow = (PI * c).sin();
+                toward_wrist * scallop * gap * bow * v.powi(3) + normal * billow * pa.distance(pb) * bow
             },
-            |c, v| (PI * c).sin().powf(0.6).mul_add(-0.85, 1.0) * 0.3f32.mul_add(-v, 1.0),
+            |c, v| (PI * c).sin().max(0.0).powf(0.6).mul_add(-0.85, 1.0) * 0.3f32.mul_add(-v, 1.0),
+            None,
         );
     }
 
-    // Main membrane (plagiopatagium): arm + last finger in front, body and trailing edge
-    // behind.
+    // Main membrane (plagiopatagium): arm + last finger in front; behind, the body line from the
+    // shoulder to the trailing attachment, then the free trailing edge out to the finger tip.
     let tip = tip_frames[2].translation;
     let lead = [arm[0].translation, arm[1].translation, arm[2].translation, wrist, tip_frames[1].translation, tip];
-    let lead_bones = [arm_bones[0], arm_bones[1], arm_bones[2], tip_bones[0], tip_bones[1]];
+    let lead_carry = [arm_bones[0], arm_bones[1], arm_bones[2], tip_bones[0], tip_bones[1]].map(Carry::Bone);
     let (trail_point, trail_bone) = trailing_point(b, membrane.trailing, ax, at, span, wing.chord);
+    let root_bone = at.bone.unwrap_or(arm_bones[0]);
+    let trail_bone = trail_bone.unwrap_or(root_bone);
     let trail_len = trail_point.distance(tip);
     let back = [ax.root, trail_point, tip];
-    let back_bones = [trail_bone.or(at.bone).unwrap_or(arm_bones[0]), tip_bones[1]];
+    let back_carry = [Carry::Span(root_bone, trail_bone), Carry::Span(trail_bone, tip_bones[1])];
+    // The folded wing, which the main membrane's weights are fitted to: between the folded arm
+    // and finger and the same body line, bowed out from the flank.
+    let closed = MembraneFrames::new(&membrane.closed, ax, &lens)?;
+    let (Some(closed_tip), Some(spread_tip)) = (closed.fingers.last(), spread.fingers.last()) else {
+        return Err(AnatomyError::Internal("membrane wing without fingers"));
+    };
+    let folded_lead = [closed.arm[0].translation, closed.arm[1].translation, closed.arm[2].translation, closed.arm[3].translation, closed_tip[1].translation, closed_tip[2].translation];
+    let folded_back = [ax.root, trail_point, closed_tip[2].translation];
+    let moved = |bind: &Transform, folded: &Transform| folded.compute_affine() * bind.compute_affine().inverse();
+    let mut carriers: Vec<(BoneId, Affine3A)> = vec![(root_bone, Affine3A::IDENTITY)];
+    if trail_bone != root_bone {
+        carriers.push((trail_bone, Affine3A::IDENTITY));
+    }
+    carriers.extend(arm_bones.iter().zip(arm.iter().zip(&closed.arm)).map(|(bone, (s, c))| (*bone, moved(s, c))));
+    carriers.extend(tip_bones.iter().zip(spread_tip.iter().zip(closed_tip)).map(|(bone, (s, c))| (*bone, moved(s, c))));
+    let closed_normal = closed.normal;
+    let body = b.parent_axis();
+    let folded_place = |c: f32, v: f32, pa: Vec3, pb: Vec3| {
+        let bow = closed_normal * billow.max(0.04) * pa.distance(pb) * (PI * c).sin() * (PI * v).sin().max(0.0).sqrt();
+        outside(&body, pa.lerp(pb, c) + bow, wing.radius * 2.0)
+    };
+    let fold = Fold { a: &folded_lead, b: &folded_back, place: &folded_place, bones: &carriers };
     ruled_panel(
         &mut sheet,
-        &lead,
-        &lead_bones,
-        &back,
-        &back_bones,
-        18,
-        10,
+        Edge { points: &lead, carry: &lead_carry },
+        Edge { points: &back, carry: &back_carry },
+        (18, 10),
         |c, v, pa, pb| {
             // The free trailing edge (far half of `back`) bows in toward the arm.
             let inward = (pa - pb).normalize_or(Vec3::ZERO);
-            inward * scallop * trail_len * 0.35 * c * (PI * v).sin() * ((v - 0.35) / 0.65).clamp(0.0, 1.0)
+            let scallop = inward * scallop * trail_len * 0.35 * c * (PI * v).sin() * ((v - 0.35) / 0.65).clamp(0.0, 1.0);
+            scallop + normal * billow * pa.distance(pb) * (PI * c).sin() * (PI * v).sin().max(0.0).sqrt()
         },
         |c, v| 0.1f32.mul_add(1.0 - v, f32::mul_add((1.0 - c).powi(3), 0.8, 0.12)),
+        Some(&fold),
     );
     b.sheet(sheet);
 
-    let finger_lens: Vec<f32> = finger_lens.iter().map(|len| len * span).collect();
-    membrane_fold(b, wing.fold, ax, arm_bones, &fingers, &finger_lens, [hum * span, fore * span, meta * span])?;
-    Ok(end_slots(first.1[1], first.0[2]))
+    // Folded: the same chain in the closed pose.
+    let mut folded: Vec<(BoneId, Transform)> = arm_bones.iter().copied().zip(closed.arm).collect();
+    for (bones, frames) in finger_bones.iter().zip(&closed.fingers) {
+        folded.extend(bones.iter().copied().zip(frames.iter().copied()));
+    }
+    b.wing_rig(wing.fold, &folded);
+    Ok(end_slots(first_bones[1], first[2]))
 }
 
-/// Folds a membrane wing: humerus back and down, forearm forward along the flank, fingers back
-/// along it, the wing plane turned to face out. `finger_lens` and `arm` are segment lengths, metres.
-fn membrane_fold(
-    b: &mut AnatomyBuilder,
-    fold: f32,
-    ax: &Axes,
-    arm_bones: [BoneId; 3],
-    fingers: &[Finger],
-    finger_lens: &[f32],
-    arm: [f32; 3],
-) -> Result<(), AnatomyError> {
-    let out = ax.out;
-    let fold_arm: [Transform; 4] = fixed(frames_along(
-        ax.root,
-        &[(ax.mix(0.3, -1.0, -0.35), arm[0]), (ax.mix(0.2, 1.0, 0.28), arm[1]), (ax.mix(0.18, 1.0, 0.1), arm[2])],
-        out,
-    ))?;
-    let mut folded: Vec<(BoneId, Transform)> = arm_bones.iter().copied().zip(fold_arm.iter().copied()).collect();
-    let fold_wrist = fold_arm[3].translation;
-    for (i, ((_, bones), len)) in fingers.iter().zip(finger_lens).enumerate() {
-        let tilt = i.to_f32() * 0.06;
-        let d = ax.mix(tilt.mul_add(0.3, 0.16), -1.0, -0.42 - tilt);
-        let ff = frames_along(fold_wrist, &[(d, len * 0.55), (d, len * 0.45)], out);
-        folded.extend(bones.iter().copied().zip(ff.iter().copied()));
+/// `p`, pushed out of the body whose axis is `axis` to `gap` beyond its skin (its nearest
+/// cross-section, an ellipse, grown by a twelfth for the muscle and fat over it); unchanged if
+/// already outside.
+fn outside(axis: &[AxisSample], p: Vec3, gap: f32) -> Vec3 {
+    let Some(s) = axis.iter().min_by(|a, b| a.centre().distance_squared(p).total_cmp(&b.centre().distance_squared(p))) else { return p };
+    let local = s.model.rotation.inverse() * (p - s.centre());
+    let (rx, rz) = (s.radii.x.mul_add(1.08, gap), s.radii.y.mul_add(1.08, gap));
+    let e = (local.x / rx).hypot(local.z / rz);
+    if e >= 1.0 || e < 1e-4 {
+        return p;
     }
-    b.wing_rig(fold, &folded);
-    Ok(())
+    let scale = 1.0 / e;
+    s.centre() + s.model.rotation * Vec3::new(local.x * scale, local.y, local.z * scale)
 }
 
 /// Body point (and its bone) where a membrane's trailing edge attaches.
@@ -786,9 +1038,56 @@ mod tests {
                     assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-4, "{name}: weights {w:?}");
                 }
             }
+            for s in &a.sheets {
+                let finite = s.positions.iter().all(|p| p.is_finite())
+                    && s.thickness.iter().all(|t| t.is_finite())
+                    && s.dirs.iter().all(|d| d.is_finite())
+                    && s.uvs.iter().flatten().all(|u| u.is_finite());
+                assert!(finite, "{name}: a {:?} sheet has a non-finite attribute", s.kind);
+            }
             // Left and right wings mirror each other.
             let xs: Vec<f32> = a.sheets.iter().map(|s| s.positions.iter().map(|p| p.x).sum::<f32>() / s.positions.len().to_f32()).collect();
             assert!(xs.iter().any(|x| *x > 0.05) && xs.iter().any(|x| *x < -0.05), "{name}: sheets on one side only {xs:?}");
         }
     }
+
+    /// Folded membrane wings lie along the flank: no part of the membrane stands far above the
+    /// back or out from the side (the free trailing edge once rode the finger tip up into a sail).
+    #[test]
+    fn folded_membranes_lie_along_the_flank() {
+        for (name, src) in [
+            ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
+            ("wyvern", include_str!("../../assets/mobs/wyvern.body.ron")),
+            ("bat", include_str!("../../assets/mobs/bat.body.ron")),
+        ] {
+            let a = build(src);
+            let model = a.skeleton.model_from(&a.idle_pose());
+            let skin: Vec<Mat4> = model.iter().zip(&a.skeleton.inverse_bind).map(|(m, inv)| Mat4::from(*m) * *inv).collect();
+            // The shoulders: where the wings' first bones start.
+            let roots: Vec<Vec3> = a.wings.iter().filter_map(|w| w.bones.first()).filter_map(|(bone, _)| model.get(bone.index())).map(|m| m.translation.into()).collect();
+            let top = roots.iter().map(|r| r.y).fold(f32::MIN, f32::max);
+            let wide = roots.iter().map(|r| r.x.abs()).fold(0.0, f32::max);
+            for s in a.sheets.iter().filter(|s| s.kind == SheetKind::Membrane) {
+                let span = s.positions.iter().map(|p| p.x.abs()).fold(0.0, f32::max);
+                for ((p, j), w) in s.positions.iter().zip(&s.joints).zip(&s.weights) {
+                    let posed: Vec3 = j.iter().zip(w).map(|(j, w)| skin[j.idx()].transform_point3(*p) * *w).sum();
+                    assert!(posed.y < 0.15f32.mul_add(span, top), "{name}: folded membrane at {posed} rises above the shoulders ({top})");
+                    assert!(posed.x.abs() < 0.35f32.mul_add(span, wide), "{name}: folded membrane at {posed} stands out from the side");
+                }
+            }
+        }
+    }
+
+    /// Every joint turns less than half a turn between the default open and closed poses, so the
+    /// fold blends the short way round at each joint.
+    #[test]
+    fn membrane_joints_fold_the_short_way() {
+        let (o, c) = (WingPose::OPEN, WingPose::CLOSED);
+        for (joint, from, to) in
+            [("elbow", o.elbow, c.elbow), ("wrist", o.wrist, c.wrist), ("curl", o.curl, c.curl), ("spread", o.spread, c.spread)]
+        {
+            assert!((to - from).abs() < 175.0, "{joint}: {from} → {to}");
+        }
+    }
 }
+

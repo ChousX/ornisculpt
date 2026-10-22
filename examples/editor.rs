@@ -14,7 +14,8 @@
 //! Ctrl+Z undo · Ctrl+S save · G skeleton gizmos. The selected part's bones are always drawn
 //! (every copy of a mirrored or repeated part).
 //!
-//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits.
+//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot once the body is ready and exits;
+//! `ORNISCULPT_VIEW=yaw,pitch[,distance]` sets the camera for it and hides the panel.
 //! `ORNISCULPT_EDITOR_TEST=1` first steps through a few edits by itself (held key, a drag over
 //! the parent, a pause, undo), logs what each one cost, then takes the screenshot of the final
 //! body. `ORNISCULPT_PREVIEW_FULL_BAKE=1` bakes every preview brick after every edit rather than
@@ -761,6 +762,19 @@ impl Orbit {
         self.target = Vec3::new(0.0, radius * 0.5, 0.0);
         self.distance = (radius * 2.6).clamp(0.3, 30.0);
     }
+
+    /// `ORNISCULPT_VIEW=yaw,pitch[,distance]` (radians, metres): a fixed first view, for
+    /// screenshots. Distance defaults to the fitted one.
+    fn view_from_env(&mut self) {
+        let Ok(view) = std::env::var("ORNISCULPT_VIEW") else { return };
+        let values: Vec<f32> = view.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        if let [yaw, pitch, rest @ ..] = values.as_slice() {
+            (self.yaw, self.pitch) = (*yaw, pitch.clamp(-1.4, 1.4));
+            if let Some(distance) = rest.first() {
+                self.distance = distance.clamp(0.3, 30.0);
+            }
+        }
+    }
 }
 
 /// Held arrow keys repeat after a delay.
@@ -818,10 +832,13 @@ fn setup(
     editor.mob = commands.spawn(Mob::new(editor.handle.clone())).id();
     // The preview shares the mob's model space: both sit at the origin.
     editor.preview = commands.spawn(SdfPreview::bundle(&mut preview_assets, CLAY)).id();
+    // A scripted view is for screenshots of the body alone.
+    let panel = if std::env::var_os("ORNISCULPT_VIEW").is_some() { Visibility::Hidden } else { Visibility::Inherited };
     commands
         .spawn((
             Node { position_type: PositionType::Absolute, left: Val::Px(8.0), top: Val::Px(8.0), padding: UiRect::all(Val::Px(8.0)), ..default() },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            panel,
         ))
         .with_child((Panel, Text::new("loading"), TextFont { font_size: FontSize::Px(13.0), ..default() }, TextColor(Color::srgb(0.92, 0.92, 0.9))));
     info!("editing {}", editor.path);
@@ -1077,6 +1094,7 @@ fn on_ready(
     let Some(body) = mobs.get(editor.mob).ok().and_then(|b| bodies.get(&b.0)) else { return };
     if first {
         orbit.fit(body.radius);
+        orbit.view_from_env();
     }
     let a = &body.anatomy;
     editor.status = format!("{} bones, {} primitives, {} hard parts", a.skeleton.len(), a.primitives.len(), a.hard_parts.len());
