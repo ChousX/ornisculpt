@@ -6,7 +6,7 @@ use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use super::CoatUniform;
-use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT};
+use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT, ATTRIBUTE_SOFT};
 
 pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
@@ -96,6 +96,16 @@ impl MaterialExtension for CoatExt {
         if muscle {
             defs.push("COAT_MUSCLE".into());
         }
+        // Meshes with soft-tissue weights jiggle (`soft-tissue` feature). `ORNISCULPT_NO_SOFT`:
+        // keep them still (for comparing).
+        let soft = layout.0.contains(ATTRIBUTE_SOFT) && std::env::var_os("ORNISCULPT_NO_SOFT").is_none();
+        if soft {
+            defs.push("COAT_SOFT".into());
+        }
+        // The crowd bone buffer's slot stride (`CROWD_SLOT`) is wider with soft tissue.
+        if cfg!(feature = "soft-tissue") {
+            defs.push("SOFT_TISSUE".into());
+        }
         // Optional inputs by what the mesh has: the prepass would otherwise drop the ones it
         // doesn't need itself (shell heights in UV0, for one).
         for (attribute, def) in [(Mesh::ATTRIBUTE_UV_0, "COAT_UV"), (Mesh::ATTRIBUTE_TANGENT, "COAT_TANGENT"), (Mesh::ATTRIBUTE_COLOR, "COAT_COLOR")] {
@@ -145,6 +155,9 @@ impl MaterialExtension for CoatExt {
         if muscle {
             attributes.push(ATTRIBUTE_MUSCLE.at_shader_location(9));
             attributes.push(ATTRIBUTE_MUSCLE_JOINT.at_shader_location(10));
+        }
+        if soft {
+            attributes.push(ATTRIBUTE_SOFT.at_shader_location(11));
         }
         descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         Ok(())

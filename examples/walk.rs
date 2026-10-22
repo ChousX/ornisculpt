@@ -1,5 +1,5 @@
-//! Procedural locomotion: a dog-like quadruped, the authored-part bear, a biped, an insect and a
-//! horse walking.
+//! Procedural locomotion: a dog-like quadruped, the authored-part bear, a biped, an insect, a
+//! horse, and a curvy and a thick woman (soft tissue with `--features soft-tissue`) walking.
 //!
 //! ```text
 //! cargo run --release --example walk
@@ -23,7 +23,15 @@ use ornisculpt::num::ToF32;
 use ornisculpt::mob::{Mob, TierCamera};
 use ornisculpt::motion::{Feet, MobIntent};
 
-const BODIES: [&str; 5] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron", "mobs/horse.body.ron"];
+const BODIES: [&str; 7] = [
+    "mobs/quadruped.body.ron",
+    "mobs/beast.body.ron",
+    "mobs/biped.body.ron",
+    "mobs/hexapod.body.ron",
+    "mobs/horse.body.ron",
+    "mobs/curvy.body.ron",
+    "mobs/thick.body.ron",
+];
 
 fn main() {
     App::new()

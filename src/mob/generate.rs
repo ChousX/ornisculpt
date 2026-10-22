@@ -177,6 +177,9 @@ pub struct GeneratedBody {
     pub coat_meshes: [CoatMeshHandles; 3],
     /// Materials for this body + coat: `[hero, crowd]`.
     pub materials: [SlotMaterials; 2],
+    /// Soft-tissue regions; their springs drive the hero soft joints (crowds play them baked).
+    #[cfg(feature = "soft-tissue")]
+    pub soft: Arc<crate::soft::SoftTissue>,
 }
 
 /// Coat geometry meshes for one LOD level.
@@ -327,6 +330,8 @@ pub struct GenOutput {
     pub coat: Coat,
     pub coat_meshes: [CoatMeshes; 3],
     pub outfit: Outfit,
+    #[cfg(feature = "soft-tissue")]
+    pub soft: crate::soft::SoftTissue,
 }
 
 /// Wall time of each generation stage, in first-run order (a stage run twice is summed).
@@ -387,9 +392,28 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
             lod.muscle = muscle_flex(lod, &anatomy, level);
         }
     });
+    // Soft tissue: regions from the stamps, each skin vertex's share of them (before the coat
+    // copies it onto shells and cards).
+    #[cfg(feature = "soft-tissue")]
+    let soft = times.stage("soft_tissue", || {
+        let soft = crate::soft::SoftTissue::of(&anatomy);
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
+            lod.soft = crate::soft::soft_weights(lod, &anatomy, &soft, level);
+        }
+        soft
+    });
     let motion = times.stage("bake_motion", || bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len())));
     let coat_meshes = times.stage("coat_meshes", || LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level)));
-    Ok(GenOutput { anatomy, lods, motion, coat, coat_meshes, outfit })
+    Ok(GenOutput {
+        anatomy,
+        lods,
+        motion,
+        coat,
+        coat_meshes,
+        outfit,
+        #[cfg(feature = "soft-tissue")]
+        soft,
+    })
 }
 
 pub(super) fn request_on_add(add: On<Add<Mob>>, mut commands: Commands) {
@@ -539,7 +563,12 @@ pub(super) fn finish_generation(
             }
         };
         let skeleton = &out.anatomy.skeleton;
-        let full = bindposes.add(SkinnedMeshInverseBindposes::from(skeleton.inverse_bind.clone()));
+        // Hero soft joints come after the bones and bind like their bones.
+        #[allow(unused_mut)]
+        let mut full_bind = skeleton.inverse_bind.clone();
+        #[cfg(feature = "soft-tissue")]
+        full_bind.extend(out.soft.hero.iter().map(|r| skeleton.inverse_bind.get(r.bone.index()).copied().unwrap_or(Mat4::IDENTITY)));
+        let full = bindposes.add(SkinnedMeshInverseBindposes::from(full_bind));
         let crowd = bindposes.add(SkinnedMeshInverseBindposes::from(
             skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect::<Vec<_>>(),
         ));
@@ -557,6 +586,8 @@ pub(super) fn finish_generation(
             motion: Arc::new(out.motion),
             coat_meshes,
             materials: body_materials,
+            #[cfg(feature = "soft-tissue")]
+            soft: Arc::new(out.soft),
         });
         cache.bodies.insert(key, handle);
     }

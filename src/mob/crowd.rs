@@ -17,14 +17,14 @@ use bevy::render::storage::{ShaderBuffer, ShaderBufferData};
 use bytemuck::{Pod, Zeroable};
 
 use super::GeneratedBody;
-use crate::anatomy::MAX_CROWD_BONES;
+use crate::anatomy::CROWD_SLOT;
 use crate::motion::{BAKE_FRAMES, BakedMotion};
 use crate::num::{Clamp, Saturate, ToF32, usize_to_u64};
 
 /// Bytes per bone matrix (column-major `mat4x4<f32>`).
 pub const BONE_BYTES: u64 = 64;
 /// Bytes per crowd slot in the bone buffer.
-pub const SLOT_BYTES: u64 = BONE_BYTES * usize_to_u64(MAX_CROWD_BONES);
+pub const SLOT_BYTES: u64 = BONE_BYTES * usize_to_u64(CROWD_SLOT);
 
 /// Which slot of the crowd bone buffer a mob uses (also its meshes' `MeshTag`).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

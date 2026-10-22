@@ -26,6 +26,8 @@ pub mod sdf;
 
 pub use binding::{BindSettings, VoxelBinding};
 pub use cor::centres_of_rotation;
+#[cfg(feature = "soft-tissue")]
+pub(crate) use body::primitive_parts;
 pub use body::{BodyField, BodyFieldOptions, ChunkView};
 pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
 pub use field::{Field, Influences, SurfaceInfo};
@@ -33,8 +35,8 @@ pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
-    BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
-    NOT_CLOTH, Submesh, Vertex,
+    ATTRIBUTE_SOFT, BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
+    NOT_CLOTH, SoftVertex, Submesh, Vertex,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;

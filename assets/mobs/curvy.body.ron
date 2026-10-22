@@ -1,0 +1,110 @@
+// A curvy woman: the biped's human proportions (stature 1.6 m; see
+// docs/design/anatomy-reference.md) with an hourglass torso, full breasts, hips and thighs, and the
+// fat pads that carry them as stamps, so the soft tissue (`soft-tissue` feature) has mass to move.
+// The torso is rotated to stand vertically: its Start
+// (t = 0) is the pelvis, its End the shoulders; around 0 = back, 90 = left, 180 = belly.
+(
+    root: (
+        name: "torso",
+        kind: Torso((
+            // Pelvis → waist → chest → shoulders: hips wide, the waist drawn in, narrow shoulders. The
+            // pelvis end narrows so its rounded cap tucks between the thighs rather than hanging.
+            chain: (segments: 3, length: 0.46, radius: (curve: [(0.0, 0.8), (0.12, 1.12), (0.24, 1.04), (0.44, 0.7), (0.72, 0.9), (1.0, 0.66)], scale: 0.125, cross: Ellipse(aspect: 1.55))),
+            belly: 0.08,
+        )),
+        offset: (rotate_deg: (-90.0, 0.0, 0.0)),
+        detail: Always,
+        // Upright torso stamps (`tone::upright_torso_stamps`) with softer muscle, plus breasts and
+        // the fat of the hips and buttocks. Around 0 = back, 90 = left, 180 = front.
+        stamps: Custom([
+            (at: Surface(t: 0.68, around_deg: 148.0), kind: Fat, size: (0.56, 0.52, 0.6), depth: 0.4, mirror: true),   // breast
+            (at: Surface(t: 0.84, around_deg: 150.0), kind: Muscle, size: (0.6, 0.4, 0.35), depth: 0.03, mirror: true), // chest under it
+            (at: Surface(t: 0.92, around_deg: 100.0), kind: Muscle, size: (0.3, 0.3, 0.3), depth: 0.03, mirror: true),  // top of the shoulder
+            (at: Surface(t: 0.8, around_deg: 35.0), kind: Landmark, size: (0.28, 0.4, 0.15), depth: 0.02, mirror: true), // shoulder blade
+            (at: Surface(t: 0.12, around_deg: 26.0), kind: Fat, size: (0.6, 0.55, 0.55), depth: 0.34, mirror: true),   // buttock
+            (at: Surface(t: 0.18, around_deg: 30.0), kind: Muscle, size: (0.5, 0.45, 0.4), depth: 0.04, mirror: true), // glute under it
+            (at: Surface(t: 0.1, around_deg: 84.0), kind: Fat, size: (0.5, 0.6, 0.45), depth: 0.18, mirror: true),     // hip
+            (at: Surface(t: 0.28, around_deg: 180.0), kind: Fat, size: (0.6, 0.55, 0.45), depth: 0.025, mirror: false), // soft belly
+        ]),
+        children: [
+            (
+                name: "neck",
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.17, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
+                attach: End,
+                detail: Always,
+                children: [
+                    (
+                        name: "head",
+                        // Head ≈ 1/7.5 of stature: ~0.21 tall, 0.15 wide, 0.19 deep.
+                        kind: Head((
+                            skull: (shape: Ellipsoid, size: (0.075, 0.1, 0.09)),
+                            snout: 0.0,
+                            jaw: Some((segments: 1, length: 0.08)),
+                            eye_spacing: 0.42,
+                            // A modest nose: the default (1.0) reads as a beak in profile at this size.
+                            face: Some((nose: 0.7)),
+                        )),
+                        detail: Always,
+                        children: [
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.012, sclera: 1.0)), attach: Eye, mirror: true),
+                            // Ears: rigid flaps flat on the sides of the head, ~6 cm tall.
+                            (name: "ear", kind: Mass((shape: Flap, size: (0.016, 0.027, 0.03), blend: 0.004)), attach: Ear, mirror: true),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                // Thigh ≈ shank (0.245 / 0.246 of stature); hip joints ~0.1 of stature apart, inside
+                // the hip's outer width. Knees softly bent at rest.
+                name: "leg",
+                kind: Limb((
+                    chain: (segments: 2, length: 0.8, ratios: [1.0, 1.0], radius: (curve: [(0.0, 1.15), (0.2, 1.0), (0.44, 0.66), (0.56, 0.62), (0.72, 0.6), (1.0, 0.38)], scale: 0.085)),
+                    role: Locomotor,
+                    stance: Plantigrade,
+                    end: Foot(length: 0.22),
+                    joints: Some((plan: Leg, swing: 14.0, flex: [28.0])),
+                )),
+                // The default limb stamps with softer muscle; the thigh's fat on its outer curve
+                // (the default's sits behind it and, at this fat tone, hangs below the buttock).
+                stamps: Custom([
+                    (at: Surface(t: 0.22, around_deg: 180.0), kind: Muscle, size: (0.6, 1.8, 0.3), depth: 0.03),    // front of thigh
+                    (at: Surface(t: 0.22, around_deg: 0.0), kind: Muscle, size: (0.6, 1.8, 0.3), depth: 0.025),     // back of thigh
+                    (at: Surface(t: 0.1, around_deg: 255.0), kind: Fat, size: (0.6, 1.0, 0.45), depth: 0.1),       // outer thigh
+                    (at: Surface(t: 0.14, around_deg: 110.0), kind: Fat, size: (0.45, 0.9, 0.4), depth: 0.05),     // inner thigh
+                    (at: Surface(t: 0.65, around_deg: 0.0), kind: Muscle, size: (0.5, 1.3, 0.3), depth: 0.05),     // calf
+                    (at: Surface(t: 0.5, around_deg: 90.0), kind: Landmark, size: (0.3, 0.4, 0.2), depth: 0.025),  // inner knee
+                    (at: Surface(t: 0.5, around_deg: 270.0), kind: Landmark, size: (0.3, 0.4, 0.2), depth: 0.025), // outer knee
+                ]),
+                attach: Surface(t: 0.04, around_deg: 116.0),
+                offset: (translate: (0.0, -0.04, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                // Upper arm 0.186, forearm 0.146 of stature; hands reach mid-thigh.
+                name: "arm",
+                kind: Limb((
+                    chain: (segments: 2, length: 0.535, ratios: [1.0, 0.78], radius: (curve: [(0.0, 1.0), (0.5, 0.7), (1.0, 0.5)], scale: 0.04)),
+                    role: Manipulator,
+                    end: Hand(palm: 0.09),
+                    joints: Some((plan: Arm, swing: 0.0, flex: [15.0])),
+                    splay_deg: 6.0,
+                )),
+                attach: Surface(t: 0.9, around_deg: 92.0),
+                offset: (translate: (0.0, 0.035, 0.0)),
+                mirror: true,
+                detail: Always,
+                children: [
+                    (
+                        name: "fingers",
+                        // Three phalanges, shortening toward the tip (~0.45 / 0.3 / 0.25 of the finger).
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.085, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0085), curl: 160.0), spread_deg: 16.0, opposable: true)),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    tone: (muscle: 0.3, fat: 0.7),
+)

@@ -244,6 +244,28 @@ pub(super) fn write_joints(mut joints: Query<(&MobJoint, &mut Transform)>, poses
     });
 }
 
+/// Steps every hero mob's soft-tissue springs on its final pose.
+#[cfg(feature = "soft-tissue")]
+pub(super) fn soft_tissue(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, &MobPose, &Feet, &mut crate::soft::SoftState), With<MobSkeleton>>) {
+    let dt = assets.time.dt;
+    mobs.par_iter_mut().for_each(|(tf, body, pose, feet, mut soft)| {
+        let Some(b) = assets.bodies.get(&body.0) else { return };
+        let planted: smallvec::SmallVec<[bool; 8]> = feet.0.iter().map(|f| f.planted).collect();
+        crate::soft::step(&b.anatomy, &b.soft.hero, tf.compute_affine(), &pose.local, &planted, dt, &mut soft);
+    });
+}
+
+/// Moves each soft joint by its region's offset (in its bone's frame).
+#[cfg(feature = "soft-tissue")]
+pub(super) fn write_soft_joints(mut joints: Query<(&crate::mob::SoftJoint, &mut Transform)>, mobs: Query<&crate::soft::SoftState>) {
+    joints.par_iter_mut().for_each(|(joint, mut tf)| {
+        let Some(&offset) = mobs.get(joint.mob).ok().and_then(|s| s.local.get(joint.region)) else { return };
+        if tf.translation != offset {
+            tf.translation = offset;
+        }
+    });
+}
+
 #[cfg(feature = "joint-limits")]
 pub(super) fn limit_joints(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
     mobs.par_iter_mut().for_each(|(body, mut pose)| {

@@ -8,6 +8,12 @@ use super::{RegionId, Side};
 pub const MAX_BONES: usize = 64;
 /// Cap on bones in the crowd skeleton (finer parts folded into ancestors).
 pub const MAX_CROWD_BONES: usize = 32;
+/// Matrices per mob in the crowd bone buffer: the crowd skeleton's, then (`soft-tissue` feature)
+/// room for soft-tissue regions. `CROWD_SLOT` in the crowd shaders matches (`SOFT_TISSUE` def).
+#[cfg(feature = "soft-tissue")]
+pub const CROWD_SLOT: usize = MAX_CROWD_BONES + 8;
+#[cfg(not(feature = "soft-tissue"))]
+pub const CROWD_SLOT: usize = MAX_CROWD_BONES;
 
 /// Index into [`Skeleton::bones`].
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

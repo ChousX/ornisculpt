@@ -45,10 +45,10 @@ pub use region::{RegionDef, RegionId, RegionKind, RegionMask, RegionSelector, Re
 pub use rig::{Clavicle, ClothFollow, HandDef, LegInfo, LookDef, SpringChainDef};
 pub use spread::{Spread, spread_pose};
 pub use skeleton::{
-    BoneDef, BoneId, CrowdSkeleton, Flexes, JointLimit, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
+    BoneDef, BoneId, CrowdSkeleton, Flexes, JointLimit, CROWD_SLOT, MAX_BONES, MAX_CROWD_BONES, Skeleton, SocketDef,
     SocketKind,
 };
-pub use tone::{Stamp, StampAt, StampKind, StampSet, default_stamps, upright_torso_stamps};
+pub use tone::{SoftTune, Stamp, StampAt, StampForm, StampKind, StampSet, default_stamps, upright_torso_stamps};
 pub use wing::{
     BladeWing, FeatheredWing, MembraneWing, Planform, Sheet, SheetKind, Trailing, WingKind, WingParams, WingPose, WingRig, WingShape,
 };

@@ -19,6 +19,15 @@ pub struct MobJoint {
     pub rest: Transform,
 }
 
+/// A hero mob's soft-tissue joint: a child of its region's bone, moved by the region's spring
+/// (`soft::SoftState::local`, index `region`).
+#[cfg(feature = "soft-tissue")]
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SoftJoint {
+    pub mob: Entity,
+    pub region: usize,
+}
+
 /// Every entity spawned to display a body (joints, meshes); replaced on regeneration.
 #[derive(Component, Default)]
 pub struct MobVisual;
@@ -188,7 +197,19 @@ pub(super) fn sync_hero_visuals(
                 }
                 joints.push(e.id());
             }
-            let skin = SkinnedMesh { inverse_bindposes: body.full_bindposes.clone(), joints: joints.clone() };
+            #[allow(unused_mut)]
+            let mut skinned = joints.clone();
+            // Soft joints follow the bones in the skin (the bind poses match, see `generate`).
+            #[cfg(feature = "soft-tissue")]
+            {
+                let regions = &body.soft.hero;
+                for (region, r) in regions.iter().enumerate() {
+                    let Some(&bone) = joints.get(r.bone.index()) else { continue };
+                    skinned.push(commands.spawn((Transform::IDENTITY, SoftJoint { mob, region }, ChildOf(bone))).id());
+                }
+                commands.entity(mob).insert(crate::soft::SoftState::new(regions.len()));
+            }
+            let skin = SkinnedMesh { inverse_bindposes: body.full_bindposes.clone(), joints: skinned };
             for (slot, mesh) in &LodLevel::Hero.pick(&body.lods).0 {
                 commands.spawn((
                     MobVisual,
@@ -209,6 +230,8 @@ pub(super) fn sync_hero_visuals(
                 }
             }
             commands.entity(mob).remove::<MobSkeleton>();
+            #[cfg(feature = "soft-tissue")]
+            commands.entity(mob).remove::<crate::soft::SoftState>();
         }
     }
 }

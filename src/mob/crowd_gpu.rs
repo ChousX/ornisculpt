@@ -17,7 +17,7 @@ use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
 use bevy::render::Extract;
 
 use super::crowd::{CrowdInstance, CrowdUploads, SLOT_BYTES};
-use crate::anatomy::MAX_CROWD_BONES;
+use crate::anatomy::CROWD_SLOT;
 use crate::num::{Clamp, Idx, usize_to_u64};
 
 const WORKGROUP: u32 = 64;
@@ -106,7 +106,8 @@ impl FromWorld for CrowdBlendPipeline {
             layout: vec![layout.clone()],
             immediate_size: 0,
             shader,
-            shader_defs: vec![],
+            // Slot stride (`CROWD_SLOT`): wider with soft tissue.
+            shader_defs: if cfg!(feature = "soft-tissue") { vec!["SOFT_TISSUE".into()] } else { vec![] },
             entry_point: Some("main".into()),
             zero_initialize_workgroup_memory: false,
             constants: vec![],
@@ -172,7 +173,7 @@ pub(super) fn dispatch_crowd_blend(
     if gpu.dispatch_slots == 0 {
         return;
     }
-    let invocations = gpu.dispatch_slots * MAX_CROWD_BONES.clamp_u32();
+    let invocations = gpu.dispatch_slots * CROWD_SLOT.clamp_u32();
     let mut pass = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor {
         label: Some("ornisculpt crowd blend"),
         timestamp_writes: None,

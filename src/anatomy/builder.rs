@@ -436,7 +436,50 @@ impl AnatomyBuilder {
             }
         }
         let local = relative(&self.bone_model(bone), &self.to_stored(model));
-        self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod, weigh: Weigh::Whole });
+        self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod, weigh: Weigh::Whole, soft: None });
+    }
+
+    /// Distance from `point` (model space, as the part in progress sees it) to the body built so
+    /// far: every primitive's shape, unions blended, cuts and raised stamps applied, as the mesher
+    /// evaluates them (without folds or anchored blends). For placing parts clear of padding.
+    #[must_use]
+    pub fn body_distance(&self, point: Vec3) -> f32 {
+        use crate::surface::sdf;
+        let at = bevy::math::Vec3A::from(self.point_to_stored(point));
+        let mut dist: Option<f32> = None;
+        let mut raised = 0.0;
+        for prim in &self.anatomy.primitives {
+            let model = affine(&self.bone_model(prim.bone)) * affine(&prim.local);
+            let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let local = model.inverse().transform_point3a(at);
+            match prim.op {
+                PrimOp::Union => {
+                    let own = sdf::shape(local, &prim.shape) * scale;
+                    dist = Some(dist.map_or(own, |cur| sdf::smin(cur, own, prim.blend).0));
+                }
+                PrimOp::Subtract => {
+                    if let Some(cur) = dist {
+                        dist = Some(sdf::ssub(cur, sdf::shape(local, &prim.shape) * scale, prim.blend));
+                    }
+                }
+                PrimOp::Displace { height } => {
+                    if let PrimShape::Ellipsoid { radii } = &prim.shape {
+                        let s = 1.0 - (local / bevy::math::Vec3A::from(*radii)).length_squared();
+                        if s > 0.0 {
+                            raised = (height * scale * s).mul_add(s, raised);
+                        }
+                    }
+                }
+            }
+        }
+        dist.map_or(f32::MAX, |cur| cur - raised)
+    }
+
+    /// Sets the most recent primitive's soft-tissue tuning (from its stamp).
+    pub fn tune_last_soft(&mut self, tune: super::SoftTune) {
+        if let Some(p) = self.anatomy.primitives.last_mut() {
+            p.soft = Some(tune);
+        }
     }
 
     /// Limits the most recent primitive's blend to within `reach` of `point` (primitive-local).

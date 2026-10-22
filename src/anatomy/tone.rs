@@ -34,11 +34,62 @@ pub struct Stamp {
     pub kind: StampKind,
     /// Ellipsoid size relative to the local radius: (width, along the part, along the normal).
     pub size: Vec3,
-    /// Protrusion (or, for hollows, indentation) relative to the local radius, before tone.
+    /// Protrusion (or, for hollows, indentation) relative to the local radius, before tone. For
+    /// [`StampForm::Mass`] and [`StampForm::Drop`], how far the centre sits out from the surface:
+    /// negative sinks it, so only part of a large body of tissue shows, carried by the body.
     pub depth: f32,
     /// Also place a mirrored copy on the other side of the part.
     #[serde(default)]
     pub mirror: bool,
+    /// How the stamp shapes the surface.
+    #[serde(default)]
+    pub form: StampForm,
+    /// [`StampForm::Mass`] and [`StampForm::Drop`]: how far the mass hangs below where it sits,
+    /// as a share of its height (`size.y`), down in the rest pose.
+    #[serde(default)]
+    pub hang: f32,
+    /// How the stamp's tissue moves (`soft-tissue` feature): firmness, damping and travel against
+    /// what its kind and size give it.
+    #[serde(default)]
+    pub soft: SoftTune,
+}
+
+/// Per-stamp soft-tissue tuning, as multipliers on what the tissue's kind and size give it
+/// (`soft::SoftTissue`). `1.0` leaves each as it is.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct SoftTune {
+    /// How quickly it rings: below 1 softer and slower (it swings and hangs further), above 1
+    /// tighter and quicker.
+    pub firmness: f32,
+    /// How quickly the wobble dies: below 1 it keeps wobbling longer.
+    pub damping: f32,
+    /// How far it may move from its rest place.
+    pub travel: f32,
+}
+
+impl Default for SoftTune {
+    fn default() -> Self {
+        Self { firmness: 1.0, damping: 1.0, travel: 1.0 }
+    }
+}
+
+/// How a stamp shapes the surface.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum StampForm {
+    /// Raises (or sinks) the surface under its footprint by `depth`. Cheap and seamless, but only
+    /// ever straight out from the body: it can't overhang, and stands no taller than about half
+    /// its width before the surface folds over itself.
+    #[default]
+    Raise,
+    /// A body of tissue blended onto the surface, its centre `depth` out from it: as tall as it
+    /// likes, hanging (`hang`) and folding under itself where it overhangs. Breasts, a belly apron,
+    /// heavy buttocks.
+    Mass,
+    /// A teardrop of tissue: narrow where it leaves the body near the top of its footprint, heavy
+    /// in a bulb `depth` out and hanging (`hang`) below. Its width (`size.x`) stretches the bulb
+    /// across the body; its depth (`size.z`) is the bulb's radius. Hanging breasts and buttocks.
+    Drop,
 }
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -165,7 +216,9 @@ pub fn apply_stamps(
         for mirrored in [false, true].into_iter().take(if stamp.mirror { 2 } else { 1 }) {
             let Some(p) = place(stamp.at, mirrored, slots) else { continue };
             let push = stamp.depth * p.radius * stamp.kind.intensity(&cx.tone);
-            if push < p.radius * 0.005 {
+            // A mass or drop may sit sunk in the body (negative depth): a broad, supported bulge
+            // rather than a ball on the surface. A raised stamp that small does nothing.
+            if stamp.form == StampForm::Raise && push < p.radius * 0.005 {
                 continue;
             }
             // Fat depots spread as well as deepen.
@@ -183,6 +236,43 @@ pub fn apply_stamps(
                 b.primitive_at(p.bone, PrimShape::Ellipsoid { radii }, model, blend, PrimOp::Subtract, stamp.kind.layer(), region, stamp.kind.lod());
                 continue;
             }
+            // A mass: a real body of tissue, standing out by `push` and hanging (down in the rest
+            // pose) by a share of its height. It blends broadly where it hangs from (its upper back,
+            // against the body) and meets the body crisply below, so it folds under itself there
+            // like a breast or a belly apron rather than sitting on the surface like a ball.
+            if stamp.form == StampForm::Mass {
+                let centre = p.point + p.normal * push + Vec3::NEG_Y * (stamp.hang * radii.y);
+                let rotation = frame_y_z(p.along, p.normal);
+                let model = Transform::from_translation(centre).with_rotation(rotation);
+                let up = rotation.inverse() * Vec3::Y;
+                let hold = Vec3::new(0.0, up.y.signum() * radii.y * 0.7, -radii.z * 0.6);
+                b.primitive_at(p.bone, PrimShape::Ellipsoid { radii }, model, 0.9 * radii.min_element(), PrimOp::Union, stamp.kind.layer(), region, stamp.kind.lod());
+                b.anchor_last_blend(hold, 1.6 * radii.max_element());
+                b.tune_last_soft(stamp.soft);
+                continue;
+            }
+            // A teardrop: a round cone from a narrow top on the body (up its footprint) to a bulb
+            // out from it and hanging, stretched across the body to the stamp's width. An even,
+            // moderate blend: the top slopes into the body; the overhanging bulb folds under.
+            if stamp.form == StampForm::Drop {
+                let bulb = radii.z.max(1e-4);
+                let top = 0.4 * bulb;
+                let centre = p.point + p.normal * push + Vec3::NEG_Y * (stamp.hang * radii.y);
+                // Up the body's surface: the way the top climbs from the bulb.
+                let up = (Vec3::Y - p.normal * p.normal.dot(Vec3::Y)).try_normalize().unwrap_or(-p.along);
+                let mut start = p.point + up * (radii.y - bulb).max(0.5 * bulb) - p.normal * (0.5 * top);
+                // A round cone needs its ends further apart than their radii differ.
+                if start.distance(centre) < 1.1 * (bulb - top) {
+                    start = centre + (start - centre).normalize_or(up) * (1.1 * (bulb - top));
+                }
+                let axis = centre - start;
+                let width = (radii.x / bulb).clamp(0.75, 1.4);
+                let model = Transform::from_translation(start).with_rotation(frame_y_z(axis, p.normal)).with_scale(Vec3::new(width, 1.0, 1.0));
+                let shape = PrimShape::RoundCone { r0: top, r1: bulb, len: axis.length() };
+                b.primitive_at(p.bone, shape, model, 0.45 * bulb, PrimOp::Union, stamp.kind.layer(), region, stamp.kind.lod());
+                b.tune_last_soft(stamp.soft);
+                continue;
+            }
             // Muscles/fat/landmarks raise the surface by `push` at the centre; hollows sink it.
             let height = if stamp.kind == StampKind::Hollow { -push } else { push };
             let model = Transform::from_translation(p.point).with_rotation(frame_y_z(p.along, p.normal));
@@ -196,6 +286,7 @@ pub fn apply_stamps(
                 region,
                 stamp.kind.lod(),
             );
+            b.tune_last_soft(stamp.soft);
         }
     }
 }
@@ -205,11 +296,11 @@ pub fn apply_stamps(
 // ---------------------------------------------------------------------------------------------
 
 fn surf(t: f32, around_deg: f32, kind: StampKind, size: [f32; 3], depth: f32, mirror: bool) -> Stamp {
-    Stamp { at: StampAt::Surface { t, around_deg }, kind, size: Vec3::from(size), depth, mirror }
+    Stamp { at: StampAt::Surface { t, around_deg }, kind, size: Vec3::from(size), depth, mirror, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
 }
 
 fn skull(dir: [f32; 3], kind: StampKind, size: [f32; 3], depth: f32) -> Stamp {
-    Stamp { at: StampAt::Skull { dir: Vec3::from(dir) }, kind, size: Vec3::from(size), depth, mirror: true }
+    Stamp { at: StampAt::Skull { dir: Vec3::from(dir) }, kind, size: Vec3::from(size), depth, mirror: true, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
 }
 
 /// The built-in stamp table for a part.
@@ -285,6 +376,9 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
                 size: Vec3::new(0.15, 0.70, 0.15),
                 depth: 0.05,
                 mirror: false,
+                form: StampForm::Raise,
+                hang: 0.0,
+                soft: SoftTune::default(),
             }, // crown ridge
             Stamp {
                 at: StampAt::Slot { slot: AttachSlot::Eye, offset: Vec3::ZERO },
@@ -292,6 +386,9 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
                 size: Vec3::splat(0.45),
                 depth: 0.12,
                 mirror: true,
+                form: StampForm::Raise,
+                hang: 0.0,
+                soft: SoftTune::default(),
             }, // eye socket
             nostril(h), // nostril
         ],
@@ -314,6 +411,9 @@ fn face_stamps() -> Vec<Stamp> {
             size: Vec3::new(0.16, 0.08, 0.2),
             depth: 0.05,
             mirror: true,
+            form: StampForm::Raise,
+            hang: 0.0,
+            soft: SoftTune::default(),
         }, // eye socket
         Stamp {
             at: StampAt::Slot { slot: AttachSlot::Nose, offset: Vec3::new(0.12, -0.1, 0.1) },
@@ -321,6 +421,9 @@ fn face_stamps() -> Vec<Stamp> {
             size: Vec3::new(0.06, 0.08, 0.05),
             depth: 0.04,
             mirror: true,
+            form: StampForm::Raise,
+            hang: 0.0,
+            soft: SoftTune::default(),
         }, // nostril
     ]
 }
@@ -356,5 +459,5 @@ fn nostril(h: &HeadParams) -> Stamp {
     } else {
         (Vec3::new(0.25, -0.1, 0.0), Vec3::new(0.12, 0.15, 0.12))
     };
-    Stamp { at: StampAt::Slot { slot: AttachSlot::Nose, offset }, kind: StampKind::Hollow, size, depth: 0.06, mirror: true }
+    Stamp { at: StampAt::Slot { slot: AttachSlot::Nose, offset }, kind: StampKind::Hollow, size, depth: 0.06, mirror: true, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
 }

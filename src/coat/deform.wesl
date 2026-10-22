@@ -8,6 +8,8 @@
 // - Muscles (COAT_MUSCLE) bulge along the normal as they shorten: the distance from the skinned
 //   vertex to its muscle's insertion (carried by the joint across) against the rest distance,
 //   over the muscle's length.
+// - Soft tissue (COAT_SOFT) moves with up to two regions' springs: each region is a soft joint (its
+//   bone's skin matrix, moved by the spring) beside its bone's, and S·p − B·p is the spring's offset.
 // - `previous`: last frame's surface, for motion vectors. Hero joints have last frame's matrices;
 //   the crowd bone buffer holds only the current pose, so crowd meshes move only with their
 //   instance transform.
@@ -23,7 +25,11 @@ import bevy_pbr::render::skinning;
 import bevy_pbr::render::mesh_bindings::mesh;
 import package::coat::dqs;
 
-const MAX_CROWD_BONES: u32 = 32u;
+// Matrices per mob slot (`CROWD_SLOT` in `anatomy`): crowd bones, then soft-tissue regions.
+@if(SOFT_TISSUE)
+const CROWD_SLOT: u32 = 40u;
+@if(!SOFT_TISSUE)
+const CROWD_SLOT: u32 = 32u;
 
 struct CoatUniform {
     base: vec4<f32>,
@@ -32,7 +38,7 @@ struct CoatUniform {
     scale_mask: vec2<u32>,
     fur_mask: vec2<u32>,
     feather_mask: vec2<u32>,
-    // flex gain (0 = muscles still), _
+    // flex gain (0 = muscles still), soft-tissue gain (0 = still)
     muscle: vec2<f32>,
     scales: vec4<f32>,
     fur: vec4<f32>,
@@ -63,6 +69,8 @@ struct CoatVertex {
     @location(9) muscle: vec4<f32>,
     @if(COAT_MUSCLE)
     @location(10) muscle_joint: vec2<u32>,
+    @if(COAT_SOFT)
+    @location(11) soft: vec4<u32>,
 };
 
 // The vertex in mesh space before skinning: shells pushed out, crowd skin inflated.
@@ -102,7 +110,7 @@ fn deform(v: CoatVertex, previous: bool) -> dqs::Skinned {
     s.tangent = normalize((instance_from_local * vec4<f32>(tangent, 0.0)).xyz);
 @if(COAT_CROWD) {
     // Crowd bones are mob-local skin matrices.
-    let base = mesh_functions::get_tag(v.instance_index) * MAX_CROWD_BONES;
+    let base = mesh_functions::get_tag(v.instance_index) * CROWD_SLOT;
     let j = v.joint_indices + vec4<u32>(base);
     let c = dqs::blend(array<mat4x4<f32>, 4>(crowd_bones[j.x], crowd_bones[j.y], crowd_bones[j.z], crowd_bones[j.w]), v.joint_weights, position, v.normal, tangent, cor);
     s.position = (instance_from_local * vec4<f32>(c.position, 1.0)).xyz;
@@ -115,6 +123,9 @@ fn deform(v: CoatVertex, previous: bool) -> dqs::Skinned {
 }
 @if(COAT_MUSCLE) {
     s.position += muscle_offset(v.muscle, bitcast<f32>(v.muscle_joint.y), position, s.position, s.normal, muscle_joint(v, instance_from_local, previous));
+}
+@if(COAT_SOFT) {
+    s.position += soft_offset(v, position, instance_from_local, previous);
 }
     return s;
 }
@@ -157,11 +168,40 @@ fn hero_joints(indexes: vec4<u32>, instance_index: u32, previous: bool) -> array
 @if(COAT_MUSCLE)
 fn muscle_joint(v: CoatVertex, instance_from_local: mat4x4<f32>, previous: bool) -> mat4x4<f32> {
 @if(COAT_CROWD)
-    return instance_from_local * crowd_bones[mesh_functions::get_tag(v.instance_index) * MAX_CROWD_BONES + v.muscle_joint.x];
+    return instance_from_local * crowd_bones[mesh_functions::get_tag(v.instance_index) * CROWD_SLOT + v.muscle_joint.x];
 @if(!COAT_CROWD && SKINNED)
     return joint_matrix(v.muscle_joint.x, v.instance_index, previous);
 @if(!COAT_CROWD && !SKINNED)
     return instance_from_local;
+}
+
+// World-from-rest matrix of joint `index`, as `soft` indexes them (soft joints after the bones).
+@if(COAT_SOFT)
+fn soft_joint(v: CoatVertex, index: u32, instance_from_local: mat4x4<f32>, previous: bool) -> mat4x4<f32> {
+@if(COAT_CROWD)
+    return instance_from_local * crowd_bones[mesh_functions::get_tag(v.instance_index) * CROWD_SLOT + index];
+@if(!COAT_CROWD && SKINNED)
+    return joint_matrix(index, v.instance_index, previous);
+@if(!COAT_CROWD && !SKINNED)
+    return instance_from_local;
+}
+
+// Soft-tissue offset (world space): each region's soft joint less its bone, at the rest position,
+// by the vertex's weight. Crowd soft matrices are baked, hero ones follow the springs.
+@if(COAT_SOFT)
+fn soft_offset(v: CoatVertex, rest: vec3<f32>, instance_from_local: mat4x4<f32>, previous: bool) -> vec3<f32> {
+    let p = vec4<f32>(rest, 1.0);
+    var offset = vec3<f32>(0.0);
+    for (var k = 0u; k < 2u; k++) {
+        let w = bitcast<f32>(v.soft[k * 2u + 1u]);
+        if w > 0.0 {
+            let j = v.soft[k * 2u];
+            let soft = soft_joint(v, j & 0xffffu, instance_from_local, previous);
+            let bone = soft_joint(v, j >> 16u, instance_from_local, previous);
+            offset += ((soft * p).xyz - (bone * p).xyz) * w;
+        }
+    }
+    return offset * coat.muscle.y;
 }
 
 // Muscle bulge (world space): out along the normal by amplitude · contraction, where contraction

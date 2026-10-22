@@ -25,6 +25,9 @@ pub struct Primitive {
     pub lod: LodLevel,
     /// How [`measure_mass`](super::measure_mass) weighs it where it overlaps its neighbours.
     pub weigh: Weigh,
+    /// Soft-tissue tuning from its stamp; `None` for a part's own shapes (only stamps become soft
+    /// tissue: a part's built-in bulge, a torso's belly, is body).
+    pub soft: Option<super::SoftTune>,
 }
 
 /// Overlap correction for weighing a primitive (the smooth union counts every volume once; the

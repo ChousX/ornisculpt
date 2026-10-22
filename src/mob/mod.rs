@@ -22,6 +22,8 @@ pub use generate::{
 };
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};
 pub use spawn::{HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder};
+#[cfg(feature = "soft-tissue")]
+pub use spawn::SoftJoint;
 pub use tier::{ForceTier, MobTier, QualityProfile, TierCamera};
 
 use bevy::prelude::*;

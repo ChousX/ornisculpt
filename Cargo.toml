@@ -10,6 +10,9 @@ edition = "2024"
 # Motion holds every joint a body declares limits for (`Anatomy::joint_limits`) within them, as
 # the last pose stage: no knee bends like an elbow, whatever the cycles, IK or hands ask for.
 joint-limits = []
+# Soft tissue (`src/soft.rs`): fat pads and muscle bellies jiggle on damped springs, hang with
+# gravity and tense under load. Hero mobs run the springs; crowd tiers play them baked.
+soft-tissue = []
 web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
 
 [dependencies]

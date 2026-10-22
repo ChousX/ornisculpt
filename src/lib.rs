@@ -12,6 +12,8 @@ pub mod mob;
 pub mod motion;
 pub mod num;
 pub mod random;
+#[cfg(feature = "soft-tissue")]
+pub mod soft;
 pub mod surface;
 
 use bevy::prelude::*;

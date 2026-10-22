@@ -449,6 +449,37 @@ fn limb_bends(role: LimbRole, stance: Stance, i: usize) -> (f32, f32) {
     }
 }
 
+/// The least splay, from `splay` up, at which an arm hanging from `pos` (swung about `axis`) clears
+/// the body built so far: from mid upper arm to `reach` past its end, every point stands off the
+/// surface by nearly its own radius (an arm may rest against the body, not sink into it; next to
+/// the shoulder it always meets it). Stops at 50° more. A slim body keeps its authored splay.
+fn clear_splay(b: &AnatomyBuilder, pos: Vec3, axis: Vec3, splay: f32, lens: &[f32], radius: &Profile, reach: f32) -> f32 {
+    const STEP: f32 = 2.0;
+    const MOST: f32 = 50.0;
+    const SAMPLES: usize = 10;
+    let total: f32 = lens.iter().sum();
+    if total <= 1e-4 {
+        return splay;
+    }
+    // How far each point must stand off the body: next to the shoulder an arm always meets the
+    // body, so nothing; from mid upper arm down, nearly its own radius (touching, not sunk).
+    let need = |t: f32| radius_at(radius, t.min(1.0)) * 0.9 * ((t - 0.2) / 0.4).clamp(0.0, 1.0);
+    let clear = |deg: f32| {
+        let dir = Quat::from_axis_angle(axis, deg.to_radians()) * Vec3::NEG_Y;
+        (0..=SAMPLES).all(|i| {
+            // From a third down the upper arm (higher, the arm leaves the shoulder) to past the end.
+            let t = 0.3 + 0.7 * i.to_f32() / SAMPLES.to_f32();
+            let along = (total + reach) * t;
+            b.body_distance(pos + dir * along) >= need(t)
+        })
+    };
+    let mut deg = splay;
+    while deg < splay + MOST && !clear(deg) {
+        deg += STEP;
+    }
+    deg
+}
+
 impl PartBuild for LimbParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let lens = self.chain.segment_lengths();
@@ -461,6 +492,17 @@ impl PartBuild for LimbParams {
             _ => self.splay_deg,
         };
         let axis = Vec3::NEG_Y.cross(outward).try_normalize().unwrap_or(Vec3::Z);
+        // Arms hang clear of whatever the body has grown (fat, breasts, hips): out as far as they
+        // must, so they don't sink into the padding at rest, let alone when posed.
+        let splay = if self.role == LimbRole::Manipulator && at.bone.is_some() {
+            let reach = match self.end {
+                LimbEnd::Hand { palm } => palm * 0.5,
+                _ => 0.0,
+            };
+            clear_splay(b, pos, axis, splay, &lens, &self.chain.radius, reach)
+        } else {
+            splay
+        };
         let dir0 = Quat::from_axis_angle(axis, splay.to_radians().min(FRAC_PI_2 * 1.2)) * Vec3::NEG_Y;
         let base = Transform::from_translation(pos)
             .with_rotation(frame_y_z(dir0, Vec3::Z) * cx.offset.rotation);
@@ -1257,5 +1299,33 @@ mod tests {
         let keel = cones(&teardrop)[1];
         assert!(keel.2 < cones(&ellipse)[0].2);
         assert!(teardrop.mass.total > ellipse.mass.total && teardrop.mass.total < ellipse.mass.total * 1.1);
+    }
+}
+
+#[cfg(test)]
+mod arm_clearance {
+    use bevy::math::Vec3;
+
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+
+    /// How far a plan's left arm hangs out from straight down, degrees.
+    fn arm_angle(ron: &str) -> f32 {
+        let plan: BodyPlan = ron::from_str(ron).unwrap();
+        let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let rest = a.skeleton.rest_model();
+        let arm = a.clavicles.first().unwrap().arm;
+        let elbow = a.skeleton.children(arm).next().unwrap();
+        let down = (Vec3::from(rest[elbow.index()].translation) - Vec3::from(rest[arm.index()].translation)).normalize();
+        down.angle_between(Vec3::NEG_Y).to_degrees()
+    }
+
+    /// A slim body keeps its authored splay (6°); padding pushes the arms out, more for more.
+    #[test]
+    fn arms_clear_padding() {
+        let biped = arm_angle(include_str!("../../assets/mobs/biped.body.ron"));
+        let curvy = arm_angle(include_str!("../../assets/mobs/curvy.body.ron"));
+        let thick = arm_angle(include_str!("../../assets/mobs/thick.body.ron"));
+        assert!((biped - 6.0).abs() < 0.5, "biped arm {biped}°");
+        assert!(curvy >= biped && thick > curvy + 4.0, "biped {biped}°, curvy {curvy}°, thick {thick}°");
     }
 }

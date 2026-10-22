@@ -12,7 +12,11 @@ struct CrowdInstance {
     pad: u32,
 };
 
-const MAX_CROWD_BONES: u32 = 32u;
+// Matrices per mob slot (`CROWD_SLOT` in `anatomy`): crowd bones, then soft-tissue regions.
+@if(SOFT_TISSUE)
+const CROWD_SLOT: u32 = 40u;
+@if(!SOFT_TISSUE)
+const CROWD_SLOT: u32 = 32u;
 
 @group(0) @binding(0) var<storage, read> clips: array<mat4x4<f32>>;
 @group(0) @binding(1) var<storage, read> instances: array<CrowdInstance>;
@@ -20,8 +24,8 @@ const MAX_CROWD_BONES: u32 = 32u;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let slot = id.x / MAX_CROWD_BONES;
-    let bone = id.x % MAX_CROWD_BONES;
+    let slot = id.x / CROWD_SLOT;
+    let bone = id.x % CROWD_SLOT;
     if slot >= arrayLength(&instances) || id.x >= arrayLength(&bones) {
         return;
     }

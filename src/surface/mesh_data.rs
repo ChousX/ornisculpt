@@ -29,6 +29,18 @@ pub const ATTRIBUTE_MUSCLE: MeshVertexAttribute = MeshVertexAttribute::new("Orni
 /// Muscle flex: the joint carrying the insertion (x) and the muscle's length (y, `f32` bits).
 pub const ATTRIBUTE_MUSCLE_JOINT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_MuscleJoint", 0x0b5c_0006, VertexFormat::Uint32x2);
 
+/// Soft tissue ([`SoftVertex`]): two (joints, weight bits) pairs.
+pub const ATTRIBUTE_SOFT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_Soft", 0x0b5c_0007, VertexFormat::Uint32x4);
+
+/// A vertex's share of up to two soft-tissue regions (see `soft::soft_weights`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SoftVertex {
+    /// Per region: its soft joint (low 16 bits) and its bone's joint (high 16 bits).
+    pub joints: [u32; 2],
+    /// 0 = no region.
+    pub weights: [f32; 2],
+}
+
 /// Per-vertex muscle flex (see [`muscle_flex`](super::muscle_flex)).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MuscleFlex {
@@ -143,6 +155,8 @@ pub struct BodyMeshData {
     pub cor: Vec<Vec3>,
     /// Muscle flex per vertex. Empty = no muscles move.
     pub muscle: Vec<MuscleFlex>,
+    /// Soft-tissue weights per vertex. Empty = nothing jiggles.
+    pub soft: Vec<SoftVertex>,
     pub indices: Vec<u32>,
     pub submeshes: Vec<Submesh>,
 }
@@ -215,6 +229,11 @@ impl BodyMeshData {
             mesh.insert_attribute(ATTRIBUTE_MUSCLE, flex);
             mesh.insert_attribute(ATTRIBUTE_MUSCLE_JOINT, joints);
         }
+        if self.soft.len() == n && self.soft.iter().any(|s| s.weights[0] > 0.0) {
+            let soft: Vec<[u32; 4]> =
+                self.soft.iter().map(|s| [s.joints[0], s.weights[0].to_bits(), s.joints[1], s.weights[1].to_bits()]).collect();
+            mesh.insert_attribute(ATTRIBUTE_SOFT, soft);
+        }
         mesh
     }
 
@@ -266,6 +285,9 @@ impl BodyMeshData {
                                 }
                                 if let Some(m) = self.muscle.get(i) {
                                     part.muscle.push(*m);
+                                }
+                                if let Some(m) = self.soft.get(i) {
+                                    part.soft.push(*m);
                                 }
                             }
                             part.indices.push(*r);

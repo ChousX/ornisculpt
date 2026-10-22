@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use bevy::math::Vec3A;
 use bevy::prelude::*;
 
-use super::{BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, RawMesh, Submesh};
+use super::{BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, SoftVertex, RawMesh, Submesh};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 
@@ -88,6 +88,7 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
         cloth: Vec::new(),
         cor: Vec::new(),
         muscle: Vec::new(),
+        soft: Vec::new(),
         indices: mesh.indices,
         submeshes: Vec::new(),
     };
@@ -177,6 +178,9 @@ fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
                 if let Some(m) = data.muscle.get(i) {
                     out.muscle.push(*m);
                 }
+                if let Some(s) = data.soft.get(i) {
+                    out.soft.push(*s);
+                }
             }
             out.indices.push(*slot);
         }
@@ -238,6 +242,7 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
     pad_extend(&mut base.coverage, &other.coverage, base_len, other.positions.len(), [0.0; 3]);
     pad_extend(&mut base.flow, &other.flow, base_len, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
     pad_extend(&mut base.muscle, &other.muscle, base_len, other.positions.len(), MuscleFlex::default());
+    pad_extend(&mut base.soft, &other.soft, base_len, other.positions.len(), SoftVertex::default());
     if !base.cor.is_empty() || !other.cor.is_empty() {
         if other.cor.len() == other.positions.len() {
             base.cor.extend_from_slice(&other.cor);

@@ -153,6 +153,10 @@ impl Plugin for MotionPlugin {
             );
         #[cfg(feature = "joint-limits")]
         app.add_systems(Update, pose::limit_joints.after(pose::look_at).before(pose::write_joints).in_set(M::Pose));
+        // The final pose moves the tissue: after the joints are written (nothing changes the pose
+        // after that).
+        #[cfg(feature = "soft-tissue")]
+        app.add_systems(Update, (pose::soft_tissue, pose::write_soft_joints).chain().after(pose::write_joints).in_set(M::Pose));
     }
 }
 

@@ -8,6 +8,8 @@ use super::Gait;
 use super::stages::{Frame, Sim, leg_length};
 use crate::anatomy::{Anatomy, MAX_CROWD_BONES};
 use crate::num::{Idx, Saturate, ToF32};
+#[cfg(feature = "soft-tissue")]
+use smallvec::SmallVec;
 
 /// Frames recorded per gait cycle.
 pub const BAKE_FRAMES: usize = 24;
@@ -97,10 +99,23 @@ fn skin_frame(anatomy: &Anatomy, local: &[Transform]) -> SkinFrame {
 
 /// Bakes `gait` on `anatomy`: each mode is walked in a straight line at a representative speed;
 /// after a warm-up, one cycle is recorded.
+///
+/// With soft tissue, every frame also carries one matrix per crowd region after the crowd bones:
+/// the springs run through the warm-up and the recorded cycle (`soft::crowd_matrices`).
 #[must_use]
 pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
     debug_assert!(anatomy.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
-    let idle = skin_frame(anatomy, &anatomy.idle_pose());
+    #[cfg(feature = "soft-tissue")]
+    let soft = crate::soft::SoftTissue::of(anatomy).crowd;
+    #[allow(unused_mut)]
+    let mut idle = skin_frame(anatomy, &anatomy.idle_pose());
+    // Standing still, the tissue rests: the soft joints sit on their bones.
+    #[cfg(feature = "soft-tissue")]
+    {
+        let rest = crate::soft::SoftState::new(soft.len());
+        let bones = idle.clone();
+        crate::soft::crowd_matrices(anatomy, &soft, Affine3A::IDENTITY, &rest, &bones, &mut idle);
+    }
     let leg = leg_length(anatomy);
 
     let clips = gait
@@ -112,28 +127,42 @@ pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
             let speed = gait.modes.get(m + 1).map_or(lo + 1.0, |next| f32::midpoint(lo, next.min_speed)).max(0.3);
             let mut root = Affine3A::IDENTITY;
             let mut sim = Sim::new(anatomy, root);
+            #[cfg(feature = "soft-tissue")]
+            let mut tissue = crate::soft::SoftState::new(soft.len());
             sim.loco.velocity = Vec3::Z * speed * leg;
             sim.loco.prev_velocity = sim.loco.velocity;
             // One frame to settle the step and its rate, then a cycle per BAKE_FRAMES frames.
             let settle = Frame { a: anatomy, gait, root, dt: 1e-4, time: 0.0, leg };
             sim.frame(&settle, None);
             let dt = 1.0 / (sim.clock.rate.max(1e-3) * BAKE_FRAMES.to_f32());
-            let step = |sim: &mut Sim, root: &mut Affine3A, i: usize| {
+            #[allow(unused_mut)]
+            let mut step = |sim: &mut Sim, root: &mut Affine3A, i: usize| {
                 root.translation += bevy::math::Vec3A::from(sim.loco.velocity * dt);
                 let f = Frame { a: anatomy, gait, root: *root, dt, time: i.to_f32() * dt, leg };
-                sim.frame(&f, None).to_vec()
+                let local = sim.frame(&f, None).to_vec();
+                #[allow(unused_mut)]
+                let mut frame = skin_frame(anatomy, &local);
+                #[cfg(feature = "soft-tissue")]
+                {
+                    let planted: SmallVec<[bool; 8]> = sim.feet.0.iter().map(|f| f.planted).collect();
+                    crate::soft::step(anatomy, &soft, *root, &local, &planted, dt, &mut tissue);
+                    let bones = frame.clone();
+                    crate::soft::crowd_matrices(anatomy, &soft, *root, &tissue, &bones, &mut frame);
+                }
+                frame
             };
+            // Springs settle over the warm-up too, so the recorded cycle loops without a jump.
             for i in 0..BAKE_FRAMES * 3 {
                 step(&mut sim, &mut root, i);
             }
             let mut start_phase = 0.0;
             let frames = (0..BAKE_FRAMES)
                 .map(|i| {
-                    let local = step(&mut sim, &mut root, i);
+                    let frame = step(&mut sim, &mut root, i);
                     if i == 0 {
                         start_phase = sim.clock.phase;
                     }
-                    skin_frame(anatomy, &local)
+                    frame
                 })
                 .collect();
             BakedClip { start_phase, frames }
