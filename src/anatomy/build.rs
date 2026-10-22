@@ -70,6 +70,12 @@ pub struct BuiltPart {
 }
 
 impl Anatomy {
+    /// The limit a body declares for `bone`'s joint, if any.
+    #[must_use]
+    pub fn joint_limit(&self, bone: BoneId) -> Option<JointLimit> {
+        self.joint_limits.iter().find(|(b, _)| *b == bone).map(|(_, l)| *l)
+    }
+
     /// The idle pose: every bone at rest, wings folded by their rest fold (local transforms, one
     /// per bone).
     #[must_use]

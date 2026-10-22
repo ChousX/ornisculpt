@@ -119,13 +119,85 @@ impl Skeleton {
     }
 }
 
-/// Swing/twist limits for IK and ragdolls, in degrees.
+/// How far a joint may turn, in degrees: what the motion stages (with the `joint-limits`
+/// feature) clamp a pose to, and what an authored rest bend must lie within.
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct JointLimit {
-    /// Min/max swing around local X and Z.
-    pub swing_deg: Vec2,
-    /// Min/max twist around local Y.
-    pub twist_deg: Vec2,
+pub enum JointLimit {
+    /// Turns about one axis only (elbows, knees, hocks): the bone's rotation about its parent's
+    /// local X. `flex` is the allowed flexion range, `0` = straight; negative is extension past
+    /// straight (a dog's carpus stands a little over-extended).
+    Hinge { flexes: Flexes, flex: (f32, f32) },
+    /// Swings within a cone around its rest direction (hips, shoulders).
+    Ball { cone: f32 },
+}
+
+impl JointLimit {
+    /// `local` (a bone's rotation relative to its parent) brought within the limit; `rest` is the
+    /// bone's rest rotation, which a ball's cone is centred on. Within the limit, `local` comes
+    /// back unchanged.
+    ///
+    /// A hinge clamps only its turn about X and keeps any turn off its axis (an IK solve on a
+    /// splayed leg leaves some), so it never fights the solve except to stop a joint folding the
+    /// wrong way or past closed.
+    #[must_use]
+    pub fn clamp(self, rest: Quat, local: Quat) -> Quat {
+        match self {
+            Self::Hinge { flexes, flex: (lo, hi) } => {
+                // Swing-twist about X: `local = swing * twist`.
+                let (x, w) = if local.w < 0.0 { (-local.x, -local.w) } else { (local.x, local.w) };
+                let len = x.hypot(w);
+                if len < 1e-6 {
+                    return local;
+                }
+                let twist = Quat::from_xyzw(x / len, 0.0, 0.0, w / len);
+                let flex = flexes.from_x(2.0 * x.atan2(w).to_degrees());
+                if (lo..=hi).contains(&flex) {
+                    return local;
+                }
+                local * twist.inverse() * Quat::from_rotation_x(flexes.to_x(flex.clamp(lo, hi)).to_radians())
+            }
+            Self::Ball { cone } => {
+                let rel = rest.inverse() * local;
+                let dir = rel * Vec3::Y;
+                let angle = dir.angle_between(Vec3::Y).to_degrees();
+                if angle <= cone {
+                    return local;
+                }
+                // Keep the twist about the bone; pull its swing back to the cone's edge.
+                let swing = Quat::from_rotation_arc(Vec3::Y, dir.normalize());
+                let twist = swing.inverse() * rel;
+                rest * Quat::IDENTITY.slerp(swing, cone / angle) * twist
+            }
+        }
+    }
+}
+
+/// Which way a hinge closes: where the bone below it swings as the joint flexes, seen in the
+/// limb's own frame (local +Z is forward).
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Flexes {
+    /// The bone below swings forward: elbows, hocks, a human elbow.
+    Forward,
+    /// The bone below swings back: knees (stifles), carpi, fetlocks.
+    Back,
+}
+
+impl Flexes {
+    /// Rotation about the hinge's local X, in degrees, for `flex` degrees of flexion.
+    #[must_use]
+    pub const fn to_x(self, flex: f32) -> f32 {
+        match self {
+            Self::Forward => flex,
+            Self::Back => -flex,
+        }
+    }
+
+    /// Flexion for a rotation of `x` degrees about the hinge's local X (the inverse of
+    /// [`to_x`](Self::to_x)).
+    #[must_use]
+    pub const fn from_x(self, x: f32) -> f32 {
+        self.to_x(x)
+    }
 }
 
 /// Attachment point for tools (and later clothing anchors).
@@ -156,4 +228,35 @@ pub enum SocketKind {
     Hip,
     Wrist,
     TailTip,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hinge_clamps_flexion_and_keeps_its_swing() {
+        let knee = JointLimit::Hinge { flexes: Flexes::Back, flex: (-10.0, 140.0) };
+        let x = |deg: f32| Quat::from_rotation_x(deg.to_radians());
+        // Within range: untouched. Flexing back is a turn about -X.
+        assert_eq!(knee.clamp(Quat::IDENTITY, x(-60.0)), x(-60.0));
+        // Bent the elbow's way: held at its 10° of over-extension.
+        assert!(knee.clamp(Quat::IDENTITY, x(50.0)).angle_between(x(10.0)) < 1e-4);
+        // Past closed: held at 140°.
+        assert!(knee.clamp(Quat::IDENTITY, x(-170.0)).angle_between(x(-140.0)) < 1e-4);
+        // A turn off the hinge's axis survives the clamp.
+        let off = Quat::from_rotation_z(0.2);
+        let got = knee.clamp(Quat::IDENTITY, off * x(50.0));
+        assert!(got.angle_between(off * x(10.0)) < 1e-4, "{got}");
+    }
+
+    #[test]
+    fn ball_holds_its_cone_round_rest() {
+        let hip = JointLimit::Ball { cone: 45.0 };
+        let rest = Quat::from_rotation_x(0.5);
+        assert_eq!(hip.clamp(rest, rest * Quat::from_rotation_z(0.5)), rest * Quat::from_rotation_z(0.5));
+        let got = hip.clamp(rest, rest * Quat::from_rotation_z(1.5));
+        let swing = ((rest.inverse() * got) * Vec3::Y).angle_between(Vec3::Y).to_degrees();
+        assert!((swing - 45.0).abs() < 1e-2, "{swing}");
+    }
 }

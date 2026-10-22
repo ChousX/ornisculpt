@@ -13,7 +13,7 @@ use crate::num::ToF32;
 use super::builder::{AxisSample, SkullFrame, frame_y_z};
 use super::{
     AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, ChainParams, ChainPart,
-    ChainRole, CrossSection, DigitParams, FaceParams, HandDef, HardParams, HeadParams, LimbEnd, LimbParams, LimbRole,
+    ChainRole, CrossSection, DigitParams, FaceParams, HandDef, HardParams, HeadParams, LimbEnd, LimbJoints, LimbParams, LimbRole,
     HardKind, LookDef, MassParams, MassShape, MuzzleParams, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
     SculptParams,
     RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams, Weigh,
@@ -466,8 +466,12 @@ impl PartBuild for LimbParams {
             .with_rotation(frame_y_z(dir0, Vec3::Z) * cx.offset.rotation);
 
         let (role, stance) = (self.role, self.stance);
+        let bends: Vec<(f32, f32)> = match &self.joints {
+            Some(j) => joint_bends(j, &self.bends, lens.len(), cx)?,
+            None => (0..lens.len()).map(|i| self.bends.get(i).copied().unwrap_or_else(|| limb_bends(role, stance, i))).collect(),
+        };
         let frames = chain_frames(base, &lens, |i| {
-            let (x, z) = self.bends.get(i).copied().unwrap_or_else(|| limb_bends(role, stance, i));
+            let (x, z) = bends.get(i).copied().unwrap_or_default();
             Quat::from_rotation_x(x.to_radians()) * Quat::from_rotation_z(z.to_radians())
         });
         let upper = b.region(RegionKind::LimbUpper, cx.side)?;
@@ -496,6 +500,12 @@ impl PartBuild for LimbParams {
         if let Some(c) = clavicle {
             b.clavicle(c, first, cx.side);
         }
+        if let Some(j) = &self.joints {
+            b.limit(first, j.plan.root());
+            for (bone, hinge) in bones.iter().skip(1).zip(j.plan.hinges()) {
+                b.limit(*bone, hinge.limit());
+            }
+        }
         let r = radius_at(&self.chain.radius, 1.0);
         let end_slot = limb_end(self.end, b, last, tip, r, end_region);
 
@@ -516,7 +526,12 @@ impl PartBuild for LimbParams {
             // quadruped's elbows back, a spider's knees up.
             let (hip, foot) = (frames.first().map_or(tip.translation, |f| f.translation), tip.translation);
             let axis = (foot - hip).normalize_or(Vec3::NEG_Y);
-            let knee = frames.get(1).unwrap_or(&tip).translation - hip;
+            // With declared joints the first hinge says which way it points (opposite to where
+            // the bone below swings as it flexes), whatever the rest pose happens to show.
+            let knee = self.joints.as_ref().and_then(|j| j.plan.hinges().first()).map_or_else(
+                || frames.get(1).unwrap_or(&tip).translation - hip,
+                |h| frames.first().map_or(Vec3::Z, |f| f.rotation * Vec3::Z) * -h.flexes.to_x(1.0),
+            );
             let pole = (knee - axis * knee.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
             b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
         }
@@ -527,6 +542,35 @@ impl PartBuild for LimbParams {
         }
         Ok(slots)
     }
+}
+
+/// A jointed limb's rest bends (as [`limb_bends`] gives them), checked against its joints: one
+/// flexion per hinge, each within the hinge's range.
+fn joint_bends(j: &LimbJoints, bends: &[(f32, f32)], segments: usize, cx: &BuildCx) -> Result<Vec<(f32, f32)>, AnatomyError> {
+    let invalid = |reason: String| AnatomyError::InvalidParams { path: cx.path.clone(), reason };
+    if !bends.is_empty() {
+        return Err(invalid("set `bends` or `joints`, not both".into()));
+    }
+    let hinges = j.plan.hinges();
+    if j.flex.len() + 1 != segments || j.flex.len() > hinges.len() {
+        return Err(invalid(format!(
+            "{} segments need {} flexions, {:?} has {} hinges; got {}",
+            segments,
+            segments.saturating_sub(1),
+            j.plan,
+            hinges.len(),
+            j.flex.len()
+        )));
+    }
+    let mut out = vec![(j.swing, 0.0)];
+    for (flex, h) in j.flex.iter().zip(hinges) {
+        let (lo, hi) = h.flex;
+        if !(lo..=hi).contains(flex) {
+            return Err(invalid(format!("{} flexed {flex}°, outside {lo}..{hi}", h.name)));
+        }
+        out.push((h.flexes.to_x(*flex), 0.0));
+    }
+    Ok(out)
 }
 
 /// Adds a limb's end shape (hand, foot, hoof, ...) at `tip` on bone `last` (`r` = the limb's

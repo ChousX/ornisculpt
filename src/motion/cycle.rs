@@ -247,6 +247,7 @@ pub enum Channel {
     /// Ears: -1 flat back .. 1 pricked up.
     Perk,
     /// Limbs: extra bend at a joint, degrees (legs: `Lower` and `Tip` only; IK sets the rest).
+    /// Positive closes a hinge the body declares (see `LimbJoints`); other joints turn about -X.
     Flex(Joint),
     /// Legs: foot raised, leg lengths.
     FootLift,

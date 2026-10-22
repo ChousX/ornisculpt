@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{Orient, RegionKind, WingParams};
+use super::{Flexes, JointLimit, Orient, RegionKind, WingParams};
 
 /// Closed set of anatomical part kinds. Each variant's logic lives in its own
 /// [`PartBuild`](super::PartBuild) impl; supported levers are listed by
@@ -370,6 +370,79 @@ pub struct LimbParams {
     /// lift the shoulder instead of folding the skin there. `None` = automatic (0.45 × the upper
     /// segment for manipulators, none otherwise); `Some(0.0)` = none.
     pub clavicle: Option<f32>,
+    /// The limb's anatomical joints and their rest flexion, in place of `bends` (set one or the
+    /// other). The joints then fix which way each one bends, so a knee can't be authored (or
+    /// posed, with the `joint-limits` feature) bending like an elbow.
+    pub joints: Option<LimbJoints>,
+}
+
+/// A limb's rest pose by anatomical joint: the root swings, every later joint is a hinge that
+/// flexes one way (see [`JointPlan`]).
+#[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LimbJoints {
+    pub plan: JointPlan,
+    /// The root (hip/shoulder) swung forward from straight down, degrees (negative = back).
+    pub swing: f32,
+    /// Flexion at each hinge below the root, degrees, root first: `0` = straight, positive closes
+    /// the joint the way it bends. One per segment after the first.
+    pub flex: Vec<f32>,
+}
+
+/// Which limb's joints, root down. Each names how its hinges close and how far they turn.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JointPlan {
+    /// A quadruped's front leg: shoulder, elbow (points back), carpus, fetlock.
+    Foreleg,
+    /// A quadruped's hind leg: hip, stifle (points forward), hock, fetlock.
+    Hindleg,
+}
+
+/// One hinge of a [`JointPlan`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hinge {
+    pub name: &'static str,
+    pub flexes: Flexes,
+    /// Allowed flexion, degrees: (most extended, most flexed).
+    pub flex: (f32, f32),
+}
+
+impl Hinge {
+    const fn new(name: &'static str, flexes: Flexes, flex: (f32, f32)) -> Self {
+        Self { name, flexes, flex }
+    }
+
+    #[must_use]
+    pub const fn limit(self) -> JointLimit {
+        JointLimit::Hinge { flexes: self.flexes, flex: self.flex }
+    }
+}
+
+impl JointPlan {
+    /// The root joint: how far it may swing from its rest direction.
+    #[must_use]
+    pub const fn root(self) -> JointLimit {
+        JointLimit::Ball { cone: 75.0 }
+    }
+
+    /// The hinges below the root, root first.
+    #[must_use]
+    pub const fn hinges(self) -> &'static [Hinge] {
+        use Flexes::{Back, Forward};
+        const FORELEG: [Hinge; 3] = [
+            Hinge::new("elbow", Forward, (-10.0, 140.0)),
+            Hinge::new("carpus", Back, (-30.0, 150.0)),
+            Hinge::new("fetlock", Back, (-60.0, 120.0)),
+        ];
+        const HINDLEG: [Hinge; 3] = [
+            Hinge::new("stifle", Back, (-10.0, 140.0)),
+            Hinge::new("hock", Forward, (-15.0, 140.0)),
+            Hinge::new("fetlock", Back, (-60.0, 120.0)),
+        ];
+        match self {
+            Self::Foreleg => &FORELEG,
+            Self::Hindleg => &HINDLEG,
+        }
+    }
 }
 
 /// What a limb is used for. `Locomotor`/`Both` limbs become [`LegInfo`](super::LegInfo)s;

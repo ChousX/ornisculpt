@@ -421,6 +421,17 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
     }
 }
 
+/// Holds every limited joint within its limit (see [`JointLimit`](crate::anatomy::JointLimit)):
+/// hinges between their flexion limits, balls in their cone round rest. Runs last, after
+/// everything that turns bones.
+#[cfg(feature = "joint-limits")]
+pub fn limit_joints(a: &Anatomy, pose: &mut MobPose) {
+    for (bone, limit) in &a.joint_limits {
+        let (Some(def), Some(t)) = (a.skeleton.get(*bone), pose.local.get_mut(bone.index())) else { continue };
+        t.rotation = limit.clamp(def.rest.rotation, t.rotation);
+    }
+}
+
 /// The head turns toward `target` (eased, within the body's limit). Needs [`solve_legs`]'s
 /// world transforms.
 pub fn look_at(f: &Frame, target: Option<Vec3>, look: &mut LookState, pose: &mut MobPose) {
@@ -630,6 +641,8 @@ impl Sim {
         shoulder_rhythm(a, &mut self.pose);
         solve_legs(f, &self.feet, None, &mut self.pose);
         look_at(f, target, &mut self.look, &mut self.pose);
+        #[cfg(feature = "joint-limits")]
+        limit_joints(a, &mut self.pose);
         &self.pose.local
     }
 }
@@ -859,5 +872,68 @@ mod shoulders {
         assert!(lift > 0.01, "the shoulder lifts: {lift}");
         let (_, _, small, clav) = raise(&a, 20.0);
         assert!(small.abs() < 1e-5 && clav.angle_between(Quat::IDENTITY) < 1e-4, "walking swings leave the clavicle alone");
+    }
+}
+
+#[cfg(test)]
+mod joint_limits {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, JointLimit, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::Gait;
+
+    /// A hinge's name, the flexion range it went through, and its limits.
+    type Seen = (String, (f32, f32), (f32, f32));
+
+    /// Walks and runs the quadruped (whose legs declare their joints) and returns each hinge's
+    /// flexion range over every frame, with its limits.
+    fn hinge_ranges() -> Vec<Seen> {
+        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let body = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let gait = Gait::for_legs(body.legs.len());
+        let leg = leg_length(&body);
+        let hinges: Vec<_> = body
+            .joint_limits
+            .iter()
+            .filter_map(|(b, l)| match l {
+                JointLimit::Hinge { flexes, flex } => Some((*b, *flexes, *flex)),
+                JointLimit::Ball { .. } => None,
+            })
+            .collect();
+        let mut seen = vec![(f32::MAX, f32::MIN); hinges.len()];
+        let mut root = Affine3A::IDENTITY;
+        let mut sim = Sim::new(&body, root);
+        let dt = 1.0 / 60.0;
+        for speed in [0.5, 1.5, 3.0] {
+            sim.loco.velocity = Vec3::Z * speed * leg;
+            sim.loco.prev_velocity = sim.loco.velocity;
+            for i in 0..240 {
+                root.translation += Vec3A::from(sim.loco.velocity * dt);
+                let frame = Frame { a: &body, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
+                let local = sim.frame(&frame, None);
+                for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
+                    let q = local[bone.index()].rotation;
+                    let (x, w) = if q.w < 0.0 { (-q.x, -q.w) } else { (q.x, q.w) };
+                    let flex = flexes.from_x(2.0 * x.atan2(w).to_degrees());
+                    *s = (s.0.min(flex), s.1.max(flex));
+                }
+            }
+        }
+        hinges.iter().zip(seen).map(|((b, _, limit), s)| (body.skeleton.get(*b).unwrap().name.clone(), s, *limit)).collect()
+    }
+
+    #[test]
+    fn hinges_stay_in_range() {
+        let mut out = Vec::new();
+        for (name, (lo, hi), (min, max)) in hinge_ranges() {
+            println!("{name:<16} flexed {lo:7.1} .. {hi:6.1}   limit {min} .. {max}");
+            if lo < min - 0.01 || hi > max + 0.01 {
+                out.push(name);
+            }
+        }
+        // Without the feature this only reports; with it, nothing may leave its range.
+        if cfg!(feature = "joint-limits") {
+            assert!(out.is_empty(), "out of range: {out:?}");
+        }
     }
 }

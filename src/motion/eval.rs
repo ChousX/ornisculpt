@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use super::cycle::{Channel, Cycle, Joint, LegSel, Sides, Target, Track};
 use super::fit::BodyTraits;
 use super::graph::BodyMask;
-use crate::anatomy::{Anatomy, BoneId, LimbRole, PartPath, Side};
+use crate::anatomy::{Anatomy, BoneId, JointLimit, LimbRole, PartPath, Side};
 use crate::num::{Clamp, Idx, ToF32};
 
 /// Bones each target resolves to on one body.
@@ -336,6 +336,21 @@ impl LayerPose {
         }
     }
 
+    /// A `Flex` channel's turn: a declared hinge flexes its own way (positive closes it, an
+    /// elbow forward and a knee back); any other joint turns about model -X.
+    fn flex(&mut self, rig: &MotionRig, a: &Anatomy, bone: BoneId, degrees: f32, post: bool) {
+        let Some(JointLimit::Hinge { flexes, .. }) = a.joint_limit(bone) else {
+            return self.turn(rig, bone, Vec3::NEG_X, degrees, post);
+        };
+        let q = Quat::from_rotation_x(flexes.to_x(degrees).to_radians());
+        let i = bone.index();
+        let slot = if post { self.post.get_mut(i) } else { self.rot.get_mut(i) };
+        if let (Some(slot), Some(touched)) = (slot, self.touched.get_mut(i)) {
+            *slot *= q;
+            *touched = 1.0;
+        }
+    }
+
     /// Adds `other` scaled by `weight`: how the cycles inside one layer mix (crossfades, blend
     /// spaces), where the weights sum to about one.
     pub fn accumulate(&mut self, other: &Self, weight: f32) {
@@ -586,7 +601,7 @@ fn apply_legs(track: &Track, input: &EvalInput, out: &mut LayerPose, sel: LegSel
             Channel::Flex(joint) => {
                 let idx = joint_index(joint);
                 if let Some(bone) = leg.chain.get(idx) {
-                    out.turn(rig, *bone, Vec3::NEG_X, v, true);
+                    out.flex(rig, a, *bone, v, true);
                 }
             }
             _ => {}
@@ -626,7 +641,7 @@ fn apply_arms(track: &Track, input: &EvalInput, out: &mut LayerPose, sides: Side
             }
             Channel::Flex(joint) => {
                 if let Some(b) = bones.get(joint_index(joint)) {
-                    out.turn(rig, *b, Vec3::NEG_X, v, false);
+                    out.flex(rig, a, *b, v, false);
                 }
             }
             _ => {}

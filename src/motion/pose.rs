@@ -244,6 +244,14 @@ pub(super) fn write_joints(mut joints: Query<(&MobJoint, &mut Transform)>, poses
     });
 }
 
+#[cfg(feature = "joint-limits")]
+pub(super) fn limit_joints(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
+    mobs.par_iter_mut().for_each(|(body, mut pose)| {
+        let Some(b) = assets.bodies.get(&body.0) else { return };
+        stages::limit_joints(&b.anatomy, &mut pose);
+    });
+}
+
 pub(super) fn shoulder_rhythm(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
     mobs.par_iter_mut().for_each(|(body, mut pose)| {
         let Some(b) = assets.bodies.get(&body.0) else { return };

@@ -151,6 +151,8 @@ impl Plugin for MotionPlugin {
                         .in_set(M::Pose),
                 ),
             );
+        #[cfg(feature = "joint-limits")]
+        app.add_systems(Update, pose::limit_joints.after(pose::look_at).before(pose::write_joints).in_set(M::Pose));
     }
 }
 
