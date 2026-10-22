@@ -342,7 +342,7 @@ impl LayerPose {
         let Some(JointLimit::Hinge { flexes, .. }) = a.joint_limit(bone) else {
             return self.turn(rig, bone, Vec3::NEG_X, degrees, post);
         };
-        let q = Quat::from_rotation_x(flexes.to_x(degrees).to_radians());
+        let q = flexes.turn(degrees);
         let i = bone.index();
         let slot = if post { self.post.get_mut(i) } else { self.rot.get_mut(i) };
         if let (Some(slot), Some(touched)) = (slot, self.touched.get_mut(i)) {

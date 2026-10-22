@@ -51,7 +51,7 @@
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    bends: [(40.0, 0.0), (-85.0, 0.0), (55.0, 0.0)],
+                    joints: Some((plan: Hindleg, swing: 40.0, flex: [85.0, 55.0])),
                 )),
                 attach: Surface(t: 0.38, around_deg: 125.0),
                 mirror: true,

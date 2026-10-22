@@ -42,7 +42,7 @@
             ),
             (
                 name: "leg",
-                kind: Limb((chain: (segments: 2, length: 0.16, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.022)), role: Locomotor, stance: Plantigrade, end: Pad, splay_deg: 25.0)),
+                kind: Limb((chain: (segments: 2, length: 0.16, radius: (curve: [(0.0, 1.0), (1.0, 0.6)], scale: 0.022)), role: Locomotor, stance: Plantigrade, end: Pad, splay_deg: 25.0, joints: Some((plan: Hindleg, swing: 10.0, flex: [25.0])))),
                 attach: Surface(t: 0.08, around_deg: 120.0),
                 mirror: true,
                 detail: Always,

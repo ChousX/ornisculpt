@@ -300,6 +300,51 @@ mod tests {
         assert!(hind_joints(|j| j.flex.push(10.0)).is_err(), "one flexion per hinge");
     }
 
+    const PLANS: [(&str, &str); 11] = [
+        ("bat", include_str!("../../assets/mobs/bat.body.ron")),
+        ("beast", include_str!("../../assets/mobs/beast.body.ron")),
+        ("beetle", include_str!("../../assets/mobs/beetle.body.ron")),
+        ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+        ("bird", include_str!("../../assets/mobs/bird.body.ron")),
+        ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
+        ("dragonfly", include_str!("../../assets/mobs/dragonfly.body.ron")),
+        ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+        ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+        ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+        ("wyvern", include_str!("../../assets/mobs/wyvern.body.ron")),
+    ];
+
+    /// Every sample limb declares its joints, and each leg's declared knee points the way its
+    /// rest pose bends (the IK pole used to be read off the rest pose).
+    #[test]
+    fn sample_limbs_declare_their_joints() {
+        for (name, src) in PLANS {
+            let plan: BodyPlan = ron::from_str(src).unwrap();
+            plan.visit(|path, n| {
+                if let PartKind::Limb(l) = &n.kind {
+                    assert!(l.joints.is_some() && l.bends.is_empty(), "{name}: {path} has no joints");
+                }
+            });
+            // Plans with authored meshes (the beast's crest) need assets loaded to build.
+            let a = match build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()) {
+                Ok(a) => a,
+                Err(AnatomyError::MissingAsset { .. }) => continue,
+                Err(e) => panic!("{name}: {e}"),
+            };
+            let model = a.skeleton.rest_model();
+            for l in &a.legs {
+                let at = |i: usize| Vec3::from(model[l.chain[i].index()].translation);
+                let (last, def) = (l.chain[l.chain.len() - 1], a.skeleton.get(l.chain[l.chain.len() - 1]).unwrap());
+                let tip = model[last.index()].transform_point3(Vec3::Y * def.length);
+                let axis = (tip - at(0)).normalize();
+                let knee = at(1) - at(0);
+                let rest_pole = (knee - axis * knee.dot(axis)).normalize();
+                println!("{name} {:?}/{} pole {:.2} rest {:.2}", l.side, l.pair, l.pole, rest_pole);
+                assert!(l.pole.dot(rest_pole) > 0.9, "{name}: {:?} leg {} pole {} vs rest {}", l.side, l.pair, l.pole, rest_pole);
+            }
+        }
+    }
+
     #[test]
     fn lod_rules_resolve() {
         let rules = PartLodRules::default();

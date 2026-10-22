@@ -383,6 +383,9 @@ pub struct LimbJoints {
     pub plan: JointPlan,
     /// The root (hip/shoulder) swung forward from straight down, degrees (negative = back).
     pub swing: f32,
+    /// The root raised toward up, degrees: an insect's coxa lifting its femur.
+    #[serde(default)]
+    pub lift: f32,
     /// Flexion at each hinge below the root, degrees, root first: `0` = straight, positive closes
     /// the joint the way it bends. One per segment after the first.
     pub flex: Vec<f32>,
@@ -393,8 +396,16 @@ pub struct LimbJoints {
 pub enum JointPlan {
     /// A quadruped's front leg: shoulder, elbow (points back), carpus, fetlock.
     Foreleg,
-    /// A quadruped's hind leg: hip, stifle (points forward), hock, fetlock.
+    /// A hind leg (quadrupeds, birds, wyverns, bats): hip, stifle (points forward), hock (the
+    /// bird's "backward knee"), fetlock.
     Hindleg,
+    /// An upright biped's leg: hip, knee (points forward), ankle.
+    Leg,
+    /// An arm: shoulder, elbow (points back), wrist.
+    Arm,
+    /// An insect's or spider's leg out to the side: coxa, femur-tibia joint (the knee, up),
+    /// tibia-tarsus joint.
+    Arched,
 }
 
 /// One hinge of a [`JointPlan`].
@@ -421,13 +432,19 @@ impl JointPlan {
     /// The root joint: how far it may swing from its rest direction.
     #[must_use]
     pub const fn root(self) -> JointLimit {
-        JointLimit::Ball { cone: 75.0 }
+        let cone = match self {
+            Self::Foreleg | Self::Hindleg | Self::Arched => 75.0,
+            Self::Leg => 110.0,
+            // Arms raise overhead and swing far back.
+            Self::Arm => 160.0,
+        };
+        JointLimit::Ball { cone }
     }
 
     /// The hinges below the root, root first.
     #[must_use]
     pub const fn hinges(self) -> &'static [Hinge] {
-        use Flexes::{Back, Forward};
+        use Flexes::{Back, Down, Forward};
         const FORELEG: [Hinge; 3] = [
             Hinge::new("elbow", Forward, (-10.0, 140.0)),
             Hinge::new("carpus", Back, (-30.0, 150.0)),
@@ -438,9 +455,15 @@ impl JointPlan {
             Hinge::new("hock", Forward, (-15.0, 140.0)),
             Hinge::new("fetlock", Back, (-60.0, 120.0)),
         ];
+        const LEG: [Hinge; 2] = [Hinge::new("knee", Back, (-5.0, 150.0)), Hinge::new("ankle", Forward, (-50.0, 30.0))];
+        const ARM: [Hinge; 2] = [Hinge::new("elbow", Forward, (-5.0, 150.0)), Hinge::new("wrist", Forward, (-70.0, 80.0))];
+        const ARCHED: [Hinge; 2] = [Hinge::new("knee", Down, (-10.0, 170.0)), Hinge::new("tarsus", Down, (-45.0, 120.0))];
         match self {
             Self::Foreleg => &FORELEG,
             Self::Hindleg => &HINDLEG,
+            Self::Leg => &LEG,
+            Self::Arm => &ARM,
+            Self::Arched => &ARCHED,
         }
     }
 }

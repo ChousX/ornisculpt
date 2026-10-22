@@ -42,7 +42,7 @@
             (
                 // Prothoracic legs: shortest, reaching forward.
                 name: "leg.fore",
-                kind: Limb((chain: (segments: 3, length: 0.3, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.022)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.3, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.022)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 45.0, flex: [115.0, 30.0])))),
                 attach: Surface(t: 0.85, around_deg: 95.0),
                 offset: (rotate_deg: (40.0, 0.0, 0.0)),
                 mirror: true,
@@ -51,7 +51,7 @@
             (
                 // Mesothoracic legs: out to the side.
                 name: "leg.mid",
-                kind: Limb((chain: (segments: 3, length: 0.36, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.024)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.36, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.024)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 45.0, flex: [115.0, 30.0])))),
                 attach: Surface(t: 0.5, around_deg: 95.0),
                 mirror: true,
                 detail: Always,
@@ -59,7 +59,7 @@
             (
                 // Metathoracic legs: longest, sweeping back.
                 name: "leg.hind",
-                kind: Limb((chain: (segments: 3, length: 0.44, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.026)), role: Locomotor, stance: Arched, end: Point, bends: [(0.0, 45.0), (0.0, -115.0), (0.0, -30.0)])),
+                kind: Limb((chain: (segments: 3, length: 0.44, ratios: [1.0, 1.15, 0.75], radius: (curve: [(0.0, 1.0), (0.45, 0.6), (1.0, 0.35)], scale: 0.026)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 45.0, flex: [115.0, 30.0])))),
                 attach: Surface(t: 0.15, around_deg: 95.0),
                 offset: (rotate_deg: (-40.0, 0.0, 0.0)),
                 mirror: true,

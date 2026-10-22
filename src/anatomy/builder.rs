@@ -560,7 +560,9 @@ impl AnatomyBuilder {
         self.anatomy.look = Some(look);
     }
 
+    /// Limits `bone`'s joint; `limit` is in the logical (left) frame, like everything built.
     pub fn limit(&mut self, bone: BoneId, limit: JointLimit) {
+        let limit = if self.mirrored() { limit.mirrored() } else { limit };
         self.anatomy.joint_limits.push((bone, limit));
     }
 

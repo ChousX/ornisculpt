@@ -879,10 +879,10 @@ mod joint_limits {
     /// A hinge's name, the flexion range it went through, and its limits.
     type Seen = (String, (f32, f32), (f32, f32));
 
-    /// Walks and runs the quadruped (whose legs declare their joints) and returns each hinge's
-    /// flexion range over every frame, with its limits.
-    fn hinge_ranges() -> Vec<Seen> {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
+    /// Walks and runs a body and returns each declared hinge's flexion range over every frame,
+    /// with its limits.
+    fn hinge_ranges(src: &str) -> Vec<Seen> {
+        let plan: BodyPlan = ron::from_str(src).unwrap();
         let live = apply_form(&plan, &Form::default()).unwrap();
         let body = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
         let gait = Gait::for_legs(body.legs.len());
@@ -908,8 +908,8 @@ mod joint_limits {
                 let local = sim.frame(&frame, None);
                 for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
                     let q = local[bone.index()].rotation;
-                    let (x, w) = if q.w < 0.0 { (-q.x, -q.w) } else { (q.x, q.w) };
-                    let flex = flexes.from_x(2.0 * x.atan2(w).to_degrees());
+                    let q = if q.w < 0.0 { -q } else { q };
+                    let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
                     *s = (s.0.min(flex), s.1.max(flex));
                 }
             }
@@ -920,10 +920,32 @@ mod joint_limits {
     #[test]
     fn hinges_stay_in_range() {
         let mut out = Vec::new();
-        for (name, (lo, hi), (min, max)) in hinge_ranges() {
-            println!("{name:<16} flexed {lo:7.1} .. {hi:6.1}   limit {min} .. {max}");
-            if lo < min - 0.01 || hi > max + 0.01 {
-                out.push(name);
+        for (plan, src) in [
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+            ("bird", include_str!("../../assets/mobs/bird.body.ron")),
+            ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
+        ] {
+            for (name, (lo, hi), (min, max)) in hinge_ranges(src) {
+                let flag = if lo < min - 0.01 || hi > max + 0.01 { "  OUT" } else { "" };
+                println!("{plan:<10} {name:<16} flexed {lo:7.1} .. {hi:6.1}   limit {min} .. {max}{flag}");
+                if !flag.is_empty() {
+                    out.push(format!("{plan} {name}"));
+                }
+            }
+        }
+        // Left and right legs walk alike (out of step, so not identically), so each hinge's
+        // range overlaps its mirror twin's; a hinge declared the wrong way round on one side
+        // reads as the negative and doesn't.
+        for (plan, src) in [("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")), ("bird", include_str!("../../assets/mobs/bird.body.ron"))] {
+            let seen = hinge_ranges(src);
+            // Every leg pair names its bones alike, so pair left and right hinges in build order.
+            let side = |prefix: &str| seen.iter().filter(move |(n, ..)| n.starts_with(prefix)).collect::<Vec<_>>();
+            let (left, right) = (side("limb.l."), side("limb.r."));
+            assert_eq!(left.len(), right.len(), "{plan}");
+            for ((name, (lo, hi), _), (twin, (tlo, thi), _)) in left.iter().zip(&right) {
+                assert!(lo.max(*tlo) < hi.min(*thi), "{plan} {name}: {lo}..{hi} vs {twin}: {tlo}..{thi}");
             }
         }
         // Without the feature this only reports; with it, nothing may leave its range.

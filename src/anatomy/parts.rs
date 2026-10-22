@@ -522,17 +522,20 @@ impl PartBuild for LimbParams {
             b.socket(&suffixed("grip", cx), SocketKind::Grip, cx.side, last, grip, size);
         }
         if matches!(self.role, LimbRole::Locomotor | LimbRole::Both) {
-            // The IK pole is the rest pose's own first joint direction: knees forward, a
-            // quadruped's elbows back, a spider's knees up.
             let (hip, foot) = (frames.first().map_or(tip.translation, |f| f.translation), tip.translation);
             let axis = (foot - hip).normalize_or(Vec3::NEG_Y);
-            // With declared joints the first hinge says which way it points (opposite to where
-            // the bone below swings as it flexes), whatever the rest pose happens to show.
-            let knee = self.joints.as_ref().and_then(|j| j.plan.hinges().first()).map_or_else(
-                || frames.get(1).unwrap_or(&tip).translation - hip,
-                |h| frames.first().map_or(Vec3::Z, |f| f.rotation * Vec3::Z) * -h.flexes.to_x(1.0),
-            );
-            let pole = (knee - axis * knee.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
+            // The IK pole is the rest pose's own knee: elbows back, stifles forward, a spider's
+            // knees up. With declared joints that rest bend is checked, so it can't point the
+            // wrong way; a leg standing straight at its first hinge (where the rest pose shows
+            // no side) takes the side the hinge closes toward.
+            let off_axis = |v: Vec3| v - axis * v.dot(axis);
+            let knee = off_axis(frames.get(1).unwrap_or(&tip).translation - hip);
+            let declared = self.joints.as_ref().and_then(|j| j.plan.hinges().first());
+            let pole = match (knee.try_normalize(), declared, frames.first()) {
+                (Some(k), _, _) if knee.length() > 1e-3 * lens.iter().sum::<f32>() => k,
+                (_, Some(h), Some(f)) => off_axis(f.rotation * h.flexes.points()).try_normalize().unwrap_or(Vec3::Z),
+                (k, ..) => k.unwrap_or(Vec3::Z),
+            };
             b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
         }
 
@@ -562,13 +565,14 @@ fn joint_bends(j: &LimbJoints, bends: &[(f32, f32)], segments: usize, cx: &Build
             j.flex.len()
         )));
     }
-    let mut out = vec![(j.swing, 0.0)];
+    let mut out = vec![(j.swing, j.lift)];
     for (flex, h) in j.flex.iter().zip(hinges) {
         let (lo, hi) = h.flex;
         if !(lo..=hi).contains(flex) {
             return Err(invalid(format!("{} flexed {flex}°, outside {lo}..{hi}", h.name)));
         }
-        out.push((h.flexes.to_x(*flex), 0.0));
+        let angle = h.flexes.to_angle(*flex);
+        out.push(if h.flexes.axis() == Vec3::X { (angle, 0.0) } else { (0.0, angle) });
     }
     Ok(out)
 }
