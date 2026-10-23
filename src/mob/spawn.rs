@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 
-use super::generate::{GenPending, lost_error, ready_body};
+use super::generate::GenPending;
 use super::crowd::{CrowdSkin, CrowdSlot, CrowdUploaded};
 use super::{BodyFailed, BodyReady, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
 use bevy::light::NotShadowCaster;
@@ -81,9 +81,20 @@ impl FromWorld for PlaceholderAssets {
     }
 }
 
-/// Spawns a body's coat geometry (fur shells, feather cards) for one LOD level.
-fn spawn_coat_meshes(commands: &mut Commands, mob: Entity, body: &GeneratedBody, level: LodLevel, extra: impl Bundle + Clone) {
+/// Spawns a body's meshes for one LOD level: one per material slot (with `extra` and `slot_extra`),
+/// then its coat geometry (fur shells, feather cards; with `extra`, never casting shadows).
+fn spawn_level_meshes(
+    commands: &mut Commands,
+    mob: Entity,
+    body: &GeneratedBody,
+    level: LodLevel,
+    extra: impl Bundle + Clone,
+    slot_extra: impl Bundle + Clone,
+) {
     let m = body.materials_for(level);
+    for (slot, mesh) in &level.pick(&body.lods).0 {
+        commands.spawn((MobVisual, LodMesh(level), Mesh3d(mesh.clone()), MeshMaterial3d(m.get(*slot)), extra.clone(), slot_extra.clone(), ChildOf(mob)));
+    }
     let c = level.pick(&body.coat_meshes);
     for (mesh, material) in [(&c.shells, &m.shell), (&c.feathers, &m.feather)] {
         if let Some(mesh) = mesh {
@@ -121,11 +132,11 @@ pub(super) fn attach_body(
     };
     let with_placeholder: Vec<Entity> = placeholders.iter().map(ChildOf::parent).collect();
     for (mob, pend, tier, children, slot) in &pending {
-        if let Some(error) = lost_error(&cache, pend) {
+        if let Some(error) = cache.lost_error(pend) {
             commands.entity(mob).remove::<GenPending>().trigger(move |entity| BodyFailed { entity, error });
             continue;
         }
-        let Some(handle) = ready_body(&cache, pend) else {
+        let Some(handle) = cache.ready(pend) else {
             if !has_body.contains(mob) && !with_placeholder.contains(&mob) {
                 commands.spawn((
                     Placeholder,
@@ -149,19 +160,7 @@ pub(super) fn attach_body(
         let shown = tier.map_or(LodLevel::Far, |t| t.0);
         for level in [LodLevel::Near, LodLevel::Far] {
             let visibility = if level == shown { Visibility::Inherited } else { Visibility::Hidden };
-            for (mat_slot, mesh) in &level.pick(&body.lods).0 {
-                commands.spawn((
-                    MobVisual,
-                    LodMesh(level),
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(body.materials_for(level).get(*mat_slot)),
-                    MeshTag::new(slot.0),
-                    NotShadowCaster,
-                    visibility,
-                    ChildOf(mob),
-                ));
-            }
-            spawn_coat_meshes(&mut commands, mob, body, level, (MeshTag::new(slot.0), visibility));
+            spawn_level_meshes(&mut commands, mob, body, level, (MeshTag::new(slot.0), visibility), NotShadowCaster);
         }
         commands
             .entity(mob)
@@ -210,18 +209,7 @@ pub(super) fn sync_hero_visuals(
                 commands.entity(mob).insert(crate::soft::SoftState::new(regions.len()));
             }
             let skin = SkinnedMesh { inverse_bindposes: body.full_bindposes.clone(), joints: skinned };
-            for (slot, mesh) in &LodLevel::Hero.pick(&body.lods).0 {
-                commands.spawn((
-                    MobVisual,
-                    HeroVisual,
-                    LodMesh(LodLevel::Hero),
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(body.materials_for(LodLevel::Hero).get(*slot)),
-                    skin.clone(),
-                    ChildOf(mob),
-                ));
-            }
-            spawn_coat_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin));
+            spawn_level_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin), ());
             commands.entity(mob).insert(MobSkeleton(joints));
         } else if !hero && has_skeleton {
             for child in children.into_iter().flatten() {

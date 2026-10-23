@@ -1,11 +1,11 @@
-//! The procedural pose, one stage per function, over the motion components. The systems in
-//! `pose` run each stage on every mob in parallel; [`Sim`] chains the same stages on plain data
-//! for the crowd baker and the tests.
+//! The procedural pose, one stage per function, over the motion components. [`pose_frame`]
+//! chains the hero stages; the `pose` systems run it on every mob in parallel, and [`Sim`] runs
+//! it on plain data for the crowd baker and the tests.
 //!
-//! Order: choose step → advance clock → rest pose → wings → feet → bob → torso → springs →
-//! cycles → leg IK → look-at.
+//! Order: choose step → advance clock, then [`pose_frame`]: rest pose → wings → feet → bob →
+//! torso → springs → cycles → hands → shoulders → leg IK → look-at → joint limits.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
@@ -13,11 +13,12 @@ use smallvec::SmallVec;
 
 use super::eval::LayerPose;
 use super::gait::BodyMotion;
+use super::hand::{HandPose, pose_hands};
 use super::heft::{Heft, HeftResponse};
 use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
 use super::{Gait, SOFT_START, fabrik, two_bone_soft};
 use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
-use crate::num::ToF32;
+use crate::num::{ToF32, smoothstep};
 
 pub fn leg_length(a: &Anatomy) -> f32 {
     if a.legs.is_empty() {
@@ -249,10 +250,15 @@ pub fn ride_torso(f: &Frame, loco: &Locomotion, clock: &GaitClock, step: &Active
     if let Some(t) = local.get_mut(hips.index()) {
         t.translation += Vec3::new(g.sway, -g.lift, 0.0);
     }
-    // The head holds steadier than the shoulders, and nods with the fore feet.
-    if let Some(neck) = a.skeleton.find("neck.0").or_else(|| a.skeleton.find("skull")) {
-        let steady = Quat::IDENTITY.slerp(g.chest().inverse(), body.steady);
-        turn(local, neck, steady * Quat::from_axis_angle(Vec3::NEG_X, g.nod));
+    // The head holds steadier than the shoulders, and nods with the fore feet: the whole neck
+    // bends into the nod, not just its base.
+    if let Some(base) = a.skeleton.find("neck.0").or_else(|| a.skeleton.find("skull")) {
+        turn(local, base, Quat::IDENTITY.slerp(g.chest().inverse(), body.steady));
+        let neck = || std::iter::successors(Some(base), |b| a.skeleton.children(*b).find(|c| a.skeleton.get(*c).is_some_and(|d| d.name.starts_with("neck."))));
+        let nod = Quat::from_axis_angle(Vec3::NEG_X, g.nod / neck().count().to_f32());
+        for b in neck() {
+            turn(local, b, nod);
+        }
     }
     // Tails swing against the hips, the tip trailing.
     let (lag, swing) = torso.tail();
@@ -355,10 +361,123 @@ fn points_rest_tip(a: &Anatomy, last: BoneId, rest_model: &[Affine3A]) -> Vec3 {
 /// How high (in leg lengths) a lifting foot rises before what hangs off it stops lying flat.
 const FLAT_FOOT_LIFT: f32 = 0.12;
 
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
+/// How much of the thigh's (upper arm's) swing a leg's lower segments follow: hind legs work as a
+/// pantograph (the metatarsus stays parallel to the femur, so the heel lifts as the leg sweeps
+/// back); fore legs follow less, the wrist staying under the shoulder longer.
+const HIND_FOLLOW: f32 = 1.0;
+const FORE_FOLLOW: f32 = 0.6;
+/// How far the lower segments fold back as a foot lifts (hock, wrist), radians, by its height in
+/// leg lengths up to [`FOLD_LIFT`]: wrists fold further than hocks.
+const HIND_FOLD: f32 = 0.5;
+const FORE_FOLD: f32 = 0.9;
+const FOLD_LIFT: f32 = 0.12;
+/// How far out to the side of its hip (in leg lengths) a leg's foot may stand at rest and still
+/// fold like a mammal's: mammals and birds stand at 0, an insect's legs at 0.2 and more.
+const MAX_FOLDING_SPRAWL: f32 = 0.15;
+
+/// How far (in leg lengths) a leg's root may slide toward a foot it can't otherwise reach: a
+/// shoulder blade gliding over the ribs. Fore legs standing nearly straight need it to reach a
+/// foot that has travelled back behind the shoulder.
+const MAX_ROOT_SLIDE: f32 = 0.15;
+
+/// The angle from `from` to `to` about `axis`, both projected onto the plane across it.
+fn angle_about(axis: Vec3, from: Vec3, to: Vec3) -> f32 {
+    let (from, to) = (from - axis * from.dot(axis), to - axis * to.dot(axis));
+    axis.dot(from.cross(to)).atan2(from.dot(to))
+}
+
+/// Which turns of a leg's lower segments (about `axis`) leave the joint above the foot within the
+/// upper bones' reach. The joint sits at `to_foot − R(θ)·tip` from the root, whose distance
+/// varies as a sinusoid in θ, so the reachable turns form one interval round the best turn.
+struct Reach {
+    /// The turn that brings the joint closest to the root.
+    best: f32,
+    /// How far either side of it a turn may go; negative when no turn reaches.
+    half_width: f32,
+}
+
+impl Reach {
+    fn new(axis: Vec3, to_foot: Vec3, tip: Vec3, reach: f32) -> Self {
+        let along = axis * axis.dot(tip);
+        let across = tip - along;
+        let (cos, sin) = (to_foot.dot(across), to_foot.dot(axis.cross(across)));
+        let amplitude = cos.hypot(sin);
+        if amplitude < 1e-6 {
+            return Self { best: 0.0, half_width: PI };
+        }
+        // |to_foot − R(θ)·tip|² = rest − 2·amplitude·cos(θ − best) ≤ reach².
+        let rest = (-2.0f32).mul_add(to_foot.dot(along), to_foot.length_squared() + tip.length_squared());
+        let k = reach.mul_add(-reach, rest) / (2.0 * amplitude);
+        Self { best: sin.atan2(cos), half_width: if k <= -1.0 { PI } else if k >= 1.0 { -1.0 } else { k.acos() } }
+    }
+
+    /// `turn` moved into the reachable interval (to the best turn when none reaches).
+    fn clamp(&self, turn: f32) -> f32 {
+        if self.half_width >= PI {
+            return turn;
+        }
+        let off = (turn - self.best + PI).rem_euclid(TAU) - PI;
+        let width = self.half_width.max(0.0);
+        self.best + off.clamp(-width, width)
+    }
+}
+
+/// A leg whose upper two bones solve exactly while any lower segments (a dog's metatarsus, a
+/// horse's cannon and pastern) keep their shape and hang from the second joint, so the upper bones
+/// aim for the point above the foot.
+struct HangingLeg {
+    target: Vec3,
+    knee_hint: Vec3,
+    soft: f32,
+    /// The leg's side axis, which the lower segments turn about.
+    side_axis: Vec3,
+    /// The thigh (upper arm) at rest, as the girdle now stands.
+    rest_thigh: Vec3,
+    /// Whether the lower segments turn and the root may slide (legs under the body).
+    turns: bool,
+    /// Share of the thigh's swing the lower segments follow.
+    follow: f32,
+    /// How far they fold back as the foot lifts, radians.
+    folded: f32,
+    max_slide: f32,
+}
+
+impl HangingLeg {
+    /// Solves `joints` (root, knee, then the lower joints down to the tip) and returns how far the
+    /// root slid toward a foot out of its reach. A leg at its rest angle, foot down, keeps its
+    /// lower segments as they stand.
+    fn solve(&self, joints: &mut [Vec3]) -> Vec3 {
+        let [root, knee, lower_joints @ ..] = joints else { return Vec3::ZERO };
+        let Some(&ankle) = lower_joints.first() else { return Vec3::ZERO };
+        let rest_lower: SmallVec<[Vec3; 6]> = lower_joints.iter().map(|p| *p - ankle).collect();
+        // The upper bones' reach (as far as their solve goes before easing): a turn that puts the
+        // ankle further than that is held at the edge of it, so the foot stays down.
+        let upper = (root.distance(*knee) + knee.distance(ankle)) * self.soft;
+        let tip = rest_lower.last().copied().unwrap_or(Vec3::ZERO);
+        let fit = Reach::new(self.side_axis, self.target - *root, tip, upper);
+        let mut solved = [*root, *knee, ankle];
+        let mut lower = rest_lower.clone();
+        let mut slide = Vec3::ZERO;
+        let passes = if self.turns && rest_lower.len() > 1 { 2 } else { 1 };
+        for pass in 0..passes {
+            let wanted = if pass == 0 { self.folded } else { self.follow.mul_add(angle_about(self.side_axis, self.rest_thigh, solved[1] - solved[0]), self.folded) };
+            // A leg that doesn't turn its lower segments keeps them as they stand.
+            let turn = if self.turns { fit.clamp(wanted) } else { 0.0 };
+            let q = Quat::from_axis_angle(self.side_axis, turn);
+            lower = rest_lower.iter().map(|o| q * *o).collect();
+            let reach = self.target - lower.last().copied().unwrap_or(Vec3::ZERO);
+            // Out of reach still: the root slides toward the foot (legs under the body only).
+            let short = if self.turns { (reach.distance(*root) - upper).clamp(0.0, self.max_slide) } else { 0.0 };
+            slide = (reach - *root).normalize_or_zero() * short;
+            solved = [*root + slide, *knee + slide, ankle + slide];
+            two_bone_soft(&mut solved, reach, self.knee_hint, self.soft);
+        }
+        (*root, *knee) = (solved[0], solved[1]);
+        for (p, offset) in lower_joints.iter_mut().zip(&lower) {
+            *p = solved[2] + *offset;
+        }
+        slide
+    }
 }
 
 /// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
@@ -385,15 +504,7 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
         // swinging forward); it projects away on a vertical leg.
         let knee_hint = rotation(&root) * (l.pole.normalize_or(Vec3::Z) + Vec3::Y * 0.5);
         let target = foot.position + cycles.and_then(|c| c.feet.get(i)).map_or(Vec3::ZERO, |offset| rotation(&root) * *offset);
-        if let [p0, p1, lower_points @ ..] = points.as_mut_slice()
-            && let Some(&p2) = lower_points.first()
-        {
-            // Upper two bones solve exactly; any lower segments (a dog's metatarsus, a horse's
-            // cannon and pastern) keep their rest offsets and hang from the second joint, so the
-            // upper bones aim for the point above the foot.
-            let lower: SmallVec<[Vec3; 6]> = lower_points.iter().map(|p| *p - p2).collect();
-            let reach = target - lower.last().copied().unwrap_or(Vec3::ZERO);
-            let mut three = [*p0, *p1, p2];
+        let root_slide = if points.len() >= 3 {
             // Ease toward straight only past the leg's own rest reach (plus a little), so a leg
             // standing nearly straight still stands on its feet.
             let at_rest = |i: usize| chain.get(i).and_then(|b| rest_model.get(b.index())).map(|m| Vec3::from(m.translation));
@@ -401,13 +512,37 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
                 (Some(hip), Some(knee), Some(end)) => (hip.distance(end) / (hip.distance(knee) + knee.distance(end)).max(1e-6) + REST_REACH_MARGIN).clamp(SOFT_START, MAX_SOFT_START),
                 _ => SOFT_START,
             };
-            two_bone_soft(&mut three, reach, knee_hint, soft);
-            (*p0, *p1) = (three[0], three[1]);
-            for (p, offset) in lower_points.iter_mut().zip(&lower) {
-                *p = three[2] + *offset;
-            }
+            // The lower segments turn about the leg's side axis with the thigh's swing from its
+            // rest direction (in the girdle's frame), and fold back as the foot lifts.
+            // Only legs standing under the body fold this way: an insect's sprawling legs reach
+            // out sideways, not along the side axis.
+            let sprawl = at_rest(0).map_or(0.0, |hip| (l.rest_foot.x - hip.x).abs() / l.length.max(1e-3));
+            let hind = a.legs.iter().map(|l| l.pair).max() == Some(l.pair);
+            let (follow, fold) = if hind { (HIND_FOLLOW, HIND_FOLD) } else { (FORE_FOLLOW, FORE_FOLD) };
+            let girdle = bones.get(first.index()).and_then(|d| d.parent).and_then(|p| rest_model.get(p.index())).map_or(Quat::IDENTITY, rotation);
+            let girdle = parent_rotation(first) * girdle.inverse();
+            let raised = foot.position.y - foot.swing_to.y.min(foot.swing_from.y);
+            let leg = HangingLeg {
+                target,
+                knee_hint,
+                soft,
+                side_axis: rotation(&root) * Vec3::X,
+                rest_thigh: at_rest(1).zip(at_rest(0)).map_or(Vec3::NEG_Y, |(knee, hip)| girdle * (knee - hip)),
+                turns: sprawl <= MAX_FOLDING_SPRAWL,
+                follow,
+                folded: fold * smoothstep(0.0, FOLD_LIFT * f.leg, raised),
+                max_slide: MAX_ROOT_SLIDE * f.leg,
+            };
+            leg.solve(&mut points)
         } else {
             fabrik(&mut points, target, 32, 1e-3);
+            Vec3::ZERO
+        };
+        if root_slide != Vec3::ZERO
+            && let Some(t) = local.get_mut(first.index())
+        {
+            let parent_world = bones.get(first.index()).and_then(|d| d.parent).and_then(|p| world.get(p.index())).copied().unwrap_or(root);
+            t.translation += Vec3::from(parent_world.matrix3.inverse() * Vec3A::from(root_slide));
         }
         let mut parent = parent_rotation(first);
         for (b, [from, to]) in chain.iter().zip(points.array_windows()) {
@@ -529,6 +664,10 @@ impl Girdles {
     }
 }
 
+/// Added to a pair's load before it weights the vault: as every foot of the pair lifts, the vault
+/// fades to nothing instead of jumping.
+const VAULT_SOFTENING: f32 = 0.25;
+
 /// Derives girdle motion from where each foot is in its step.
 struct Torso<'a> {
     a: &'a Anatomy,
@@ -563,10 +702,12 @@ impl<'a> Torso<'a> {
         Some(Self { a, step, body: *body, response, heft, fore, hind, upright, length, leg, level })
     }
 
-    /// Mean over one pair of (side·reach, side·raise, side·load, load, landing); see
+    /// Mean over one pair of (side·reach, side·raise, side·load, load, landing), and the pair's
+    /// vault (its planted feet's [`StepShape::vault`](super::StepShape), weighted by load); see
     /// [`StepShape`](super::StepShape) and [`HeftResponse::landing`].
-    fn pair(&self, phase: f32, pair: u8) -> [f32; 5] {
+    fn pair(&self, phase: f32, pair: u8) -> [f32; 6] {
         let (mut sum, mut n) = ([0.0; 5], 0.0);
+        let (mut vault, mut weight) = (0.0, 0.0);
         let shape = &self.step.shape;
         for (i, l) in self.a.legs.iter().enumerate().filter(|(_, l)| l.pair == pair) {
             let p = self.step.leg_phase(phase, &self.a.legs, i);
@@ -582,9 +723,17 @@ impl<'a> Torso<'a> {
             sum[2] = f32::mul_add(side, load, sum[2]);
             sum[3] += load;
             sum[4] += if p < self.step.duty { self.response.landing.sample(p / self.step.duty) } else { 0.0 };
+            vault = f32::mul_add(load, shape.vault.sample(t), vault);
+            weight += load;
             n += 1.0;
         }
-        sum.map(|s| s / f32::max(n, 1.0))
+        let mut out = [0.0; 6];
+        for (o, s) in out.iter_mut().zip(sum) {
+            *o = s / f32::max(n, 1.0);
+        }
+        // Softened so it fades out, rather than jumps, as the pair's feet all lift.
+        out[5] = vault / (weight + VAULT_SOFTENING);
+        out
     }
 
     fn at(&self, phase: f32) -> Girdles {
@@ -611,21 +760,22 @@ impl<'a> Torso<'a> {
                 // One pair under a level body (birds): it moves as one, the head bobs.
                 g.chest_yaw = g.hip_yaw;
                 g.chest_roll = g.hip_roll;
-                g.nod = -nod * 2.0f32.mul_add(hind[3], -1.0);
+                g.nod = -nod * hind[5];
             }
         } else {
             let fore = self.pair(phase, self.fore);
             g.chest_yaw = -b.yaw.to_radians() * fore[0] * k;
             g.chest_roll = -b.roll.to_radians() * fore[1] * k * waddle;
-            // Walks vault over a stiff leg (highest mid-stance); runs compress (lowest).
+            // Walks vault over a stiff leg (each girdle highest at its feet's mid-stance); runs
+            // compress (lowest). Each girdle also sinks as its feet take its share of the weight.
             let vault = if self.step.duty >= 0.5 { 1.0 } else { -1.0 };
-            let load_shift = fore[3] - hind[3];
-            let rise = b.rock * load_shift * self.leg * vault * k;
-            // Each girdle sinks as its feet take its share of the weight.
+            let rise = |v: f32| b.rock * v * self.leg * vault * k;
             let (sink_hind, sink_fore) = (settle * hind[4] * 2.0 * (1.0 - self.heft.fore), settle * fore[4] * 2.0 * self.heft.fore);
-            g.pitch = ((rise + sink_hind - sink_fore) / self.length).atan();
-            g.lift = rise.mul_add(0.5, sink_hind);
-            g.nod = -nod * 2.0f32.mul_add(fore[3], -1.0);
+            let (hips, shoulders) = (rise(hind[5]) - sink_hind, rise(fore[5]) - sink_fore);
+            g.pitch = ((shoulders - hips) / self.length).atan();
+            g.lift = -hips;
+            // The head drops as the shoulders rise over a planted fore foot.
+            g.nod = -nod * fore[5];
         }
         g
     }
@@ -639,11 +789,64 @@ impl<'a> Torso<'a> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The whole pose
+// ---------------------------------------------------------------------------------------------
+
+/// What the pose stages read about a mob this frame.
+pub struct PoseInput<'a> {
+    pub loco: &'a Locomotion,
+    pub clock: &'a GaitClock,
+    pub step: &'a ActiveStep,
+    pub heft: &'a Heft,
+    /// What the playing cycles add, if any.
+    pub cycles: Option<&'a LayerPose>,
+    pub hands: Option<&'a HandPose>,
+    /// Ground hit per leg (empty: root height).
+    pub ground: &'a [Option<Vec3>],
+    /// World point for the head to look at.
+    pub look_at: Option<Vec3>,
+}
+
+/// What the pose stages carry from frame to frame, and the pose they build.
+pub struct PoseState<'a> {
+    pub feet: &'a mut Feet,
+    pub springs: &'a mut SpringState,
+    pub look: &'a mut LookState,
+    pub torso: &'a mut TorsoState,
+    pub pose: &'a mut MobPose,
+}
+
+/// Every hero stage in order, from the rest pose (with the joints' `scales`) to the joint
+/// limits. Returns the legs that touched down this frame.
+pub fn pose_frame(f: &Frame, input: &PoseInput, scales: impl Iterator<Item = Vec3>, state: PoseState) -> SmallVec<[usize; 8]> {
+    let (a, i) = (f.a, input);
+    let PoseState { feet, springs, look, torso, pose } = state;
+    rest_pose(a, scales, pose);
+    fold_wings(a, i.cycles, pose);
+    let landed = plant_feet(f, i.loco, i.clock, i.step, i.ground, feet);
+    bob_and_bend(f, i.loco, i.clock, i.step, pose);
+    ride_torso(f, i.loco, i.clock, i.step, i.heft, torso, pose);
+    swing_springs(f, i.loco, springs, pose);
+    if let Some(cycles) = i.cycles {
+        apply_cycles(a, cycles, pose);
+    }
+    if let Some(hands) = i.hands {
+        pose_hands(a, hands, pose);
+    }
+    shoulder_rhythm(a, pose);
+    solve_legs(f, feet, i.cycles, pose);
+    look_at(f, i.look_at, look, pose);
+    #[cfg(feature = "joint-limits")]
+    limit_joints(a, pose);
+    landed
+}
+
+// ---------------------------------------------------------------------------------------------
 // Offline
 // ---------------------------------------------------------------------------------------------
 
 /// Every stage chained on plain data, for the crowd baker and tests (the ECS runs the same
-/// stages as separate systems).
+/// [`pose_frame`]).
 #[derive(Default)]
 pub struct Sim {
     pub loco: Locomotion,
@@ -666,64 +869,37 @@ impl Sim {
 
     /// One frame at constant velocity; returns the local pose.
     pub fn frame(&mut self, f: &Frame, target: Option<Vec3>) -> &[Transform] {
-        let a = f.a;
         choose_step(f, &self.loco, &self.heft, &GaitOverride(None), &mut self.clock, &mut self.step);
         advance_clock(f, &self.loco, &self.heft, &self.step, Some(&self.feet), &mut self.clock);
-        rest_pose(a, std::iter::repeat(Vec3::ONE), &mut self.pose);
-        fold_wings(a, None, &mut self.pose);
-        plant_feet(f, &self.loco, &self.clock, &self.step, &[], &mut self.feet);
-        bob_and_bend(f, &self.loco, &self.clock, &self.step, &mut self.pose);
-        ride_torso(f, &self.loco, &self.clock, &self.step, &self.heft, &mut self.torso, &mut self.pose);
-        swing_springs(f, &self.loco, &mut self.springs, &mut self.pose);
-        shoulder_rhythm(a, &mut self.pose);
-        solve_legs(f, &self.feet, None, &mut self.pose);
-        look_at(f, target, &mut self.look, &mut self.pose);
-        #[cfg(feature = "joint-limits")]
-        limit_joints(a, &mut self.pose);
+        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles: None, hands: None, ground: &[], look_at: target };
+        let state = PoseState { feet: &mut self.feet, springs: &mut self.springs, look: &mut self.look, torso: &mut self.torso, pose: &mut self.pose };
+        pose_frame(f, &input, std::iter::repeat(Vec3::ONE), state);
         &self.pose.local
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
-
-    fn biped() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// Walks a biped and reports the largest frame-to-frame knee jump, relative to the typical
     /// one. A snapping knee (bend flipping or a straightened leg popping back) shows as a spike.
     #[test]
     fn knees_move_smoothly() {
-        let a = biped();
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(&a);
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&a, root);
-        let dt = 1.0 / 60.0;
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let mut knees: Vec<(f32, Vec3, f32, bool)> = Vec::new();
         let mut extra: Vec<(Vec3, Vec3)> = Vec::new();
-        for speed in [0.6, 1.2] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let f = Frame { a: &a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&f, None).to_vec();
-                let world = forward_kinematics(&a.skeleton.bones, &local, root);
-                let l = &a.legs[0];
-                let knee = Vec3::from(world[l.chain[1].index()].translation) - Vec3::from(root.translation);
-                let hip = Vec3::from(world[l.chain[0].index()].translation);
-                let chain: f32 = l.chain.iter().map(|b| a.skeleton.get(*b).unwrap().length).sum();
-                let reach = hip.distance(sim.feet.0[0].position) / chain;
-                knees.push((sim.clock.phase, knee, reach, sim.feet.0[0].planted));
-                extra.push((hip - Vec3::from(root.translation), sim.feet.0[0].position - Vec3::from(root.translation)));
-            }
-        }
+        walk(&a, &[0.6, 1.2], 240, |sim, local, root, _| {
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
+            let l = &a.legs[0];
+            let knee = Vec3::from(world[l.chain[1].index()].translation) - Vec3::from(root.translation);
+            let hip = Vec3::from(world[l.chain[0].index()].translation);
+            let chain: f32 = l.chain.iter().map(|b| a.skeleton.get(*b).unwrap().length).sum();
+            let reach = hip.distance(sim.feet.0[0].position) / chain;
+            knees.push((sim.clock.phase, knee, reach, sim.feet.0[0].planted));
+            extra.push((hip - Vec3::from(root.translation), sim.feet.0[0].position - Vec3::from(root.translation)));
+        });
         let steps: Vec<f32> = knees.windows(2).map(|w| w[0].1.distance(w[1].1)).collect();
         let mut sorted = steps.clone();
         sorted.sort_by(f32::total_cmp);
@@ -741,39 +917,27 @@ mod tests {
 #[cfg(test)]
 mod all_plans {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// Largest frame-to-frame step of any leg's first joint, over its median, while walking at
     /// two speeds. A snapping joint shows as a spike far above the median.
     fn worst_joint_step(a: &Anatomy) -> (f32, f32) {
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(a);
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(a, root);
-        let dt = 1.0 / 60.0;
         let mut prev: Option<Vec<Vec3>> = None;
         let mut steps = Vec::new();
-        for speed in [0.5, 1.0] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let f = Frame { a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&f, None).to_vec();
-                let world = forward_kinematics(&a.skeleton.bones, &local, root);
-                let joints: Vec<Vec3> = a
-                    .legs
-                    .iter()
-                    .map(|l| Vec3::from(world[l.chain[1.min(l.chain.len() - 1)].index()].translation) - Vec3::from(root.translation))
-                    .collect();
-                if let Some(p) = &prev {
-                    steps.extend(p.iter().zip(&joints).map(|(a, b)| a.distance(*b)));
-                }
-                prev = Some(joints);
+        walk(a, &[0.5, 1.0], 240, |_, local, root, _| {
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
+            let joints: Vec<Vec3> = a
+                .legs
+                .iter()
+                .map(|l| Vec3::from(world[l.chain[1.min(l.chain.len() - 1)].index()].translation) - Vec3::from(root.translation))
+                .collect();
+            if let Some(p) = &prev {
+                steps.extend(p.iter().zip(&joints).map(|(a, b)| a.distance(*b)));
             }
-        }
-        let mut sorted = steps.clone();
+            prev = Some(joints);
+        });
+        let mut sorted = steps;
         sorted.sort_by(f32::total_cmp);
         (sorted[sorted.len() - 1], sorted[sorted.len() / 2])
     }
@@ -786,9 +950,7 @@ mod all_plans {
             ("horse", include_str!("../../assets/mobs/horse.body.ron")),
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            let live = apply_form(&plan, &Form::default()).unwrap();
-            let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let a = build_src(src);
             let (worst, median) = worst_joint_step(&a);
             println!("{name}: worst {worst:.4} median {median:.4} ratio {:.1}", worst / median);
             assert!(worst < f32::mul_add(median, 8.0, 0.01), "{name}: a leg joint snaps ({worst} vs median {median})");
@@ -799,8 +961,8 @@ mod all_plans {
 #[cfg(test)]
 mod torso {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// World yaw and roll (degrees) of a bone, relative to its rest.
     fn yaw_roll(world: &Affine3A, rest: &Affine3A) -> (f32, f32) {
@@ -811,34 +973,22 @@ mod torso {
 
     /// Walks a body and returns the yaw/roll ranges (peak to peak) of hips, chest and head, and
     /// how the hips' yaw follows the hind left foot (negative = turns away from a forward foot).
-    fn walk(src: &str) -> [(f32, f32); 3] {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(&a);
+    fn walk_ranges(src: &str) -> [(f32, f32); 3] {
+        let a = build_src(src);
         let rest = a.skeleton.rest_model();
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&a, root);
-        let dt = 1.0 / 60.0;
-        sim.loco.velocity = Vec3::Z * leg;
-        sim.loco.prev_velocity = sim.loco.velocity;
         let head = a.skeleton.find("skull").unwrap_or_else(|| *a.spine.last().unwrap());
         let watch = [a.spine[0], *a.spine.last().unwrap(), head];
         let mut ranges = [(f32::MAX, f32::MIN, f32::MAX, f32::MIN); 3];
-        for i in 0..360 {
-            root.translation += Vec3A::from(sim.loco.velocity * dt);
-            let f = Frame { a: &a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-            let local = sim.frame(&f, None).to_vec();
+        walk(&a, &[1.0], 360, |_, local, root, i| {
             if i < 120 {
-                continue;
+                return;
             }
-            let world = forward_kinematics(&a.skeleton.bones, &local, root);
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
             for (r, b) in ranges.iter_mut().zip(watch) {
                 let (y, ro) = yaw_roll(&world[b.index()], &rest[b.index()]);
                 *r = (r.0.min(y), r.1.max(y), r.2.min(ro), r.3.max(ro));
             }
-        }
+        });
         ranges.map(|r| (r.1 - r.0, r.3 - r.2))
     }
 
@@ -851,7 +1001,7 @@ mod torso {
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
             ("bird", include_str!("../../assets/mobs/bird.body.ron")),
         ] {
-            let [hips, chest, head] = walk(src);
+            let [hips, chest, head] = walk_ranges(src);
             println!("{name}: hips yaw {:.1}° roll {:.1}° | chest yaw {:.1}° roll {:.1}° | head yaw {:.1}° roll {:.1}°", hips.0, hips.1, chest.0, chest.1, head.0, head.1);
             assert!(hips.0 > 2.0 && hips.1 > 1.5, "{name}: the hips barely move");
             assert!(head.0 < chest.0.max(hips.0), "{name}: the head swings more than the body");
@@ -862,12 +1012,10 @@ mod torso {
 #[cfg(test)]
 mod shoulders {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
 
     fn human() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        build_src(include_str!("../../assets/mobs/biped.body.ron"))
     }
 
     /// The arm's direction and its shoulder's height (world), after raising it by `degrees` and
@@ -915,8 +1063,8 @@ mod shoulders {
 #[cfg(test)]
 mod joint_limits {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, JointLimit, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::anatomy::{JointLimit, build_src};
+    use crate::motion::testing::walk;
 
     /// A hinge's name, the flexion range it went through, and its limits.
     type Seen = (String, (f32, f32), (f32, f32));
@@ -924,11 +1072,7 @@ mod joint_limits {
     /// Walks and runs a body and returns each declared hinge's flexion range over every frame,
     /// with its limits.
     fn hinge_ranges(src: &str) -> Vec<Seen> {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let body = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        let gait = Gait::for_legs(body.legs.len());
-        let leg = leg_length(&body);
+        let body = build_src(src);
         let hinges: Vec<_> = body
             .joint_limits
             .iter()
@@ -938,24 +1082,14 @@ mod joint_limits {
             })
             .collect();
         let mut seen = vec![(f32::MAX, f32::MIN); hinges.len()];
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&body, root);
-        let dt = 1.0 / 60.0;
-        for speed in [0.5, 1.5, 3.0] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let frame = Frame { a: &body, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&frame, None);
-                for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
-                    let q = local[bone.index()].rotation;
-                    let q = if q.w < 0.0 { -q } else { q };
-                    let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
-                    *s = (s.0.min(flex), s.1.max(flex));
-                }
+        walk(&body, &[0.5, 1.5, 3.0], 240, |_, local, _, _| {
+            for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
+                let q = local[bone.index()].rotation;
+                let q = if q.w < 0.0 { -q } else { q };
+                let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
+                *s = (s.0.min(flex), s.1.max(flex));
             }
-        }
+        });
         hinges.iter().zip(seen).map(|((b, _, limit), s)| (body.skeleton.get(*b).unwrap().name.clone(), s, *limit)).collect()
     }
 

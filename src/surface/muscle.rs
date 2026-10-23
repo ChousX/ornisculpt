@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use super::body::primitive_parts;
 use super::{BodyMeshData, MaterialSlot, MuscleFlex};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, PrimOp, PrimShape, Skeleton};
-use crate::num::Idx;
+use crate::num::{Idx, min_axis_scale, smoothstep};
 
 /// Outward push per unit of contraction, as a multiple of the muscle's rest height (plus a share of
 /// its thickness, so that flat limb muscles still read when they flex).
@@ -64,12 +64,7 @@ pub fn muscle_flex(mesh: &BodyMeshData, anatomy: &Anatomy, level: LodLevel) -> V
     if bellies.is_empty() {
         return out;
     }
-    let mut skin = vec![false; mesh.positions.len()];
-    for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-        if let Some(s) = skin.get_mut(i.idx()) {
-            *s = true;
-        }
-    }
+    let skin = mesh.skin_vertex_mask();
     for ((flex, p), _) in out.iter_mut().zip(&mesh.positions).zip(&skin).filter(|(_, s)| **s) {
         // The strongest belly under the vertex drives it, less the runner-up: where two bellies
         // overlap the flex fades to nothing at the switch (a groove between the muscles) rather
@@ -150,7 +145,7 @@ fn bellies(anatomy: &Anatomy, level: LodLevel) -> Vec<Belly> {
                 return None;
             }
             let model = *rest.get(p.bone.index())? * p.local.compute_affine();
-            let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let scale = min_axis_scale(&model);
             let centre = Vec3::from(model.translation);
             let normal = Vec3::from(model.matrix3.z_axis).normalize_or_zero();
             // The joint spanned: the child bone whose head is nearest the belly.
@@ -177,12 +172,6 @@ fn bellies(anatomy: &Anatomy, level: LodLevel) -> Vec<Belly> {
         .collect()
 }
 
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
-}
-
 /// The joint index a mesh at `level` uses for `joint` (the crowd skeleton below `Hero`), or `None`
 /// when the crowd skeleton folds the joint into the muscle's own bone: nothing bends across it.
 fn mesh_joint(skeleton: &Skeleton, level: LodLevel, bone: BoneId, joint: BoneId) -> Option<u16> {
@@ -197,13 +186,11 @@ fn mesh_joint(skeleton: &Skeleton, level: LodLevel, bone: BoneId, joint: BoneId)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{AdaptiveContour, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::anatomy::build_src;
+    use crate::surface::{AdaptiveContour, SurfaceSettings, mesh_lod};
 
     fn quadruped() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        build_src(include_str!("../../assets/mobs/quadruped.body.ron"))
     }
 
     #[test]
@@ -223,7 +210,7 @@ mod tests {
     fn crowd_levels_flex_about_crowd_joints() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Near);
         assert_eq!(flex.len(), mesh.positions.len());
         let crowd = &a.skeleton.crowd.bones;
@@ -233,13 +220,10 @@ mod tests {
             assert!(f.joint.idx() < crowd.len(), "joint {} is not a crowd bone", f.joint);
         }
         // Off the skin (hard parts, sheets) nothing flexes.
-        let mut skin = vec![false; mesh.positions.len()];
-        for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-            skin[i.idx()] = true;
-        }
+        let skin = mesh.skin_vertex_mask();
         assert!(flex.iter().zip(&skin).all(|(f, s)| *s || f.amplitude == 0.0));
         // Far keeps no muscle stamps: its mesh gets no flex at all.
-        let far = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
+        let far = mesh_lod(&AdaptiveContour, &a, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
         assert!(muscle_flex(&far, &a, LodLevel::Far).iter().all(|f| f.amplitude == 0.0));
     }
 
@@ -247,7 +231,7 @@ mod tests {
     fn amplitudes_have_no_spikes() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Hero);
         let peak = flex.iter().map(|f| f.amplitude).fold(0.0, f32::max);
         assert!(peak > 0.0);
@@ -264,7 +248,7 @@ mod tests {
     fn bending_shortens_a_muscle_on_the_inside() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Hero);
         let flexed = flex.iter().filter(|f| f.amplitude > 0.0).count();
         assert!(flexed > mesh.positions.len() / 50, "{flexed} of {} vertices flex", mesh.positions.len());

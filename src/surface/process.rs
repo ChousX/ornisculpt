@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use bevy::math::Vec3A;
 use bevy::prelude::*;
 
-use super::{BodyField, BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, Sheet, SoftVertex, RawMesh, Submesh};
+use super::{BodyField, BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, RawMesh, Sheet, SoftVertex, Submesh, VertexChannel};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 
@@ -80,6 +80,7 @@ pub fn smooth(mesh: &mut RawMesh, iterations: u32) {
 ///
 /// A vertex on a sheet of its own (see [`RawMesh::sheets`]) is weighted by that sheet alone, so a
 /// limb's surface hidden in the body binds to the limb, and the body's beneath it to the body.
+#[must_use]
 pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> BodyMeshData {
     const PROBE: f32 = 0.03;
     let n = mesh.positions.len();
@@ -168,6 +169,7 @@ pub fn simplify(data: &BodyMeshData, target_ratio: f32, max_error: f32) -> BodyM
 /// Keeps only vertices referenced by `indices`, in first-use order (good for vertex fetch).
 /// Triangles with a vertex out of range are dropped.
 fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
+    use VertexChannel::{Cloth, Coverage, Flow, Muscle, Soft};
     let mut remap = vec![u32::MAX; data.positions.len()];
     let mut out = BodyMeshData::default();
     for tri in indices.as_chunks::<3>().0 {
@@ -180,21 +182,7 @@ fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
             if *slot == u32::MAX {
                 *slot = out.positions.len().clamp_u32();
                 out.push_vertex(v);
-                if let Some(c) = data.coverage.get(i) {
-                    out.coverage.push(*c);
-                }
-                if let Some(f) = data.flow.get(i) {
-                    out.flow.push(*f);
-                }
-                if let Some(c) = data.cloth.get(i) {
-                    out.cloth.push(*c);
-                }
-                if let Some(m) = data.muscle.get(i) {
-                    out.muscle.push(*m);
-                }
-                if let Some(s) = data.soft.get(i) {
-                    out.soft.push(*s);
-                }
+                out.push_from(data, i, &[Coverage, Flow, Cloth, Muscle, Soft]);
             }
             out.indices.push(*slot);
         }

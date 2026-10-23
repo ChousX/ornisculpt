@@ -7,7 +7,7 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 
 use crate::anatomy::{Anatomy, BuiltPart, HardKind, LimbRole, Side, SocketKind, Stance};
-use crate::num::{Clamp, ToF32};
+use crate::num::Clamp;
 
 /// How a body is laid out for moving. Proportions don't change the family: humans, goblins and
 /// elves are all `UprightBiped`; a dragon is a `Quadruped` with `Wings`.
@@ -166,7 +166,7 @@ impl BodyTraits {
     #[must_use]
     pub fn of(a: &Anatomy) -> Self {
         let legs = a.legs.len().clamp_u8();
-        let leg_length = if a.legs.is_empty() { 0.5 } else { a.legs.iter().map(|l| l.length).sum::<f32>() / a.legs.len().to_f32() };
+        let leg_length = super::stages::leg_length(a);
         let model = a.skeleton.model_rest();
         let upright = match (a.spine.first(), a.spine.last()) {
             (Some(first), Some(last)) => model.get(last.index()).zip(model.get(first.index())).is_some_and(|(top, bottom)| {
@@ -224,10 +224,5 @@ impl BodyTraits {
             features.push(Feature::Wings);
         }
         Self { family, legs, stances, features, leg_length }
-    }
-
-    #[must_use]
-    pub fn has(&self, feature: Feature) -> bool {
-        self.features.contains(&feature)
     }
 }

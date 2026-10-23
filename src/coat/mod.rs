@@ -13,14 +13,12 @@ pub mod dqs;
 mod geometry;
 mod material;
 
-pub use geometry::{CoatMeshes, annotate, build_coat_meshes, feather_cards, fur_shells};
-pub use material::{COAT_FRAGMENT, COAT_VERTEX, CoatExt, CoatKey, CoatLayer, MobMaterial};
+pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
+pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::anatomy::{Anatomy, RegionMask, RegionSelector};
 
@@ -123,9 +121,10 @@ impl Default for Feathers {
 #[derive(Component, Clone, Debug)]
 pub struct MobCoat(pub Handle<Coat>);
 
-fn linear(c: [f32; 3]) -> Vec4 {
+/// An sRGB colour as linear RGB, with `w` in the fourth lane.
+pub(crate) fn linear(c: [f32; 3], w: f32) -> Vec4 {
     let l = Color::srgb(c[0], c[1], c[2]).to_linear();
-    Vec4::new(l.red, l.green, l.blue, 1.0)
+    Vec4::new(l.red, l.green, l.blue, w)
 }
 
 /// A 64-bit mask as (low, high) words.
@@ -183,28 +182,24 @@ impl Coat {
         m
     }
 
+    /// The first covering `pick` accepts.
+    fn first<T>(&self, pick: impl Fn(&CoveringKind) -> Option<T>) -> Option<T> {
+        self.coverings.iter().find_map(|c| pick(&c.kind))
+    }
+
     #[must_use]
     pub fn scales(&self) -> Option<Scales> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Scales(s) => Some(s),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Scales(s) = k { Some(*s) } else { None })
     }
 
     #[must_use]
     pub fn fur(&self) -> Option<Fur> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Fur(f) => Some(f),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Fur(f) = k { Some(*f) } else { None })
     }
 
     #[must_use]
     pub fn feathers(&self) -> Option<Feathers> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Feathers(f) => Some(f),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Feathers(f) = k { Some(*f) } else { None })
     }
 
     /// The shader uniform for this coat on `anatomy`.
@@ -215,9 +210,9 @@ impl Coat {
         let f = self.fur().unwrap_or_default();
         let fe = self.feathers().unwrap_or_default();
         CoatUniform {
-            base: linear(self.base),
-            secondary: linear(self.secondary),
-            accent: linear(self.accent),
+            base: linear(self.base, 1.0),
+            secondary: linear(self.secondary, 1.0),
+            accent: linear(self.accent, 1.0),
             scale_mask: split(masks.scales),
             fur_mask: split(masks.fur),
             feather_mask: split(masks.feathers),
@@ -225,7 +220,7 @@ impl Coat {
             scales: Vec4::new(s.size, s.relief, s.contrast, 0.0),
             fur: Vec4::new(f.length, f.density, f.thickness, f.tip),
             feathers: Vec4::new(fe.length, fe.width, fe.tip, 0.0),
-            cloth: [Vec4::new(0.5, 0.5, 0.5, 0.85); 8],
+            cloth: crate::clothing::DEFAULT_PALETTE,
         }
     }
 
@@ -236,33 +231,13 @@ impl Coat {
     }
 }
 
+impl crate::ron_loader::RonAsset for Coat {
+    const EXTENSIONS: &'static [&'static str] = &["coat.ron"];
+}
+
 /// Loads `*.coat.ron`.
-#[derive(Default, TypePath)]
-pub struct CoatLoader;
-
-#[derive(Debug, Error)]
-pub enum CoatLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for CoatLoader {
-    type Asset = Coat;
-    type Settings = ();
-    type Error = CoatLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Coat, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["coat.ron"]
-    }
-}
+pub type CoatLoader = crate::ron_loader::RonLoader<Coat>;
+pub type CoatLoaderError = crate::ron_loader::RonLoaderError;
 
 pub struct CoatPlugin;
 
@@ -285,9 +260,9 @@ impl Plugin for CoatPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LimbRole, LodLevel, PartAssets, PartLodRules, RegionKind, apply_form, build_anatomy};
+    use crate::anatomy::{LimbRole, LodLevel, RegionKind, build_src};
     use crate::num::Idx;
-    use crate::surface::{AdaptiveContour, BodyMeshData, ProceduralHardParts, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
+    use crate::surface::{AdaptiveContour, BodyMeshData, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
 
     fn kinds(kinds: &[RegionKind]) -> RegionSelector {
         RegionSelector::Or(kinds.iter().map(|k| RegionSelector::Kind(*k)).collect())
@@ -332,9 +307,7 @@ mod tests {
             ("horse", include_str!("../../assets/mobs/horse.body.ron")),
             ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            let live = apply_form(&plan, &Form::default()).unwrap();
-            let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(src);
 
             let m = coat.coverage(&anatomy);
             assert!(m.scales.0 != 0 && m.fur.0 != 0 && m.feathers.0 != 0, "{name}: a covering lost its regions: {m:?}");
@@ -344,7 +317,7 @@ mod tests {
             let u = coat.uniform(&anatomy);
             assert!(u.scales.x > 0.0 && u.fur.x > 0.0 && u.feathers.x > 0.0, "{name}: uniform lost a covering");
 
-            let mut lods = mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &SurfaceSettings::default(), 0).unwrap();
+            let mut lods = mesh_all_lods(&AdaptiveContour, &anatomy, &SurfaceSettings::default(), 0).unwrap();
             for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
                 annotate(lod, &coat, &anatomy, level);
                 lod.cor = centres_of_rotation(lod);
@@ -356,7 +329,11 @@ mod tests {
                 for k in 0..3 {
                     assert!(lod.coverage.iter().any(|c| c[k] > 0.5), "{name} {level:?}: covering {k} missing from the skin");
                 }
-                let _ = if level == LodLevel::Hero { lod.to_bevy_meshes() } else { lod.to_crowd_meshes() };
+                // Every slot mesh keeps its centres of rotation (else it skins with dual quaternions).
+                let split = if level == LodLevel::Hero { lod.to_bevy_meshes() } else { lod.to_crowd_meshes() };
+                for (slot, mesh) in &split {
+                    assert!(mesh.attribute(crate::surface::ATTRIBUTE_COR).is_some(), "{name} {level:?} {slot:?}: no centres of rotation");
+                }
             }
             let hero = build_coat_meshes(&coat, &anatomy, LodLevel::Hero.pick(&lods), LodLevel::Hero);
             let shells = hero.shells.as_ref().unwrap_or_else(|| panic!("{name}: no fur shells"));
@@ -381,9 +358,7 @@ mod tests {
 
     #[test]
     fn later_coverings_take_regions() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let coat = Coat {
             coverings: vec![
                 Covering { regions: RegionSelector::All, kind: CoveringKind::Fur(Fur::default()) },

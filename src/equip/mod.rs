@@ -80,13 +80,6 @@ impl HeldBy {
 #[relationship_target(relationship = HeldBy)]
 pub struct Holding(Vec<Entity>);
 
-impl Holding {
-    #[must_use]
-    pub fn tools(&self) -> &[Entity] {
-        &self.0
-    }
-}
-
 /// Places held tools after the mob's pose is final for the frame.
 pub struct EquipPlugin;
 

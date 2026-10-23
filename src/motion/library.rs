@@ -54,7 +54,7 @@ pub fn gaits() -> Vec<Cycle> {
             .track(T::Neck, C::Pitch, Curve::Constant(-12.0))
             .with(Track::new(T::Tail, C::Pitch, Curve::wave(4.0)).lag(0.3)),
         // Dogs, horses, bears, dragons.
-        Cycle::gait("quadruped.walk", 0.0, 1.6, 1.0, plan(PhasePattern::LateralSequence, 0.65, 0.15, 0.025, BodyMotion::walk()))
+        Cycle::gait("quadruped.walk", 0.0, 1.6, 1.0, plan(PhasePattern::LateralSequence, 0.65, 0.15, 0.025, BodyMotion::amble()))
             .fits(quad())
             .track(T::Neck, C::Pitch, Curve::wave(4.0).harmonic(2, 0.5))
             .with(Track::new(T::Tail, C::Yaw, Curve::wave(8.0)).lag(0.3))
@@ -217,7 +217,7 @@ pub fn standard() -> MotionGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::motion::{BodyFamily, BodyTraits, compose};
 
     #[test]
@@ -241,9 +241,7 @@ mod tests {
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron"), BodyFamily::Hexapod),
             ("bird", include_str!("../../assets/mobs/bird.body.ron"), BodyFamily::Biped),
         ] {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            let live = apply_form(&plan, &Form::default()).unwrap();
-            let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let a = build_src(src);
             let traits = BodyTraits::of(&a);
             assert_eq!(traits.family, family, "{name}: {traits:?}");
             let fitting: Vec<&str> = gaits.iter().filter(|g| g.fits.check(&traits).is_empty()).map(|g| g.name.as_str()).collect();

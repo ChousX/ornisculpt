@@ -145,8 +145,8 @@ const GROUP_CHUNK: usize = 128;
 /// Centre of rotation for every vertex.
 ///
 /// Vertices on one bone (where it doesn't matter) and those with no similar surface get their own
-/// position, which skins them exactly as linear blending (as do all of a worker's vertices,
-/// should it panic). Cost: about 1.7 s on one thread for a 29k-vertex hero mesh, parallel over
+/// position, which skins them exactly as linear blending (as does every vertex, should any
+/// worker panic). Cost: about 1.7 s on one thread for a 29k-vertex hero mesh, parallel over
 /// [`super::worker_threads`].
 #[must_use]
 pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
@@ -210,30 +210,18 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
     groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     // Big groups (the trunk's bones) split into chunks so the threads share them.
     let items: Vec<(&[u16], &[u32])> = groups.iter().flat_map(|(bones, members)| members.chunks(GROUP_CHUNK).map(move |c| (bones.as_slice(), c))).collect();
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = super::worker_threads().min(items.len().max(1));
-    let per_unique: Vec<Option<Vec3>> = super::scope(|scope| {
-        let mut handles = Vec::with_capacity(threads);
-        for _ in 0..threads {
-            let (items, next, weights, uniques, tris, buckets) = (&items, &next, &weights, &uniques, &tris, &buckets);
-            handles.push(scope.spawn(move || {
-                let mut out = Vec::new();
-                while let Some(&(bones, members)) = items.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                    group_centres(bones, members, weights, uniques, tris, buckets, &mut out);
-                }
-                out
-            }));
-        }
-        let mut all = vec![None; uniques.len()];
-        for handle in handles {
-            for (u, centre) in handle.join().unwrap_or_default() {
-                if let Some(slot) = all.get_mut(u.idx()) {
-                    *slot = centre;
-                }
-            }
-        }
-        all
+    let per_item = super::par_jobs(&items, || (), |(), &(bones, members)| {
+        let mut out = Vec::new();
+        group_centres(bones, members, &weights, &uniques, &tris, &buckets, &mut out);
+        out
     });
+    // A worker's panic leaves every vertex at its own position.
+    let mut per_unique: Vec<Option<Vec3>> = vec![None; uniques.len()];
+    for (u, centre) in per_item.unwrap_or_default().into_iter().flatten() {
+        if let Some(slot) = per_unique.get_mut(u.idx()) {
+            *slot = centre;
+        }
+    }
     let centre = |i: usize| slots.get(i).and_then(|&s| per_unique.get(s).copied().flatten());
     mesh.positions.iter().enumerate().map(|(i, p)| centre(i).unwrap_or(*p)).collect()
 }
@@ -241,17 +229,16 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::anatomy::{LodLevel, build_src};
+    use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, SurfaceSettings, mesh_lod};
 
     /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
     /// vertex (on the near-tier quadruped: small enough to brute-force).
     #[test]
     fn grouped_centres_match_brute_force() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
         let fast = centres_of_rotation(&mesh);
         let weights: Vec<Weights> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| sparse(*j, *w)).collect();
         let tris: Vec<(Vec3, f32, Weights)> = mesh
@@ -292,11 +279,9 @@ mod tests {
     /// computing them stays quick.
     #[test]
     fn centres_lie_inside_the_body() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let settings = SurfaceSettings::default();
-        let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+        let m = mesh_lod(&AdaptiveContour, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let t = std::time::Instant::now();
         let cor = centres_of_rotation(&m);
         let took = t.elapsed().as_secs_f32();

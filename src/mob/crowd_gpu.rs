@@ -106,8 +106,7 @@ impl FromWorld for CrowdBlendPipeline {
             layout: vec![layout.clone()],
             immediate_size: 0,
             shader,
-            // Slot stride (`CROWD_SLOT`): wider with soft tissue.
-            shader_defs: if cfg!(feature = "soft-tissue") { vec!["SOFT_TISSUE".into()] } else { vec![] },
+            shader_defs: super::crowd::crowd_slot_defs(),
             entry_point: Some("main".into()),
             zero_initialize_workgroup_memory: false,
             constants: vec![],
@@ -126,7 +125,7 @@ pub(super) fn extract_crowd(uploads: Extract<Res<CrowdUploads>>, mut gpu: ResMut
 pub(super) fn prepare_crowd_buffers(mut gpu: ResMut<CrowdGpu>, device: Res<RenderDevice>, queue: Res<RenderQueue>) {
     let gpu = &mut *gpu;
     for (index, matrices) in gpu.pending_clips.drain(..) {
-        gpu.clips.write(index.idx() * 64, bytemuck::cast_slice(&matrices));
+        gpu.clips.write(index.idx() * size_of::<[f32; 16]>(), bytemuck::cast_slice(&matrices));
     }
     for (slot, instance) in gpu.pending_instances.drain(..) {
         gpu.instances.write(slot.idx() * size_of::<CrowdInstance>(), bytemuck::bytes_of(&instance));

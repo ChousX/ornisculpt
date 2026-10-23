@@ -55,17 +55,6 @@ pub enum Side {
     Right,
 }
 
-impl Side {
-    #[must_use]
-    pub const fn mirrored(self) -> Self {
-        match self {
-            Self::Center => Self::Center,
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
-
 /// All regions of one built mob, indexed by [`RegionId`].
 #[derive(Clone, Debug, Default)]
 pub struct RegionTable {
@@ -89,7 +78,6 @@ pub struct RegionMask(pub u64);
 
 impl RegionMask {
     pub const NONE: Self = Self(0);
-    pub const ALL: Self = Self(u64::MAX);
 
     #[must_use]
     pub const fn with(self, id: RegionId) -> Self {

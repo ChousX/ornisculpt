@@ -24,7 +24,7 @@ from gen_sample_parts import smooth_normals, write_gltf  # noqa: E402
 
 def sheet(ys, thetas, height, ring):
     """Grid over (y rows, theta columns) at radius 1 + height(y, theta); triangles face outward."""
-    cols = len(thetas) if ring else len(thetas)
+    cols = len(thetas)
     pos = []
     for y in ys:
         for t in thetas:

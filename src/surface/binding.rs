@@ -22,6 +22,7 @@ use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 
+use super::body::{in_line, limb_of};
 use super::{BodyField, BodyMeshData, Sheet};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
@@ -62,7 +63,7 @@ pub struct VoxelBinding {
     near: Vec<[(u8, f32); 4]>,
     /// Each cell's nearest primitive's bone (`NO_BONE` outside).
     owner: Vec<u8>,
-    parent: Vec<Option<u8>>,
+    parent: Vec<Option<BoneId>>,
     /// Per bone, the part it belongs to.
     part: Vec<u16>,
     /// Per bone: the arm it moves (part index; `None` for every other bone, clavicles included)
@@ -166,7 +167,7 @@ impl VoxelBinding {
             kind: cells.iter().map(|c| c.kind).collect(),
             near,
             owner: cells.iter().map(|c| c.bone).collect(),
-            parent: anatomy.skeleton.bones.iter().map(|b| b.parent.map(|p| p.0)).collect(),
+            parent: anatomy.skeleton.bones.iter().map(|b| b.parent).collect(),
             part: anatomy.skeleton.bones.iter().map(|b| b.part).collect(),
             limb: arm_roots(anatomy, field.bone_model()),
             bone_limb: anatomy.skeleton.bones.iter().map(|b| limb_of(anatomy, b.part)).collect(),
@@ -209,8 +210,7 @@ impl VoxelBinding {
                 (None, None) => 1.0,
                 (Some(l), Some(o)) if l == o => 1.0,
                 (Some(_), Some(_)) if matches!(Sheet::from_id(sheet), Sheet::Limb(_)) => 0.0,
-                (Some(l), _) => pull(l),
-                (None, Some(l)) => pull(l),
+                (Some(l), _) | (None, Some(l)) => pull(l),
             })
         });
         for ((b, (joints, weights)), &(_, _, sheet)) in bound.into_iter().zip(data.joints.iter_mut().zip(data.weights.iter_mut())).zip(&homes) {
@@ -300,20 +300,9 @@ impl VoxelBinding {
         Some((joints, weights))
     }
 
-    /// Same bone, or one a near ancestor of the other (as `BodyField::in_line`).
+    /// Same bone, or one a near ancestor of the other (see [`in_line`]).
     fn in_line(&self, a: u8, b: u8) -> bool {
-        let up = |from: u8, to: u8| {
-            let mut cur = Some(from);
-            for _ in 0..=3 {
-                match cur {
-                    Some(c) if c == to => return true,
-                    Some(c) => cur = self.parent.get(c.idx()).copied().flatten(),
-                    None => return false,
-                }
-            }
-            false
-        };
-        up(a, b) || up(b, a)
+        in_line(&self.parent, BoneId(a), BoneId(b))
     }
 }
 
@@ -446,32 +435,14 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
     };
     // Bones spread independently, so they run in parallel (each thread with its own scratch) and
     // merge in bone order: the same result on any thread count.
-    let count = anatomy.skeleton.bones.len();
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = super::worker_threads().min(count).max(1);
-    let mut per_bone: Vec<(usize, Reached)> = super::scope(|scope| {
-        let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                let (one_bone, next) = (&one_bone, &next);
-                scope.spawn(move || {
-                    let (mut dist, mut touched, mut frontier) = (vec![f32::INFINITY; grid.len()], Vec::new(), BinaryHeap::new());
-                    let mut out = Vec::new();
-                    loop {
-                        let bi = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if bi >= count {
-                            break out;
-                        }
-                        if let Some(r) = one_bone(bi, &mut dist, &mut touched, &mut frontier) {
-                            out.push((bi, r));
-                        }
-                    }
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    });
-    per_bone.sort_unstable_by_key(|(bi, _)| *bi);
-    nearest_four(per_bone.into_iter().map(|(_, r)| r), grid.len())
+    let bones: Vec<usize> = (0..anatomy.skeleton.bones.len()).collect();
+    let per_bone = super::par_jobs(
+        &bones,
+        || (vec![f32::INFINITY; grid.len()], Vec::new(), BinaryHeap::new()),
+        |(dist, touched, frontier), &bi| one_bone(bi, dist, touched, frontier),
+    )
+    .unwrap_or_else(|e| std::panic::resume_unwind(e));
+    nearest_four(per_bone.into_iter().flatten(), grid.len())
 }
 
 /// A bone and the cells its spread reached, with their distances (in the order first reached).
@@ -516,20 +487,9 @@ fn touching(data: &BodyMeshData, sheets: &[u16], field: &BodyField) -> Vec<u16> 
     count.into_iter().filter(|(_, n)| *n >= MIN_CONTACT).map(|(l, _)| l).collect()
 }
 
-/// The limb a part is on (as `BodyField` assigns primitives): itself if it is a limb, its parent
-/// if it grows straight from one (hands, feet).
-fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
-    let p = anatomy.parts.get(part.idx())?;
-    if p.role.is_some() {
-        return Some(part);
-    }
-    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
-}
-
 /// Per bone: the arm it moves and that arm's shoulder joint, for fading limb weight out over the
 /// torso (see [`VoxelBinding::limb`]).
 fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f32)>> {
-    let limb_of = |part: u16| limb_of(anatomy, part);
     let clavicle = |bone: u8| anatomy.clavicles.iter().any(|c| c.bone.0 == bone);
     let bones = &anatomy.skeleton.bones;
     bones
@@ -539,7 +499,7 @@ fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f
             if u8::try_from(bi).is_ok_and(clavicle) {
                 return None;
             }
-            let limb = limb_of(def.part)?;
+            let limb = limb_of(anatomy, def.part)?;
             // Arms only: they swing far past where they rest. Legs' weights over the hips are fine as
             // distance gives them, and big hips need them wide.
             let arm = anatomy.parts.get(limb.idx())?;
@@ -555,18 +515,16 @@ fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f
 
 #[cfg(test)]
 mod tests {
-    use crate::anatomy::{BodyPlan, Form, LimbRole, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LimbRole, LodLevel, build_src};
     use crate::num::Idx;
-    use crate::surface::{ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{SurfaceSettings, mesh_lod};
 
     /// On the human mesh: no hand vertex leans on a leg, no finger on its neighbour, weights sum to 1.
     #[test]
     fn hands_and_fingers_keep_to_themselves() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let settings = SurfaceSettings::default();
-        let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+        let m = mesh_lod(&crate::surface::AdaptiveContour, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let bones = &a.skeleton.bones;
         let legs: Vec<u16> = a.legs.iter().flat_map(|l| l.chain.iter().map(|b| u16::from(b.0))).collect();
         let arm_parts: Vec<usize> = a.parts.iter().enumerate().filter(|(_, p)| p.role == Some(LimbRole::Manipulator)).map(|(i, _)| i).collect();

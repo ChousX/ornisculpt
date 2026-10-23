@@ -22,8 +22,8 @@ use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 
 use crate::anatomy::{Anatomy, BoneId, CROWD_SLOT, LodLevel, PrimLayer, PrimOp, PrimShape, WATER};
-use crate::num::{Idx, ToF32};
-use crate::surface::{BodyMeshData, MaterialSlot, SoftVertex, primitive_parts};
+use crate::num::{Idx, ToF32, min_axis_scale, smoothstep};
+use crate::surface::{BodyMeshData, SoftVertex, primitive_parts};
 
 /// Most regions on a hero body (the heaviest are kept).
 pub const MAX_HERO_REGIONS: usize = 32;
@@ -141,7 +141,7 @@ impl SoftTissue {
                 let lod = p.lod.min(anatomy.parts.get(part.idx())?.lod);
                 let bone_model = *rest.get(p.bone.index())?;
                 let model = bone_model * p.local.compute_affine() * Affine3A::from_translation(centre);
-                let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+                let scale = min_axis_scale(&model);
                 let (r, h) = (*radii * scale, height * scale);
                 let size = (r.x * r.y).sqrt().max(1e-3);
                 let to_bone = bone_model.inverse();
@@ -249,12 +249,7 @@ pub fn soft_weights(mesh: &BodyMeshData, anatomy: &Anatomy, tissue: &SoftTissue,
             Some((u16::try_from(first + k).ok()?, u16::from(bone)))
         })
         .collect();
-    let mut skin = vec![false; mesh.positions.len()];
-    for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-        if let Some(s) = skin.get_mut(i.idx()) {
-            *s = true;
-        }
-    }
+    let skin = mesh.skin_vertex_mask();
     for ((v, p), _) in out.iter_mut().zip(&mesh.positions).zip(&skin).filter(|(_, s)| **s) {
         // The three strongest; the third is taken off the other two so that a region dropping out
         // of the top two fades rather than pops.
@@ -302,12 +297,6 @@ fn region_weight(r: &SoftRegion, q: Vec3A) -> f32 {
     };
     let held = if r.shape == RegionShape::Drop { smoothstep(-1.0, 0.25, q.y * SPREAD) } else { 1.0 };
     s * s * held
-}
-
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
 }
 
 /// One region's spring, frame to frame.
@@ -458,18 +447,12 @@ pub fn crowd_matrices(anatomy: &Anatomy, regions: &[SoftRegion], root: Affine3A,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::motion::{BAKE_FRAMES, Gait, bake_motion};
-    use crate::surface::{AdaptiveContour, ProceduralHardParts, SurfaceSettings, mesh_lod};
-
-    fn body(ron: &str) -> Anatomy {
-        let plan: BodyPlan = ron::from_str(ron).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
+    use crate::surface::{AdaptiveContour, MaterialSlot, SurfaceSettings, mesh_lod};
 
     fn quadruped() -> Anatomy {
-        body(include_str!("../assets/mobs/quadruped.body.ron"))
+        build_src(include_str!("../assets/mobs/quadruped.body.ron"))
     }
 
     #[test]
@@ -480,7 +463,7 @@ mod tests {
             ("dragon", include_str!("../assets/mobs/dragon.body.ron")),
             ("thick", include_str!("../assets/mobs/thick.body.ron")),
         ] {
-            let a = body(ron);
+            let a = build_src(ron);
             let t = SoftTissue::of(&a);
             assert!(t.hero.iter().any(|r| r.kind == SoftKind::Fat), "{name}: no fat");
             assert!(t.hero.iter().any(|r| r.kind == SoftKind::Muscle), "{name}: no muscle");
@@ -495,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_drop_swings_its_bulb_and_holds_its_top() {
-        let a = body(include_str!("../assets/mobs/thick.body.ron"));
+        let a = build_src(include_str!("../assets/mobs/thick.body.ron"));
         let t = SoftTissue::of(&a);
         let drop = t.hero.iter().find(|r| r.shape == RegionShape::Drop).expect("the thick plan has drops");
         // Points on the drop's own outside (shape units: the footprint is SPREAD times larger).
@@ -607,7 +590,7 @@ mod tests {
         let t = SoftTissue::of(&a);
         let settings = SurfaceSettings::default();
         for level in [LodLevel::Hero, LodLevel::Near] {
-            let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, level, settings.get(level), 0).unwrap();
+            let mesh = mesh_lod(&AdaptiveContour, &a, level, settings.get(level), 0).unwrap();
             let w = soft_weights(&mesh, &a, &t, level);
             let first = if level == LodLevel::Hero { a.skeleton.len() } else { a.skeleton.crowd.bones.len() };
             let regions = t.at(level).len();
@@ -633,7 +616,7 @@ mod tests {
         let t = SoftTissue::of(&a);
         let settings = SurfaceSettings::default();
         for level in [LodLevel::Hero, LodLevel::Near] {
-            let mut mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, level, settings.get(level), 0).unwrap();
+            let mut mesh = mesh_lod(&AdaptiveContour, &a, level, settings.get(level), 0).unwrap();
             mesh.soft = soft_weights(&mesh, &a, &t, level);
             let split = if level == LodLevel::Hero { mesh.to_bevy_meshes() } else { mesh.to_crowd_meshes() };
             let skin = split.iter().find(|(slot, _)| *slot == MaterialSlot::Skin).map(|(_, m)| m).unwrap();
@@ -670,7 +653,7 @@ mod tests {
 #[cfg(test)]
 mod amplitude {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::motion::{Gait, bake_motion};
 
     /// How far tissue moves over a baked walk and run (prints; for tuning).
@@ -678,8 +661,7 @@ mod amplitude {
     #[ignore = "prints tuning numbers"]
     fn walk_amplitudes() {
         for (name, ron) in [("quadruped", include_str!("../assets/mobs/quadruped.body.ron")), ("biped", include_str!("../assets/mobs/biped.body.ron")), ("curvy", include_str!("../assets/mobs/curvy.body.ron")), ("thick", include_str!("../assets/mobs/thick.body.ron"))] {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let a = build_src(ron);
             let t = SoftTissue::of(&a);
             let m = bake_motion(&a, &Gait::for_legs(a.legs.len()));
             let bones = a.skeleton.crowd.bones.len();

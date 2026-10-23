@@ -17,19 +17,19 @@
 use std::path::Path;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::math::Vec3A;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::shape::Aabb3d;
 use ornisculpt::anatomy::{
-    Anatomy, BodyPlan, CrossSection, Form, LodLevel, PartAssets, PartLodRules, PrimLayer, RegionId, RegionKind, RegionSelector, apply_form,
-    build_anatomy,
+    Anatomy, BodyPlan, CrossSection, LodLevel, PartAssets, PartLodRules, PrimLayer, RegionId, RegionKind, RegionSelector,
 };
 use ornisculpt::num::Saturate;
 use ornisculpt::random::{Noise, NoiseSettings};
 use ornisculpt::surface::{BodyField, BodyFieldOptions, Displace, Field, Influences, Intersect, RegionClip, SurfaceInfo, sdf};
+
+mod common;
+use common::{Orbit, build_plan, orbit_camera, screenshot_at, spawn_stage};
 
 fn main() {
     App::new()
@@ -37,9 +37,9 @@ fn main() {
             primary_window: Some(Window { title: "ornisculpt fields".into(), ..default() }),
             ..default()
         }))
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.0, 0.3, 6.5, Vec3::new(0.0, 0.6, 0.6), (0.3, 30.0)))
         .add_systems(Startup, setup)
-        .add_systems(Update, (orbit_camera, draw_bounds, screenshot))
+        .add_systems(Update, (orbit_camera, draw_bounds, screenshot_at(60)))
         .run();
 }
 
@@ -150,8 +150,7 @@ fn voxel_mesh(field: &impl Field, cell: f32) -> Mesh {
 fn load_anatomy(path: &str) -> Result<Anatomy, String> {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(path)).map_err(|e| format!("{path}: {e}"))?;
     let plan: BodyPlan = ron::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
-    let live = apply_form(&plan, &Form::default()).map_err(|e| e.to_string())?;
-    build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).map_err(|e| e.to_string())
+    build_plan(&plan, PartLodRules::default(), &PartAssets::default())
 }
 
 fn sweeps() -> Vec<Shown> {
@@ -250,14 +249,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
     commands.insert_resource(bounds);
 
     commands.spawn(Camera3d::default());
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 20.0, Vec3::new(3.0, 6.0, 4.0));
 }
 
 fn draw_bounds(bounds: Option<Res<Bounds>>, mut gizmos: Gizmos) {
@@ -265,53 +257,5 @@ fn draw_bounds(bounds: Option<Res<Bounds>>, mut gizmos: Gizmos) {
     for (at, b, colour) in &bounds.0 {
         let (min, max) = (Vec3::from(b.min), Vec3::from(b.max));
         gizmos.cube(Transform::from_translation(at + (min + max) * 0.5).with_scale(max - min), *colour);
-    }
-}
-
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.0, pitch: 0.3, distance: 6.5, target: Vec3::new(0.0, 0.6, 0.6) },
-        }
-    }
-}
-
-fn orbit_camera(
-    mut orbit: ResMut<Orbit>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
-    }
-}
-
-fn screenshot(mut commands: Commands, mut frames: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    *frames += 1;
-    if *frames == 60 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frames == 80 {
-        exit.write(AppExit::Success);
     }
 }

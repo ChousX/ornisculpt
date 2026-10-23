@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
-use super::builder::{affine, lowest_point};
-use super::{Anatomy, BoneId, MAX_BONES, MAX_CROWD_BONES, PrimOp, measure_mass};
+use super::builder::lowest_union;
+use super::{Anatomy, BoneId, MAX_BONES, MAX_CROWD_BONES, measure_mass};
 
 /// A test a built body must pass to be considered viable. Used for authoring feedback now and as
 /// the fitness gate for genetics later. Gait compatibility lives in the `motion` module, since it
@@ -144,12 +144,7 @@ pub fn sole_heights(anatomy: &Anatomy) -> Vec<f32> {
                     *m = true;
                 }
             }
-            anatomy
-                .primitives
-                .iter()
-                .filter(|p| p.op == PrimOp::Union && below.get(p.bone.index()).copied().unwrap_or(false))
-                .filter_map(|p| Some(lowest_point(&p.shape, &(*model.get(p.bone.index())? * affine(&p.local)))))
-                .fold(f32::INFINITY, f32::min)
+            lowest_union(anatomy, &model, |b| below.get(b.index()).copied().unwrap_or(false))
         })
         .collect()
 }

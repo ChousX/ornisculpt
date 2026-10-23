@@ -41,9 +41,11 @@ use bevy::shape::{Aabb3d, BoundingVolume};
 use xxhash_rust::xxh3::Xxh3;
 
 use super::BodyField;
-use super::body::{PreparedShape, local_bounds, transform_aabb};
+use super::mesh_data::vertex_normals;
+use super::body::{local_bounds, transform_aabb};
+use super::hard::{horn_dims, plate_radii};
 use crate::anatomy::{Anatomy, CrossSection, HardKind, HardPart, PrimOp, PrimShape};
-use crate::num::{Clamp, Idx, ToF32};
+use crate::num::{Clamp, Idx, ToF32, min_axis_scale};
 
 /// Words per primitive.
 pub const PRIM_WORDS: usize = 8;
@@ -146,22 +148,8 @@ impl PreviewSheets {
                     })
                 })
                 .collect();
-            let sheet_positions = &posed;
-            let mut normals = vec![Vec3::ZERO; sheet.positions.len()];
-            for t in sheet.indices.as_chunks::<3>().0 {
-                let [a, b, c] = t.map(Idx::idx);
-                let (Some(&pa), Some(&pb), Some(&pc)) = (sheet_positions.get(a), sheet_positions.get(b), sheet_positions.get(c)) else {
-                    continue;
-                };
-                let n = (pb - pa).cross(pc - pa);
-                for v in [a, b, c] {
-                    if let Some(slot) = normals.get_mut(v) {
-                        *slot += n;
-                    }
-                }
-            }
-            out.positions.extend(posed.iter());
-            out.normals.extend(normals.into_iter().map(|n| n.normalize_or(Vec3::Y)));
+            out.normals.extend(vertex_normals(&posed, &sheet.indices));
+            out.positions.extend(posed);
             out.shade.extend((0..sheet.positions.len()).map(|i| [sheet.thickness.get(i).copied().unwrap_or(0.0), lit]));
             out.indices.extend(sheet.indices.iter().map(|i| base + i));
         }
@@ -175,21 +163,6 @@ const fn bits(v: u32) -> f32 {
 
 const fn word_u32(a: u32, b: u32, c: u32, d: u32) -> [f32; 4] {
     [bits(a), bits(b), bits(c), bits(d)]
-}
-
-/// Appends a sweep's points to `segments`; returns its kind and parameter words (the second
-/// holds the largest radius, for the teardrop keel's blend).
-fn sweep(segments: &mut Vec<[f32; 4]>, points: impl ExactSizeIterator<Item = Vec3>, radii: &[f32], cross: CrossSection) -> (u32, [f32; 4], [f32; 4]) {
-    let first = segments.len();
-    let count = points.len();
-    segments.extend(points.zip(radii).map(|(p, r)| [p.x, p.y, p.z, *r]));
-    let teardrop = matches!(cross, CrossSection::Teardrop { .. });
-    let max_radius = radii.iter().copied().fold(0.0, f32::max);
-    (
-        SWEEP,
-        [bits(first.clamp_u32()), bits(count.min(radii.len()).clamp_u32()), cross.aspect(), f32::from(u8::from(teardrop))],
-        [max_radius, 0.0, 0.0, 0.0],
-    )
 }
 
 /// One primitive on its way into the words.
@@ -221,19 +194,9 @@ fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     let s = part.params.size;
     let (kind, params, flag) = match &part.params.kind {
         HardKind::Eye => (SPHERE, [s, 0.0, 0.0, 0.0], EYE),
-        HardKind::Plate => (ELLIPSOID, [s * 0.45, s * 0.12f32.mul_add(part.params.curve.clamp(0.0, 1.0), 0.06), s * 0.5, 0.0], HARD),
-        HardKind::Mesh { .. } => return None,
-        horn => {
-            let (length, base) = match horn {
-                HardKind::Nail => (s * 0.4, s * 0.5),
-                HardKind::Horn | HardKind::Fang => (s, s * 0.22),
-                HardKind::Tusk => (s, s * 0.15),
-                HardKind::Tooth => (s, s * 0.35),
-                HardKind::Spike => (s, s * 0.3),
-                HardKind::Beak => (s, s * 0.45),
-                HardKind::Antler { .. } => (s, s * 0.08),
-                _ => (s, s * 0.25),
-            };
+        HardKind::Plate => (ELLIPSOID, plate_radii(s, part.params.curve).extend(0.0).to_array(), HARD),
+        kind => {
+            let (length, base, _) = horn_dims(kind, s)?;
             let tip = base * 0.15;
             (ROUND_CONE, [base, tip, (length - tip).max(1e-4), 0.0], HARD)
         }
@@ -246,7 +209,7 @@ fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     };
     Some(Packed {
         to_local: m.inverse(),
-        min_scale: (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min),
+        min_scale: min_axis_scale(&m),
         kind,
         params,
         more: [0.0; 4],
@@ -268,23 +231,20 @@ impl BodyField {
     /// Creases are left out (they are shading-scale).
     #[must_use]
     pub fn preview(&self, anatomy: &Anatomy, highlight: impl Fn(u16) -> bool) -> PreviewField {
-        let mut segments: Vec<[f32; 4]> = Vec::new();
+        let segments: Vec<[f32; 4]> = Vec::new();
         let mut grids: Vec<[f32; 4]> = Vec::new();
         // Grids shared by several primitives (mirrored copies) are packed once.
         let mut packed_grids: Vec<(*const crate::anatomy::SdfGrid, usize)> = Vec::new();
         let mut packed = Vec::with_capacity(self.prims.len() + anatomy.hard_parts.len());
         for prim in &self.prims {
             let (kind, params, more) = match &prim.shape {
-                PreparedShape::Simple(PrimShape::Sphere { r }) => (SPHERE, [*r, 0.0, 0.0, 0.0], [0.0; 4]),
-                PreparedShape::Simple(PrimShape::Ellipsoid { radii }) => (ELLIPSOID, radii.extend(0.0).to_array(), [0.0; 4]),
-                PreparedShape::Simple(PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len }) => {
+                PrimShape::Sphere { r } => (SPHERE, [*r, 0.0, 0.0, 0.0], [0.0; 4]),
+                PrimShape::Ellipsoid { radii } => (ELLIPSOID, radii.extend(0.0).to_array(), [0.0; 4]),
+                PrimShape::RoundCone { r0, r1, len } => {
                     (ROUND_CONE, [*r0, *r1, *len, 0.0], [0.0; 4])
                 }
-                PreparedShape::Simple(PrimShape::RoundBox { half, round }) => (ROUND_BOX, half.extend(*round).to_array(), [0.0; 4]),
-                PreparedShape::Sweep { points, radii, cross } => sweep(&mut segments, points.iter().map(|p| Vec3::from(*p)), radii, *cross),
-                // `BodyField` converts sweeps; this arm is never taken.
-                PreparedShape::Simple(PrimShape::Sweep { points, radii, cross }) => sweep(&mut segments, points.iter().copied(), radii, *cross),
-                PreparedShape::Simple(PrimShape::Grid { grid, mirror_x }) => {
+                PrimShape::RoundBox { half, round } => (ROUND_BOX, half.extend(*round).to_array(), [0.0; 4]),
+                PrimShape::Grid { grid, mirror_x } => {
                     let key = std::ptr::from_ref(grid.as_ref());
                     let at = if let Some((_, at)) = packed_grids.iter().find(|(k, _)| *k == key) {
                         *at
@@ -590,7 +550,7 @@ fn hull(surface: &[bool], dims: UVec3, min: Vec3, cell: f32) -> Vec<([Vec3; 4], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
     use crate::surface::{BodyFieldOptions, Field};
 
     /// Each packed cell lists the primitives that come within the list pad of it, in field order:
@@ -600,8 +560,7 @@ mod tests {
     /// the cell.)
     #[test]
     fn cell_lists_reproduce_the_field() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
         let packed = field.preview(&anatomy, |_| false);
         let header = packed.words[0].map(f32::to_bits);
@@ -642,13 +601,9 @@ mod tests {
     /// keys of the bricks around it only, and changing the selection (the highlight) changes none.
     #[test]
     fn brick_keys_follow_local_edits() {
-        let build = |src: &str| {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap()
-        };
         let opts = BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false };
         let src = include_str!("../../assets/mobs/quadruped.body.ron");
-        let anatomy = build(src);
+        let anatomy = build_src(src);
         let field = BodyField::new(&anatomy, &opts);
         let plain = field.preview(&anatomy, |_| false);
         let keys = |f: &PreviewField| f.bricks.iter().map(|b| b.key).collect::<std::collections::HashSet<u64>>();
@@ -660,7 +615,7 @@ mod tests {
         assert_ne!(plain.words, lit.words, "but not the words");
 
         // Larger ears: a few bricks around the ears change, the rest keep their keys.
-        let ears = build(&src.replacen("length: 0.08,", "length: 0.09,", 1));
+        let ears = build_src(&src.replacen("length: 0.08,", "length: 0.09,", 1));
         let edited = BodyField::new(&ears, &opts).preview(&ears, |_| false);
         let before = keys(&plain);
         let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();
@@ -669,7 +624,7 @@ mod tests {
 
         // Longer front legs lift the whole body (grounding), but the bricks are keyed before it:
         // the legs' bricks change, the rest keep their keys.
-        let legs = build(&src.replacen("length: 0.42,", "length: 0.45,", 1));
+        let legs = build_src(&src.replacen("length: 0.42,", "length: 0.45,", 1));
         assert!((legs.ground - anatomy.ground).abs() > 1e-3, "the edit regrounds the body");
         let edited = BodyField::new(&legs, &opts).preview(&legs, |_| false);
         let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();

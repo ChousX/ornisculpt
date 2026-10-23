@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
-use crate::num::{Idx, Saturate, ToF32};
-use crate::anatomy::{Anatomy, BoneId, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
+use crate::num::{Idx, Saturate, ToF32, min_axis_scale};
+use crate::anatomy::{Anatomy, BoneId, BuiltPart, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 use smallvec::SmallVec;
 
@@ -150,24 +150,21 @@ impl<'a> Acc<'a> {
             match prim.op {
                 PrimOp::Union => {
                     let body = acc.body;
-                    match prim.limb.and_then(|limb| acc.slot(limb)) {
-                        Some((l, near)) => {
-                            l.own = if l.own < f32::MAX { sdf::smin(l.own, dl, blend).0 } else { dl };
-                            // A new limb starts from the body so far.
-                            let from = if l.with_body < f32::MAX { Some(l.with_body) } else { body };
-                            l.with_body = from.map_or(dl, |d| sdf::smin(d, dl, blend).0);
-                            if dl < near.0 {
-                                *near = (dl, Some(prim));
-                            }
+                    if let Some((l, near)) = prim.limb.and_then(|limb| acc.slot(limb)) {
+                        l.own = if l.own < f32::MAX { sdf::smin(l.own, dl, blend).0 } else { dl };
+                        // A new limb starts from the body so far.
+                        let from = if l.with_body < f32::MAX { Some(l.with_body) } else { body };
+                        l.with_body = from.map_or(dl, |d| sdf::smin(d, dl, blend).0);
+                        if dl < near.0 {
+                            *near = (dl, Some(prim));
                         }
-                        None => {
-                            acc.body = Some(acc.body.map_or(dl, |d| sdf::smin(d, dl, blend).0));
-                            for l in acc.limbs.iter_mut().take(acc.used).filter(|l| l.with_body < f32::MAX) {
-                                l.with_body = sdf::smin(l.with_body, dl, blend).0;
-                            }
-                            if dl < acc.body_nearest.0 {
-                                acc.body_nearest = (dl, Some(prim));
-                            }
+                    } else {
+                        acc.body = Some(acc.body.map_or(dl, |d| sdf::smin(d, dl, blend).0));
+                        for l in acc.limbs.iter_mut().take(acc.used).filter(|l| l.with_body < f32::MAX) {
+                            l.with_body = sdf::smin(l.with_body, dl, blend).0;
+                        }
+                        if dl < acc.body_nearest.0 {
+                            acc.body_nearest = (dl, Some(prim));
                         }
                     }
                     if dl < best {
@@ -183,7 +180,7 @@ impl<'a> Acc<'a> {
                     }
                 }
                 PrimOp::Displace { height } => {
-                    if let PreparedShape::Simple(PrimShape::Ellipsoid { radii }) = &prim.shape {
+                    if let PrimShape::Ellipsoid { radii } = &prim.shape {
                         let s = 1.0 - (prim.to_local.transform_point3a(p) / Vec3A::from(*radii)).length_squared();
                         if s > 0.0 {
                             // A limb's stamps raise only that limb.
@@ -218,9 +215,11 @@ impl<'a> Acc<'a> {
     }
 }
 
-/// One sheet of a body's surface. Where a limb touches the body away from where it attaches, or
-/// touches another limb, the mesher builds each one's own surface through the other instead of
-/// one surface around both, so they part cleanly when they move (see [`RawMesh::sheets`](super::RawMesh::sheets)).
+/// One sheet of a body's surface.
+///
+/// Where a limb touches the body away from where it attaches, or touches another limb, the mesher
+/// builds each one's own surface through the other instead of one surface around both, so they
+/// part cleanly when they move (see [`RawMesh::sheets`](super::RawMesh::sheets)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
     /// The whole body: every primitive, limbs joined.
@@ -306,7 +305,7 @@ impl Attachment {
             return 1.0;
         }
         let t = ((e - self.margin) / self.margin).min(1.0);
-        1.0 - t * t * 2.0f32.mul_add(-t, 3.0)
+        (t * t).mul_add(-2.0f32.mul_add(-t, 3.0), 1.0)
     }
 }
 
@@ -316,7 +315,7 @@ pub(super) struct PreparedPrim {
     pub(super) to_local: Affine3A,
     /// Smallest axis scale of the local → model transform (keeps distances conservative).
     pub(super) min_scale: f32,
-    pub(super) shape: PreparedShape,
+    pub(super) shape: PrimShape,
     pub(super) blend: f32,
     /// Local anchor point and reach for blend fading (see `Primitive::blend_anchor`).
     pub(super) anchor: Option<(Vec3A, f32)>,
@@ -333,21 +332,12 @@ pub(super) struct PreparedPrim {
     pub(super) aabb: Aabb3d,
 }
 
-/// [`PrimShape`] with sweeps pre-converted for fast evaluation.
-pub(super) enum PreparedShape {
-    Simple(PrimShape),
-    Sweep { points: Vec<Vec3A>, radii: Vec<f32>, cross: CrossSection },
-}
-
 impl PreparedPrim {
     /// Distance and effective blend radius at `p`.
     #[inline]
     fn eval(&self, p: Vec3A) -> (f32, f32) {
         let q = self.to_local.transform_point3a(p);
-        let d = match &self.shape {
-            PreparedShape::Simple(s) => sdf::shape(q, s),
-            PreparedShape::Sweep { points, radii, cross } => sdf::sweep(q, points, radii, *cross),
-        };
+        let d = sdf::shape(q, &self.shape);
         let blend = match self.anchor {
             Some((a, reach)) => self.blend * (1.0 - (q - a).length() * self.min_scale / reach).clamp(0.0, 1.0),
             None => self.blend,
@@ -361,7 +351,7 @@ pub(super) fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
     match shape {
         PrimShape::Sphere { r } => (Vec3::splat(-r), Vec3::splat(*r)),
         PrimShape::Ellipsoid { radii } => (-*radii, *radii),
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => {
+        PrimShape::RoundCone { r0, r1, len } => {
             let r = r0.max(*r1);
             (Vec3::new(-r, -r0, -r), Vec3::new(r, len + r1, r))
         }
@@ -369,12 +359,6 @@ pub(super) fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
         PrimShape::Grid { grid, mirror_x } => {
             let (lo, hi) = grid.bounds();
             if *mirror_x { (Vec3::new(-hi.x, lo.y, lo.z), Vec3::new(-lo.x, hi.y, hi.z)) } else { (lo, hi) }
-        }
-        PrimShape::Sweep { points, radii, .. } => {
-            let r = radii.iter().copied().fold(0.0, f32::max);
-            let lo = points.iter().copied().fold(Vec3::INFINITY, Vec3::min);
-            let hi = points.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max);
-            (lo - r, hi + r)
         }
     }
 }
@@ -496,14 +480,6 @@ impl BodyField {
         });
         let fold_pad = if creases.is_some() { fold_amp } else { 0.0 };
 
-        // A limb part, or a part growing straight from one (hands, toes, hooves), belongs to that limb.
-        let limb_of = |part: usize| -> Option<u16> {
-            let p = anatomy.parts.get(part)?;
-            if p.role.is_some() {
-                return u16::try_from(part).ok();
-            }
-            p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
-        };
         let mut prims = Vec::new();
         for (p, &part) in anatomy.primitives.iter().zip(&prim_part) {
             if anatomy.parts.get(part.idx()).is_none_or(|part| part.lod < opts.level) || p.lod < opts.level {
@@ -511,16 +487,9 @@ impl BodyField {
             }
             let Some(bone) = model.get(p.bone.index()) else { continue };
             let m = *bone * p.local.compute_affine();
-            let min_scale = (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let min_scale = min_axis_scale(&m);
             let aabb = transform_aabb(&m, local_bounds(&p.shape)).grow(Vec3A::splat(p.blend + fold_pad));
-            let shape = match &p.shape {
-                PrimShape::Sweep { points, radii, cross } => PreparedShape::Sweep {
-                    points: points.iter().map(|&v| v.into()).collect(),
-                    radii: radii.clone(),
-                    cross: *cross,
-                },
-                s => PreparedShape::Simple(s.clone()),
-            };
+            let shape = p.shape.clone();
             prims.push(PreparedPrim {
                 to_local: m.inverse(),
                 min_scale,
@@ -532,7 +501,7 @@ impl BodyField {
                 region: p.region,
                 bone: p.bone,
                 part,
-                limb: limb_of(part.idx()),
+                limb: limb_of(anatomy, part),
                 aabb,
             });
         }
@@ -804,10 +773,16 @@ impl BodyField {
 
 /// Owning part index of every primitive (from the parts' primitive ranges).
 pub fn primitive_parts(anatomy: &Anatomy) -> Vec<u16> {
-    let mut out = vec![0u16; anatomy.primitives.len()];
+    range_owners(anatomy, anatomy.primitives.len(), |p| p.primitives.start.idx()..p.primitives.end.idx())
+}
+
+/// Owning part index of each of `len` items, from the item range `range` gives every part (0 for
+/// items in none).
+pub(super) fn range_owners(anatomy: &Anatomy, len: usize, range: impl Fn(&BuiltPart) -> std::ops::Range<usize>) -> Vec<u16> {
+    let mut out = vec![0u16; len];
     for (pi, part) in (0u16..).zip(&anatomy.parts) {
-        for i in part.primitives.clone() {
-            if let Some(slot) = out.get_mut(i.idx()) {
+        for i in range(part) {
+            if let Some(slot) = out.get_mut(i) {
                 *slot = pi;
             }
         }
@@ -944,22 +919,37 @@ impl<'a> ChunkView<'a> {
 }
 
 impl BodyField {
-    /// Whether `a` and `b` are the same bone or one is a near ancestor of the other (within three
-    /// steps: chest bone → clavicle → arm still counts).
+    /// Whether `a` and `b` are in line (see [`in_line`]).
     pub(crate) fn in_line(&self, a: BoneId, b: BoneId) -> bool {
-        let up = |from: BoneId, to: BoneId| {
-            let mut cur = Some(from);
-            for _ in 0..=3 {
-                match cur {
-                    Some(c) if c == to => return true,
-                    Some(c) => cur = self.bone_parent.get(c.index()).copied().flatten(),
-                    None => return false,
-                }
-            }
-            false
-        };
-        up(a, b) || up(b, a)
+        in_line(&self.bone_parent, a, b)
     }
+}
+
+/// Whether `a` and `b` are the same bone or one is a near ancestor of the other by `parent`
+/// (within three steps: chest bone → clavicle → arm still counts).
+pub(super) fn in_line(parent: &[Option<BoneId>], a: BoneId, b: BoneId) -> bool {
+    let up = |from: BoneId, to: BoneId| {
+        let mut cur = Some(from);
+        for _ in 0..=3 {
+            match cur {
+                Some(c) if c == to => return true,
+                Some(c) => cur = parent.get(c.index()).copied().flatten(),
+                None => return false,
+            }
+        }
+        false
+    };
+    up(a, b) || up(b, a)
+}
+
+/// The limb `part` belongs to: itself if it is a limb, else its parent if that is one (hands,
+/// toes, hooves).
+pub(super) fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
+    let p = anatomy.parts.get(part.idx())?;
+    if p.role.is_some() {
+        return Some(part);
+    }
+    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
 }
 
 impl BodyField {
@@ -1020,15 +1010,13 @@ impl ChunkView<'_> {
 #[cfg(test)]
 mod spread_tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
 
     /// A vertex fully weighted to the hand, placed where the hand is in the spread pose, lands
     /// where the hand is at rest.
     #[test]
     fn unbind_returns_vertices_to_rest() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
         let arm = a.parts.iter().find(|p| p.role == Some(crate::anatomy::LimbRole::Manipulator)).unwrap();
         let hand = usize::from(arm.bones.end - 1);
@@ -1044,7 +1032,7 @@ mod spread_tests {
 #[cfg(test)]
 mod limb_tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LimbRole, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LimbRole, build_src};
 
     /// Between the thighs, from the crotch to the knees, the field is the nearer thigh's (with the
     /// body it blends into), never a blend of the two: thighs touch, they don't web together.
@@ -1056,8 +1044,7 @@ mod limb_tests {
             ("curvy", include_str!("../../assets/mobs/curvy.body.ron")),
             ("thick", include_str!("../../assets/mobs/thick.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(ron);
             let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
             let rest = anatomy.skeleton.model_rest();
             let legs: Vec<usize> = (0..anatomy.parts.len()).filter(|&i| anatomy.parts[i].role == Some(LimbRole::Locomotor)).collect();
@@ -1090,8 +1077,7 @@ mod limb_tests {
     #[test]
     fn overlapping_legs_mesh_apart() {
         let spread_of = |ron: &str| {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(ron);
             let opts = |spread| BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread };
             let (rest, meshing) = (BodyField::new(&anatomy, &opts(false)), BodyField::new(&anatomy, &opts(true)));
             let hip = anatomy.legs[0].chain[0].index();
@@ -1108,6 +1094,7 @@ mod limb_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
 mod attach_probe {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};

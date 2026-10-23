@@ -22,6 +22,7 @@ use super::stages::leg_length;
 use super::{ActiveStep, CyclePose, ExternalRoot, GaitClock, GaitOverride, Locomotion, MotionEvent};
 use crate::anatomy::Anatomy;
 use crate::mob::{GeneratedBody, MobBody, MobSkeleton};
+use crate::num::smoothstep;
 
 /// The motion graphs this mob runs, composed in order (see [`compose`]).
 #[derive(Component, Clone, Debug, Default)]
@@ -79,20 +80,6 @@ impl MotionParams {
     /// Fires the first transition waiting on `name` (within [`TRIGGER_LIFETIME`]).
     pub fn trigger(&mut self, name: &str) -> &mut Self {
         self.triggers.insert(name.into(), 0.0);
-        self
-    }
-
-    /// Builder form of [`set`](Self::set).
-    #[must_use]
-    pub fn with(mut self, name: &str, value: f32) -> Self {
-        self.set(name, value);
-        self
-    }
-
-    /// Builder form of [`set_bool`](Self::set_bool).
-    #[must_use]
-    pub fn with_bool(mut self, name: &str, value: bool) -> Self {
-        self.set_bool(name, value);
         self
     }
 
@@ -178,12 +165,6 @@ impl PlayCycle {
         self.speed = speed;
         self
     }
-
-    #[must_use]
-    pub const fn without_root_motion(mut self) -> Self {
-        self.root_motion = false;
-        self
-    }
 }
 
 /// This frame's root motion for [`ExternalRoot`] mobs: apply it yourself (world space).
@@ -194,6 +175,10 @@ pub struct RootMotionDelta {
 }
 
 /// A foot touched down (hero tier).
+///
+/// Triggered once the mob's whole pose for the frame is done, before it is written to the
+/// joints: observers run after every pose stage (leg IK, look-at, ...), not straight after the
+/// feet plant.
 #[derive(EntityEvent, Clone, Debug)]
 pub struct Footstep {
     pub entity: Entity,
@@ -251,14 +236,9 @@ struct DirectRun {
     leaving: bool,
 }
 
+/// An index into the composed graph (a cycle or a layer) or into the direct runs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Src {
-    Graph(usize),
-    Direct(usize),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum LayerRef {
     Graph(usize),
     Direct(usize),
 }
@@ -270,7 +250,7 @@ struct Active {
     /// `None`: synced to the gait phase.
     t: Option<f32>,
     weight: f32,
-    layer: LayerRef,
+    layer: Src,
 }
 
 /// Per-mob playback state (added automatically with [`MobMotion`] or [`PlayCycle`]).
@@ -314,11 +294,9 @@ impl MotionRuntime {
             return f;
         }
         let (Some(rig), Some(cycle)) = (&self.rig, self.cycle(Src::Graph(i), cycles)) else { return false };
-        let misfits = cycle.fits.check(&rig.traits);
-        let ok = misfits.is_empty();
-        if !ok {
-            out.misfits.push((format!("cycle {} doesn't fit a {:?} body: {misfits:?}", cycle.name, rig.traits.family), false));
-        }
+        let misfit = misfit(cycle, rig);
+        let ok = misfit.is_none();
+        out.misfits.extend(misfit.map(|m| (m, false)));
         if let Some(slot) = self.fits.get_mut(i) {
             *slot = Some(ok);
         }
@@ -350,12 +328,12 @@ impl MotionRuntime {
                 }
             }
             let (mask, weight, additive) = match layer {
-                LayerRef::Graph(l) => {
+                Src::Graph(l) => {
                     let g = self.graph.as_ref()?;
                     let (Some(mask), Some(gl)) = (self.masks.get(l), g.layers.get(l)) else { continue };
                     (mask, gl.weight, gl.mode == LayerMode::Additive)
                 }
-                LayerRef::Direct(d) => {
+                Src::Direct(d) => {
                     let Some(run) = self.direct.get(d) else { continue };
                     let Some(mask) = &run.mask else { continue };
                     (mask, run.play.weight * run.level, run.play.mode == LayerMode::Additive)
@@ -388,7 +366,7 @@ impl MotionRuntime {
                 .iter()
                 .map(|(_, v)| match v {
                     ParamValue::Float(f) => *f,
-                    ParamValue::Bool(b) => f32::from(u8::from(*b)),
+                    ParamValue::Bool(b) => flag(*b),
                     ParamValue::Trigger => 0.0,
                 })
                 .collect()
@@ -590,14 +568,39 @@ fn cycles_per_second(cycle: &Cycle, speed: f32) -> Option<f32> {
     }
 }
 
-/// Events in `(t0, t1]`, wrapping when `t1 < t0`.
-fn crossed(cycle: &Cycle, t0: f32, t1: f32, out: &mut Out) {
+/// Steps cycle time `t0` by `rate` (cycles per second) over `dt`: a looping cycle wraps, an
+/// action stops at its end. Returns the new time and whether it looped.
+fn advance(cycle: &Cycle, t0: f32, rate: f32, dt: f32) -> (f32, bool) {
+    let t1 = rate.mul_add(dt, t0);
+    if !cycle.kind.loops() {
+        (t1.min(1.0), false)
+    } else if t1 >= 1.0 {
+        (t1.fract(), true)
+    } else {
+        (t1, false)
+    }
+}
+
+/// What a cycle stepping from `t0` to `t1` emits: its events in `(t0, t1]` (wrapping when
+/// `t1 < t0`) and, with a `root` weight, its root motion scaled by it.
+fn emit(cycle: &Cycle, (t0, t1, looped): (f32, f32, bool), root: Option<f32>, leg: f32, out: &mut Out) {
     for e in &cycle.events {
         let hit = if t1 >= t0 { e.at > t0 && e.at <= t1 } else { e.at > t0 || e.at <= t1 };
         if hit {
             out.events.push((e.name.clone(), cycle.name.clone()));
         }
     }
+    if let Some(weight) = root {
+        let (offset, yaw) = root_delta(cycle, t0, t1, looped);
+        out.root += offset * leg * weight;
+        out.yaw = yaw.to_radians().mul_add(weight, out.yaw);
+    }
+}
+
+/// Why `cycle` doesn't fit the rig's body, if it doesn't.
+fn misfit(cycle: &Cycle, rig: &MotionRig) -> Option<String> {
+    let misfits = cycle.fits.check(&rig.traits);
+    (!misfits.is_empty()).then(|| format!("cycle {} doesn't fit a {:?} body: {misfits:?}", cycle.name, rig.traits.family))
 }
 
 /// Root displacement (leg lengths, mob space) and yaw (degrees) between `t0` and `t1`.
@@ -658,16 +661,21 @@ fn step(
     (out.root, out.yaw)
 }
 
+/// A bool as a parameter value.
+fn flag(b: bool) -> f32 {
+    f32::from(u8::from(b))
+}
+
 /// Parameters: built-ins, then the mob's values.
 fn update_params(rt: &mut MotionRuntime, g: &ComposedGraph, params: &MotionParams, loco: &Locomotion, speed: f32) {
     for ((name, kind), value) in g.params.iter().zip(&mut rt.values) {
         *value = match (name.as_str(), kind) {
             ("speed", _) => speed,
-            ("moving", _) => f32::from(u8::from(speed > 0.05)),
+            ("moving", _) => flag(speed > 0.05),
             ("turn", _) => loco.turn_rate,
             (_, ParamValue::Float(_)) => params.float(name).unwrap_or(*value),
-            (_, ParamValue::Bool(_)) => params.bool(name).map_or(*value, |b| f32::from(u8::from(b))),
-            (_, ParamValue::Trigger) => f32::from(u8::from(params.is_triggered(name))),
+            (_, ParamValue::Bool(_)) => params.bool(name).map_or(*value, flag),
+            (_, ParamValue::Trigger) => flag(params.is_triggered(name)),
         };
     }
 }
@@ -688,7 +696,11 @@ fn take_transitions(rt: &mut MotionRuntime, g: &ComposedGraph, params: &mut Moti
             eval_condition(&t.when, &rt.values, finished)
         });
         if let Some((ti, t)) = fire {
-            consume_triggers(&t.when, g, params);
+            for_each_trigger(&t.when, &mut |i| {
+                if let Some((name, _)) = g.params.get(i) {
+                    params.triggers.remove(name);
+                }
+            });
             if t.switch == Switch::AtEnd && !finished {
                 if let Some(run) = rt.layers.get_mut(li) {
                     run.pending = Some(ti);
@@ -730,11 +742,11 @@ fn advance_layer(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, frame: &F
                 run.gait = choice;
             }
             if let Some(c) = choice {
-                let weight = smooth(speed / 0.25) * (1.0 - run.fade.map_or(0.0, |f| f.weight()));
+                let weight = smoothstep(0.0, 1.0, speed / 0.25) * (1.0 - run.fade.map_or(0.0, |f| f.weight()));
                 if rt.plan.is_none() && rt.cycle(Src::Graph(c), cycles).is_some_and(|cycle| cycle.feet.is_some()) {
                     rt.plan = Some(Src::Graph(c));
                 }
-                rt.active.push(Active { src: Src::Graph(c), t: None, weight, layer: LayerRef::Graph(li) });
+                rt.active.push(Active { src: Src::Graph(c), t: None, weight, layer: Src::Graph(li) });
             }
             frame.phase_wrapped
         }
@@ -755,7 +767,7 @@ fn advance_layer(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, frame: &F
                 if w > 0.0 && rt.fits(c, cycles, out) {
                     let synced = rt.cycle(Src::Graph(c), cycles).is_some_and(|c| cycles_per_second(c, speed).is_none());
                     let t = if synced { None } else { Some(t1) };
-                    rt.active.push(Active { src: Src::Graph(c), t, weight: w * fade_in, layer: LayerRef::Graph(li) });
+                    rt.active.push(Active { src: Src::Graph(c), t, weight: w * fade_in, layer: Src::Graph(li) });
                 }
             }
             run.t = t1;
@@ -791,32 +803,21 @@ fn play_cycle(
             if rt.plan.is_none() && cycle.feet.is_some() {
                 rt.plan = Some(Src::Graph(c));
             }
-            rt.active.push(Active { src: Src::Graph(c), t: None, weight: fade_in, layer: LayerRef::Graph(li) });
+            rt.active.push(Active { src: Src::Graph(c), t: None, weight: fade_in, layer: Src::Graph(li) });
         }
         return frame.phase_wrapped;
     };
     let t0 = run.t;
-    let mut t1 = f32::mul_add(rate * rate_scale, frame.dt, t0);
+    let (t1, looped) = advance(&cycle, t0, rate * rate_scale, frame.dt);
     let action = !cycle.kind.loops();
     let hold = matches!(cycle.kind, CycleKind::Action { hold: true, .. });
-    let mut wrapped = false;
-    if action {
-        t1 = t1.min(1.0);
-        wrapped = t1 >= 1.0 && t0 < 1.0;
-    } else if t1 >= 1.0 {
-        t1 = t1.fract();
-        wrapped = true;
-    }
+    // An action "wraps" the frame it reaches its end.
+    let wrapped = looped || (action && t1 >= 1.0 && t0 < 1.0);
     if rt.fits(c, frame.cycles, out) {
-        crossed(&cycle, t0, t1, out);
-        if layer.root_motion {
-            let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped && !action);
-            out.root += offset * frame.leg * fade_in * layer.weight;
-            out.yaw = (yaw.to_radians() * fade_in).mul_add(layer.weight, out.yaw);
-        }
+        emit(&cycle, (t0, t1, looped), layer.root_motion.then_some(fade_in * layer.weight), frame.leg, out);
         let done = action && t0 >= 1.0;
         if !done || hold {
-            rt.active.push(Active { src: Src::Graph(c), t: Some(t1), weight: fade_in, layer: LayerRef::Graph(li) });
+            rt.active.push(Active { src: Src::Graph(c), t: Some(t1), weight: fade_in, layer: Src::Graph(li) });
         }
     }
     run.t = t1;
@@ -855,33 +856,19 @@ fn play_direct(rt: &mut MotionRuntime, play: Option<(&PlayCycle, bool)>, rig: &M
         let fade = if d.play.blend <= 0.0 { f32::INFINITY } else { dt / d.play.blend };
         d.level = if d.leaving { d.level - fade } else { d.level + fade }.clamp(0.0, 1.0);
         if d.fits.is_none() {
-            let misfits = cycle.fits.check(&rig.traits);
-            if !misfits.is_empty() {
-                out.misfits.push((format!("cycle {} doesn't fit a {:?} body: {misfits:?}", cycle.name, rig.traits.family), true));
-            }
-            d.fits = Some(misfits.is_empty());
+            let misfit = misfit(&cycle, rig);
+            d.fits = Some(misfit.is_none());
+            out.misfits.extend(misfit.map(|m| (m, true)));
         }
         let t0 = d.t;
         let t = cycles_per_second(&cycle, frame.speed).map(|rate| {
-            let mut t1 = (rate * d.play.speed).mul_add(dt, t0);
-            let action = !cycle.kind.loops();
-            let wrapped = !action && t1 >= 1.0;
-            if action {
-                t1 = t1.min(1.0);
-                if t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
-                    out.finished = true;
-                    d.leaving = true;
-                }
-            } else {
-                t1 = t1.fract();
+            let (t1, looped) = advance(&cycle, t0, rate * d.play.speed, dt);
+            if !cycle.kind.loops() && t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
+                out.finished = true;
+                d.leaving = true;
             }
             if d.fits == Some(true) {
-                crossed(&cycle, t0, t1, out);
-                if d.play.root_motion {
-                    let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped);
-                    out.root += offset * frame.leg * d.level;
-                    out.yaw = f32::mul_add(yaw.to_radians(), d.level, out.yaw);
-                }
+                emit(&cycle, (t0, t1, looped), d.play.root_motion.then_some(d.level), frame.leg, out);
             }
             d.t = t1;
             t1
@@ -891,7 +878,7 @@ fn play_direct(rt: &mut MotionRuntime, play: Option<(&PlayCycle, bool)>, rig: &M
             if t.is_none() && cycle.feet.is_some() {
                 rt.plan = Some(Src::Direct(di));
             }
-            rt.active.push(Active { src: Src::Direct(di), t, weight: 1.0, layer: LayerRef::Direct(di) });
+            rt.active.push(Active { src: Src::Direct(di), t, weight: 1.0, layer: Src::Direct(di) });
         }
     }
     // Drop faded-out runs (indices in `active` refer to the list before this, so only trailing
@@ -905,7 +892,7 @@ fn play_direct(rt: &mut MotionRuntime, play: Option<(&PlayCycle, bool)>, rig: &M
             if let Src::Direct(i) = &mut a.src {
                 *i = i.saturating_sub(1);
             }
-            if let LayerRef::Direct(i) = &mut a.layer {
+            if let Src::Direct(i) = &mut a.layer {
                 *i = i.saturating_sub(1);
             }
         }
@@ -917,11 +904,6 @@ const fn stride(cycle: &Cycle) -> f32 {
         CycleKind::Gait { stride, .. } => stride,
         _ => 1.0,
     }
-}
-
-fn smooth(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * 2.0f32.mul_add(-x, 3.0)
 }
 
 /// Linear weights between the two blend points around `value`.
@@ -1003,7 +985,7 @@ fn push_state(
     let list: SmallVec<[(usize, f32); 4]> = match &st.play {
         CPlay::Empty => SmallVec::new(),
         CPlay::Cycle(c) => smallvec::smallvec![(*c, 1.0)],
-        CPlay::Locomotion(_) => gait.map(|c| (c, smooth(speed / 0.25))).into_iter().collect(),
+        CPlay::Locomotion(_) => gait.map(|c| (c, smoothstep(0.0, 1.0, speed / 0.25))).into_iter().collect(),
         CPlay::Blend { by, points } => {
             let w = blend_weights(points, rt.values.get(*by).copied().unwrap_or_default());
             points.iter().zip(w).map(|((_, c), w)| (*c, w)).collect()
@@ -1011,7 +993,7 @@ fn push_state(
     };
     for (c, w) in list {
         if w > 0.0 && rt.fits(c, cycles, out) {
-            rt.active.push(Active { src: Src::Graph(c), t, weight: weight * w, layer: LayerRef::Graph(li) });
+            rt.active.push(Active { src: Src::Graph(c), t, weight: weight * w, layer: Src::Graph(li) });
         }
     }
 }
@@ -1042,15 +1024,12 @@ fn eval_condition(c: &CCondition, values: &[f32], finished: bool) -> bool {
     }
 }
 
-fn consume_triggers(c: &CCondition, g: &ComposedGraph, params: &mut MotionParams) {
+/// Calls `f` with every trigger parameter `c` reads.
+fn for_each_trigger(c: &CCondition, f: &mut impl FnMut(usize)) {
     match c {
-        CCondition::Param(i, CParamTest::Trigger) => {
-            if let Some((name, _)) = g.params.get(*i) {
-                params.triggers.remove(name);
-            }
-        }
-        CCondition::All(v) | CCondition::Any(v) => v.iter().for_each(|c| consume_triggers(c, g, params)),
-        CCondition::Not(c) => consume_triggers(c, g, params),
+        CCondition::Param(i, CParamTest::Trigger) => f(*i),
+        CCondition::All(v) | CCondition::Any(v) => v.iter().for_each(|c| for_each_trigger(c, f)),
+        CCondition::Not(c) => for_each_trigger(c, f),
         _ => {}
     }
 }
@@ -1070,20 +1049,11 @@ fn enter(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, ti: usize) {
     }
     // Triggers read this frame stay "on" in `values` until the next frame; clear them so another
     // layer doesn't fire on the same press.
-    clear_trigger_values(&t.when, &mut rt.values);
-}
-
-fn clear_trigger_values(c: &CCondition, values: &mut [f32]) {
-    match c {
-        CCondition::Param(i, CParamTest::Trigger) => {
-            if let Some(v) = values.get_mut(*i) {
-                *v = 0.0;
-            }
+    for_each_trigger(&t.when, &mut |i| {
+        if let Some(v) = rt.values.get_mut(i) {
+            *v = 0.0;
         }
-        CCondition::All(v) | CCondition::Any(v) => v.iter().for_each(|c| clear_trigger_values(c, values)),
-        CCondition::Not(c) => clear_trigger_values(c, values),
-        _ => {}
-    }
+    });
 }
 
 /// Hero tier: what the playing cycles add to this frame's pose, at the clock's phase.

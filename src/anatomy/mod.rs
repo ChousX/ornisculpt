@@ -2,9 +2,6 @@
 //!
 //! Data flow: [`BodyPlan`] + [`Form`] → [`apply_form`] → [`build_anatomy`] → [`Anatomy`].
 
-// Stub phase: bodies are `todo!()`, so parameters are intentionally unused.
-#![allow(unused_variables, dead_code)]
-
 mod build;
 mod builder;
 mod external;
@@ -99,6 +96,13 @@ pub enum AnatomyError {
     Internal(&'static str),
 }
 
+/// Builds a body plan from RON source with the default form, LOD rules and no assets.
+#[cfg(test)]
+pub(crate) fn build_src(src: &str) -> Anatomy {
+    let plan: BodyPlan = ron::from_str(src).unwrap();
+    Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,16 +156,15 @@ mod tests {
         assert!((t.rotation * Vec3::X - Vec3::NEG_Z).length() < 1e-5);
     }
 
+    const QUADRUPED: &str = include_str!("../../assets/mobs/quadruped.body.ron");
+
     fn quadruped() -> BodyPlan {
-        ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap()
+        ron::from_str(QUADRUPED).unwrap()
     }
 
     #[test]
     fn biped_sockets() {
-        let plan: BodyPlan =
-            ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let model = a.skeleton.model_rest();
         let find = |kind, side| {
             a.sockets
@@ -193,8 +196,7 @@ mod tests {
 
     #[test]
     fn quadruped_builds() {
-        let live = apply_form(&quadruped(), &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(QUADRUPED);
         let bones = a.skeleton.len();
         assert!(bones <= MAX_BONES, "{bones} bones");
         assert!(
@@ -246,8 +248,7 @@ mod tests {
 
     #[test]
     fn region_selectors() {
-        let live = apply_form(&quadruped(), &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(QUADRUPED);
         let count = |s: RegionSelector| s.mask(&a).0.count_ones();
         let total = u32::try_from(a.regions.regions.len()).unwrap();
         assert_eq!(count(RegionSelector::All), total);
@@ -277,7 +278,7 @@ mod tests {
                 f(l.joints.as_mut().unwrap());
             }
         });
-        build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default())
+        Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default())
     }
 
     #[test]
@@ -326,7 +327,7 @@ mod tests {
                 }
             });
             // Plans with authored meshes (the beast's crest) need assets loaded to build.
-            let a = match build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()) {
+            let a = match Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()) {
                 Ok(a) => a,
                 Err(AnatomyError::MissingAsset { .. }) => continue,
                 Err(e) => panic!("{name}: {e}"),

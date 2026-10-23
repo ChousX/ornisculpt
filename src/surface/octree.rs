@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 
 use super::body::Sample;
 use super::{BodyField, ChunkView, Field, MeshSettings, Mesher, RawMesh, Sheet, SurfaceError};
-use crate::num::{Clamp, Idx, Saturate, ToF32};
+use crate::num::{Clamp, Saturate, ToF32};
 
 /// Octree dual contouring; see the module docs.
 #[derive(Default, Clone, Copy)]
@@ -51,8 +51,6 @@ const EDGE_PROC_EDGE_MASK: [[[usize; 5]; 2]; 3] =
 const PROCESS_EDGE_MASK: [[usize; 4]; 3] = [[3, 2, 1, 0], [7, 5, 6, 4], [11, 10, 9, 8]];
 /// Which of a face's two nodes each of an edge's four cells comes from.
 const FACE_PROC_ORDERS: [[usize; 4]; 2] = [[0, 0, 1, 1], [0, 1, 0, 1]];
-/// One thread's finished subtrees, by job index.
-type Built = Vec<(usize, Option<Node>)>;
 
 enum Node {
     Internal(Box<[Option<Self>; 8]>),
@@ -99,10 +97,10 @@ impl Leaf {
     /// that sheet (a cell has one per sheet, so a coarser neighbour, whose own copy of the edge may
     /// cross other sheets, still joins the right one), else the edge's first sheet.
     fn vertex(&self, edge: usize, sheet: u16) -> u32 {
-        let vert = match &self.parted {
-            Some(parted) => parted.sheets.iter().position(|s| *s == sheet).map(Clamp::clamp_u8).or_else(|| parted.edges.get(edge).and_then(|cs| cs.first()).map(|c| c.vert)).unwrap_or(0),
-            None => self.sheet.get(edge).copied().filter(|s| *s != u8::MAX).unwrap_or(0),
-        };
+        let vert = self.parted.as_ref().map_or_else(
+            || self.sheet.get(edge).copied().filter(|s| *s != u8::MAX).unwrap_or(0),
+            |parted| parted.sheets.iter().position(|s| *s == sheet).map(Clamp::clamp_u8).or_else(|| parted.edges.get(edge).and_then(|cs| cs.first()).map(|c| c.vert)).unwrap_or(0),
+        );
         self.index + u32::from(vert)
     }
 }
@@ -166,7 +164,6 @@ impl Grid {
 
 /// One thread's octree builder: shares corner samples between neighbouring cells.
 struct Builder<'a> {
-    field: &'a BodyField,
     grid: &'a Grid,
     corners: HashMap<IVec3, f32>,
     /// Corner [`Sample`]s, for leaves where the surface may part.
@@ -183,6 +180,12 @@ impl Builder<'_> {
         d
     }
 
+    /// The field at a cell's eight corners.
+    fn corners(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> [f32; 8] {
+        let span = 1i32 << level;
+        std::array::from_fn(|i| self.corner(view, cell + child(i) * span))
+    }
+
     fn build(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Node> {
         let g = self.grid;
         if !g.near_surface(view, cell, level) {
@@ -197,11 +200,7 @@ impl Builder<'_> {
         };
         // A cell whose corners imply more than one sheet of surface (the gap between thumb and
         // palm) would pinch them into one vertex: split it while it can be.
-        let split = split || level > 0 && {
-            let span = 1i32 << level;
-            let mask = (0..8).fold(0u8, |m, i| if self.corner(view, cell + child(i) * span) < 0.0 { m | 1 << i } else { m });
-            ambiguous(mask) || !self.consistent(view, cell, level)
-        };
+        let split = split || level > 0 && (ambiguous(inside_mask(&self.corners(view, cell, level))) || !self.consistent(view, cell, level));
         if !split {
             return self.leaf(view, cell, level).map(Node::Leaf);
         }
@@ -218,7 +217,7 @@ impl Builder<'_> {
     /// contour differently from its neighbours and leave a crack.
     fn consistent(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> bool {
         let span = 1i32 << level;
-        let inside: [bool; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span) < 0.0);
+        let inside = self.corners(view, cell, level).map(|d| d < 0.0);
         for [a, b] in EDGEVMAP {
             let (Some(&in_a), Some(&in_b)) = (inside.get(a), inside.get(b)) else { continue };
             let dir = child(b) - child(a);
@@ -265,8 +264,8 @@ impl Builder<'_> {
         }
         let g = self.grid;
         let span = 1i32 << level;
-        let d: [f32; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span));
-        let corners = d.iter().enumerate().fold(0u8, |m, (i, v)| if *v < 0.0 { m | 1 << i } else { m });
+        let d = self.corners(view, cell, level);
+        let corners = inside_mask(&d);
         if corners == 0 || corners == 0xff {
             return None;
         }
@@ -329,7 +328,7 @@ impl Builder<'_> {
         // Every edge: the body with the limbs attached on it as one surface, and each limb clear
         // of where it attaches (at both ends) on its own.
         let mut crossings: [SmallVec<[(u16, bool, Vec3A); 1]>; 12] = Default::default();
-        for ((a, b), list) in EDGEVMAP.iter().map(|&[a, b]| (a, b)).zip(&mut crossings) {
+        for (&[a, b], list) in EDGEVMAP.iter().zip(&mut crossings) {
             let (Some(sa), Some(sb)) = (samples.get(a), samples.get(b)) else { continue };
             let lerp = |da: f32, db: f32| at(a).lerp(at(b), da / (da - db));
             let detached = |limb: u16| [sa, sb].iter().all(|s| s.limbs.iter().any(|l| l.limb == limb && l.detached));
@@ -411,32 +410,14 @@ impl Mesher for AdaptiveContour {
         let mut jobs: Vec<IVec3> = Vec::new();
         let whole = field.view(field.bounds());
         let mut root = top(&grid, &whole, IVec3::ZERO, root_level, job_level, &mut jobs);
-        let threads = super::worker_threads().min(jobs.len().max(1));
-        let built: Option<Vec<Built>> = super::scope(|scope| {
-            // Spawn every worker before joining any.
-            let mut handles = Vec::with_capacity(threads);
-            for t in 0..threads {
-                let (jobs, grid) = (&jobs, &grid);
-                handles.push(scope.spawn(move || {
-                    let mut out = Vec::new();
-                    for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
-                        // A fresh corner cache per job: corners on a job's border are sampled through its
-                        // own view, so the mesh doesn't depend on which jobs share a thread.
-                        let mut builder = Builder { field, grid, corners: HashMap::new(), samples: HashMap::new() };
-                        let view = field.view(grid.region(*cell, job_level, grid.fine));
-                        out.push((i, builder.build(&view, *cell, job_level)));
-                    }
-                    out
-                }));
-            }
-            handles.into_iter().map(|h| h.join().ok()).collect()
-        });
-        let mut results: Vec<Option<Node>> = (0..jobs.len()).map(|_| None).collect();
-        for (i, node) in built.ok_or(SurfaceError::WorkerPanicked)?.into_iter().flatten() {
-            if let Some(slot) = results.get_mut(i) {
-                *slot = node;
-            }
-        }
+        let mut results: Vec<Option<Node>> = super::par_jobs(&jobs, || (), |(), cell| {
+            // A fresh corner cache per job: corners on a job's border are sampled through its own
+            // view, so the mesh doesn't depend on which jobs share a thread.
+            let mut builder = Builder { grid: &grid, corners: HashMap::new(), samples: HashMap::new() };
+            let view = field.view(grid.region(*cell, job_level, grid.fine));
+            builder.build(&view, *cell, job_level)
+        })
+        .map_err(|_| SurfaceError::WorkerPanicked)?;
         if let Some(r) = root.as_mut() {
             fill(r, &mut results);
         }
@@ -447,13 +428,7 @@ impl Mesher for AdaptiveContour {
             number(r, &mut mesh);
             cell_proc(r, &mut mesh.indices);
         }
-        if mesh.indices.is_empty() {
-            return Err(SurfaceError::Empty);
-        }
-        if mesh.triangle_count() > settings.max_triangles.idx() {
-            return Err(SurfaceError::TooManyTriangles { got: mesh.triangle_count(), max: settings.max_triangles.idx() });
-        }
-        Ok(mesh)
+        mesh.checked(settings.max_triangles)
     }
 }
 
@@ -574,13 +549,10 @@ fn process_edge(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
     }
     let Some((small, edge)) = leaves.iter().flatten().min_by_key(|(l, _)| l.level).copied() else { return };
     // The sheets crossing the smallest leaf's copy of the edge, and which way.
-    let crossings: SmallVec<[(u16, bool); 2]> = match &small.parted {
-        Some(parted) => parted.edges.get(edge).map(|cs| cs.iter().map(|c| (c.sheet, c.flip)).collect()).unwrap_or_default(),
-        None => {
-            let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
-            let (m1, m2) = (small.corners >> c1 & 1 == 1, small.corners >> c2 & 1 == 1);
-            if m1 == m2 { SmallVec::new() } else { SmallVec::from_elem((Sheet::WHOLE_ID, m1), 1) }
-        }
+    let crossings: SmallVec<[(u16, bool); 2]> = if let Some(parted) = &small.parted { parted.edges.get(edge).map_or_default(|cs| cs.iter().map(|c| (c.sheet, c.flip)).collect()) } else {
+        let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
+        let (m1, m2) = (small.corners >> c1 & 1 == 1, small.corners >> c2 & 1 == 1);
+        if m1 == m2 { SmallVec::new() } else { SmallVec::from_elem((Sheet::WHOLE_ID, m1), 1) }
     };
     for (sheet, flip) in crossings {
         // Each leaf's vertex of that sheet (a coarser cell whose own copy of the edge doesn't
@@ -631,6 +603,11 @@ fn local_radius(view: &ChunkView, p: Vec3A, limit: f32) -> f32 {
         }
     }
     deepest
+}
+
+/// Bit `i` set where corner `i` is inside.
+fn inside_mask(d: &[f32; 8]) -> u8 {
+    (0u8..).zip(d).fold(0, |m, (i, v)| if *v < 0.0 { m | 1 << i } else { m })
 }
 
 /// Labels the corners on one side of the surface (`inside` or not) by connected group along the
@@ -695,12 +672,9 @@ fn parts(samples: &[Sample], size: f32) -> bool {
     // overstatement, as `Grid::near_surface` allows).
     let size = size * 1.2 * 3.0f32.sqrt();
     let near = |limb: Option<u16>, detached_only: bool| {
-        samples.iter().any(|s| match limb {
-            None => s.body < size,
-            Some(id) => s.limbs.iter().any(|l| l.limb == id && l.own < size && (l.detached || !detached_only)),
-        })
+        samples.iter().any(|s| limb.map_or(s.body < size, |id| s.limbs.iter().any(|l| l.limb == id && l.own < size && (l.detached || !detached_only))))
     };
-    let limbs: SmallVec<[u16; 4]> = samples.first().map(|s| s.limbs.iter().map(|l| l.limb).collect()).unwrap_or_default();
+    let limbs: SmallVec<[u16; 4]> = samples.first().map_or_default(|s| s.limbs.iter().map(|l| l.limb).collect());
     limbs.iter().any(|&l| near(Some(l), true) && (near(None, false) || limbs.iter().any(|&m| m != l && near(Some(m), false))))
 }
 
@@ -709,13 +683,12 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
+    use crate::num::Idx;
     use crate::surface::{BodyFieldOptions, SurfaceNets};
 
     fn field(src: &str) -> BodyField {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(src);
         BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true })
     }
 

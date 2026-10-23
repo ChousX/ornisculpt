@@ -58,6 +58,17 @@ impl RawMesh {
     pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
+
+    /// The mesh, or an error when it is empty or over `max_triangles`.
+    pub(super) fn checked(self, max_triangles: u32) -> Result<Self, SurfaceError> {
+        if self.indices.is_empty() {
+            return Err(SurfaceError::Empty);
+        }
+        if self.triangle_count() > max_triangles.idx() {
+            return Err(SurfaceError::TooManyTriangles { got: self.triangle_count(), max: max_triangles.idx() });
+        }
+        Ok(self)
+    }
 }
 
 /// Naive Surface Nets via the `fast-surface-nets` crate, over sparse chunks: chunks whose
@@ -77,45 +88,22 @@ impl Mesher for SurfaceNets {
         let jobs: Vec<UVec3> = (0..chunks.z)
             .flat_map(|z| (0..chunks.y).flat_map(move |y| (0..chunks.x).map(move |x| UVec3::new(x, y, z))))
             .collect();
-        let threads = super::worker_threads().min(jobs.len().max(1));
         // One part per chunk, joined in chunk order: the mesh doesn't depend on the thread count.
-        let per_thread: Vec<Vec<(usize, RawMesh)>> = super::scope(|scope| {
-            let mut handles = Vec::with_capacity(threads);
-            for t in 0..threads {
-                let jobs = &jobs;
-                handles.push(scope.spawn(move || {
-                    let mut chunk = ChunkScratch::new(c);
-                    let mut out = Vec::new();
-                    for (i, job) in jobs.iter().enumerate().skip(t).step_by(threads) {
-                        let mut part = RawMesh::default();
-                        chunk.mesh(field, origin, v, *job * c, &mut part);
-                        out.push((i, part));
-                    }
-                    out
-                }));
-            }
-            handles.into_iter().map(|h| h.join().map_err(|_| SurfaceError::WorkerPanicked)).collect::<Result<_, _>>()
-        })?;
-        let mut parts: Vec<(usize, RawMesh)> = per_thread.into_iter().flatten().collect();
-        parts.sort_unstable_by_key(|(i, _)| *i);
+        let parts = super::par_jobs(&jobs, || ChunkScratch::new(c), |chunk, job| {
+            let mut part = RawMesh::default();
+            chunk.mesh(field, origin, v, *job * c, &mut part);
+            part
+        })
+        .map_err(|_| SurfaceError::WorkerPanicked)?;
 
         let mut mesh = RawMesh::default();
-        for (_, part) in parts {
+        for part in parts {
             let base = mesh.positions.len().clamp_u32();
             mesh.positions.extend(part.positions);
             mesh.normals.extend(part.normals);
             mesh.indices.extend(part.indices.iter().map(|i| i + base));
         }
-        if mesh.indices.is_empty() {
-            return Err(SurfaceError::Empty);
-        }
-        if mesh.triangle_count() > settings.max_triangles.idx() {
-            return Err(SurfaceError::TooManyTriangles {
-                got: mesh.triangle_count(),
-                max: settings.max_triangles.idx(),
-            });
-        }
-        Ok(mesh)
+        mesh.checked(settings.max_triangles)
     }
 }
 

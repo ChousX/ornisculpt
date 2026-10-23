@@ -3,10 +3,7 @@
 //! Data flow per LOD level:
 //! `Anatomy` → [`BodyField`] (SDF, parts culled for the level) → [`Mesher`] → [`RawMesh`]
 //! → [`weld`] / [`smooth`] → [`skin_and_attrs`] → [`simplify`] → [`BodyMeshData`] → Bevy `Mesh`.
-//! Hard parts (claws, horns, eyes) are generated separately by a [`HardPartGen`] and merged.
-
-// Stub phase: bodies are `todo!()`, so parameters are intentionally unused.
-#![allow(unused_variables, dead_code)]
+//! Hard parts (claws, horns, eyes) are generated separately and merged.
 
 mod binding;
 mod body;
@@ -29,14 +26,13 @@ pub use cor::centres_of_rotation;
 #[cfg(feature = "soft-tissue")]
 pub(crate) use body::primitive_parts;
 pub use body::{BodyField, BodyFieldOptions, ChunkView, Sheet, SheetField};
-pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
+pub use combinators::{Displace, Intersect, RegionClip};
 pub use field::{Field, Influences, SurfaceInfo};
-pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
     ATTRIBUTE_SOFT, BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
-    NOT_CLOTH, SoftVertex, Submesh, Vertex,
+    NOT_CLOTH, SoftVertex, Submesh, Vertex, VertexChannel,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;
@@ -97,6 +93,51 @@ pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync)
         let handles: Vec<_> = items.chunks(chunk).map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
     })
+}
+
+/// Runs `f` on every job on up to [`worker_threads`] workers, which take jobs one at a time from a
+/// shared counter; each worker makes its own `scratch` once. Results come back in job order, so
+/// they don't depend on the thread count or on which worker ran what.
+///
+/// # Errors
+///
+/// A worker's panic payload, returned once every worker has been joined; each caller decides what
+/// a panic means for its stage.
+pub(crate) fn par_jobs<J: Sync, S, R: Send>(
+    jobs: &[J],
+    scratch: impl Fn() -> S + Sync,
+    f: impl Fn(&mut S, &J) -> R + Sync,
+) -> std::thread::Result<Vec<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = worker_threads().min(jobs.len()).max(1);
+    // Join every worker before looking at any result: a scope panics over an unjoined panicked thread.
+    let joined: Vec<std::thread::Result<Vec<(usize, R)>>> = scope(|s| {
+        let (next, scratch, f) = (&next, &scratch, &f);
+        // Spawn every worker before joining any.
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            handles.push(s.spawn(move || {
+                let mut state = scratch();
+                let mut out = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(job) = jobs.get(i) else { break out };
+                    out.push((i, f(&mut state, job)));
+                }
+            }));
+        }
+        let mut joined = Vec::with_capacity(threads);
+        for handle in handles {
+            joined.push(handle.join());
+        }
+        joined
+    });
+    let mut all = Vec::with_capacity(jobs.len());
+    for worker in joined {
+        all.extend(worker?);
+    }
+    all.sort_unstable_by_key(|(i, _)| *i);
+    Ok(all.into_iter().map(|(_, r)| r).collect())
 }
 
 /// Scoped workers for the parallel stages: [`std::thread::scope`], or with the `web` feature (no
@@ -164,18 +205,18 @@ pub enum SurfaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
+
 
     /// The hero mesh and its centres of rotation are the same whatever the worker thread count
     /// (the app caps it while several bodies generate; coat geometry is placed on the vertices).
     #[test]
     fn meshing_is_independent_of_thread_count() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/bird.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/bird.body.ron"));
         let settings = SurfaceSettings::default();
         let mesh = |threads: usize| {
             set_worker_threads(threads);
-            let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+            let m = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
             let cor = centres_of_rotation(&m);
             set_worker_threads(0);
             (m, cor)
@@ -188,10 +229,9 @@ mod tests {
 
     #[test]
     fn quadruped_meshes_at_far_level() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
-        let data = mesh_lod(&SurfaceNets, &ProceduralHardParts, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 1)
+        let data = mesh_lod(&SurfaceNets, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 1)
             .expect("mesh");
         assert!(data.triangle_count() > 100, "{} triangles", data.triangle_count());
         assert_eq!(data.positions.len(), data.weights.len());

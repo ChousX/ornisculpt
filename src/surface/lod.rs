@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::mesh_data::vertex_normals;
 use super::{
-    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
+    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, MaterialSlot, MeshSettings, Mesher, MobVertexData,
     Submesh, SurfaceError, merge,
     remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
 };
@@ -80,9 +81,8 @@ pub const REFERENCE_EXTENT: f32 = 1.8;
 /// # Errors
 ///
 /// When no part is present at `level`, or the mesher fails.
-pub fn mesh_lod<M: Mesher, H: HardPartGen>(
+pub fn mesh_lod<M: Mesher>(
     mesher: &M,
-    hard: &H,
     anatomy: &Anatomy,
     level: LodLevel,
     spec: &LodSpec,
@@ -116,7 +116,7 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
             if anatomy.parts.get(owner.idx()).is_none_or(|p| p.lod < level) {
                 continue;
             }
-            if let Some(m) = hard.generate(part, anatomy, level) {
+            if let Some(m) = super::hard::hard_part_mesh(part, anatomy, level) {
                 merge(&mut data, &m);
             }
         }
@@ -132,15 +132,7 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
 
 /// Owning part of every hard part (from the parts' hard-part ranges).
 fn hard_part_owners(anatomy: &Anatomy) -> Vec<u16> {
-    let mut out = vec![0u16; anatomy.hard_parts.len()];
-    for (pi, part) in (0u16..).zip(&anatomy.parts) {
-        for i in part.hard_parts.clone() {
-            if let Some(slot) = out.get_mut(i.idx()) {
-                *slot = pi;
-            }
-        }
-    }
-    out
+    super::body::range_owners(anatomy, anatomy.hard_parts.len(), |p| p.hard_parts.start.idx()..p.hard_parts.end.idx())
 }
 
 /// All three levels, built in parallel (near and far beside hero, which is most of the work).
@@ -148,16 +140,15 @@ fn hard_part_owners(anatomy: &Anatomy) -> Vec<u16> {
 /// # Errors
 ///
 /// When any level fails (see [`mesh_lod`]).
-pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
+pub fn mesh_all_lods<M: Mesher>(
     mesher: &M,
-    hard: &H,
     anatomy: &Anatomy,
     settings: &SurfaceSettings,
     seed: u64,
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
     // Near and far on their own threads while hero (most of the work) runs on this one (one after
     // another on the web).
-    let level = |l: LodLevel| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed);
+    let level = |l: LodLevel| mesh_lod(mesher, anatomy, l, settings.get(l), seed);
     let (hero, near, far) = super::scope(|scope| {
         let near = scope.spawn(|| level(LodLevel::Near));
         let far = scope.spawn(|| level(LodLevel::Far));
@@ -174,20 +165,7 @@ pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
 /// the shading direction (xyz) and thickness (w).
 fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
     let n = sheet.positions.len();
-    let mut normals = vec![Vec3::ZERO; n];
-    for t in sheet.indices.as_chunks::<3>().0 {
-        let [a, b, c] = t.map(Idx::idx);
-        let (Some(&pa), Some(&pb), Some(&pc)) = (sheet.positions.get(a), sheet.positions.get(b), sheet.positions.get(c)) else {
-            continue;
-        };
-        let nrm = (pb - pa).cross(pc - pa);
-        for v in [a, b, c] {
-            if let Some(n) = normals.get_mut(v) {
-                *n += nrm;
-            }
-        }
-    }
-    let normals = normals.into_iter().map(|v| v.normalize_or(Vec3::Y)).collect();
+    let normals = vertex_normals(&sheet.positions, &sheet.indices);
     let mob_data = sheet
         .joints
         .iter()
@@ -222,33 +200,10 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 }
 
 #[cfg(test)]
-mod hero_timing {
-    use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::ProceduralHardParts;
-
-    #[test]
-    #[ignore = "timing probe"]
-    fn hero_mesh_cost_by_voxel() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        {
-            let v = 0.008;
-            let mut spec = SurfaceSettings::default().levels[0];
-            spec.mesh.voxel_size = v;
-            let t = std::time::Instant::now();
-            let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
-            println!("voxel {v}: {:.2}s, {} tris", t.elapsed().as_secs_f32(), m.indices.len() / 3);
-        }
-    }
-}
-
-#[cfg(test)]
 mod stage_probe {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{AdaptiveContour, ProceduralHardParts};
+    use crate::anatomy::build_src;
+    use crate::surface::{AdaptiveContour};
 
     /// Where `mesh_lod`'s time goes, per level and stage.
     #[test]
@@ -256,8 +211,7 @@ mod stage_probe {
     fn mesh_lod_stage_times() {
         for body in ["biped", "horse"] {
             let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
-            let plan: BodyPlan = ron::from_str(&text).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(&text);
             let settings = SurfaceSettings::default();
             for level in LodLevel::ALL {
                 let spec = settings.get(level);
@@ -293,7 +247,7 @@ mod stage_probe {
                 }
                 lap("simplify", &mut t);
                 let full = std::time::Instant::now();
-                let _ = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, level, spec, 1).unwrap();
+                let _ = mesh_lod(&AdaptiveContour, &anatomy, level, spec, 1).unwrap();
                 println!("| whole mesh_lod {:.0}", full.elapsed().as_secs_f32() * 1000.0);
             }
         }
@@ -301,12 +255,13 @@ mod stage_probe {
 }
 
 #[cfg(test)]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
 mod limb_seams {
     use std::collections::HashMap;
 
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::{AdaptiveContour, ProceduralHardParts};
+    use crate::surface::AdaptiveContour;
 
     /// Hero-mesh triangles whose vertices are bound mostly to two different limbs, per body.
     #[test]
@@ -337,7 +292,7 @@ mod limb_seams {
                 }
             }
             println!("{body}: mesher {took:.2}s, {} verts, on sheets {by_sheet:?}", raw.positions.len());
-            let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
+            let m = mesh_lod(&AdaptiveContour, &a, LodLevel::Hero, &spec, 1).unwrap();
             let limb: Vec<Option<u16>> = m.joints.iter().map(|j| a.skeleton.bones.get(usize::from(j[0])).and_then(|b| limb_of(b.part))).collect();
             let mut pairs: HashMap<(u16, u16), usize> = HashMap::new();
             for t in m.indices.chunks(3) {
@@ -358,6 +313,7 @@ mod limb_seams {
 }
 
 #[cfg(test)]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
 mod rest_contact_probe {
     use std::collections::HashMap;
 
@@ -444,6 +400,7 @@ mod rest_contact_probe {
 }
 
 #[cfg(test)]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
 mod flip_probe {
     use std::collections::HashMap;
 
@@ -474,7 +431,7 @@ mod flip_probe {
                 let vn = raw.normals[i] + raw.normals[j] + raw.normals[k];
                 if n.dot(vn) < 0.0 {
                     let mut ss = [raw.sheets[i], raw.sheets[j], raw.sheets[k]];
-                    ss.sort();
+                    ss.sort_unstable();
                     *kinds.entry(format!("{ss:?}")).or_default() += 1;
                     if shown < 8 && ss.iter().any(|s| *s != crate::surface::Sheet::WHOLE_ID) {
                         shown += 1;
@@ -490,6 +447,7 @@ mod flip_probe {
 }
 
 #[cfg(test)]
+#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
 mod pose_probe {
     use std::collections::HashMap;
 
@@ -549,7 +507,7 @@ mod pose_probe {
                     let [i, j, k] = [t[0] as usize, t[1] as usize, t[2] as usize];
                     let kind = |v: usize| match Sheet::from_id(sheets.get(v).copied().unwrap_or(Sheet::WHOLE_ID)) { Sheet::Whole => "w", Sheet::Body => "b", Sheet::Limb(_) => "l" };
                     let mut ks = [kind(i), kind(j), kind(k)];
-                    ks.sort();
+                    ks.sort_unstable();
                     let key = ks.concat();
                     let c = (pos[i] + pos[j] + pos[k]) / 3.0;
                     let d = pf.distance(c);

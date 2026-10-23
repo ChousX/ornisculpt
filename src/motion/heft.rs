@@ -26,8 +26,12 @@ pub struct StepShape {
     pub reach: Curve,
     /// Foot in the air: its side of the girdle drops.
     pub raise: Curve,
-    /// Weight on the foot: the hips shift over it, the girdle vaults over it.
+    /// Weight on the foot: the hips shift over it.
     pub load: Curve,
+    /// Height of the girdle over the planted foot (`-1` at touchdown and lift-off, `+1` at
+    /// mid-stance), weighted by the foot's load: a pair rises and falls twice a cycle, which the
+    /// two feet's mean load (one foot down as the other lifts) never shows.
+    pub vault: Curve,
     /// How lively the torso is by speed (leg lengths per second → `0..1`).
     pub lively: Curve,
 }
@@ -40,6 +44,7 @@ impl Default for StepShape {
             reach: Curve::wave(1.0).phase(0.25),
             raise: Curve::bump(1.0, 0.5, 1.0),
             load: Curve::bump(1.0, 0.0, 0.5),
+            vault: Curve::keys([(0.0, -1.0), (0.25, 1.0), (0.5, -1.0), (0.75, 1.0), (1.0, -1.0)]),
             lively: Curve::keys([(0.0, 0.0), (0.4, 1.0)]),
         }
     }
@@ -133,42 +138,19 @@ impl Default for HeftResponse {
     }
 }
 
-impl HeftResponse {
-    /// No effect at any weight.
-    #[must_use]
-    pub fn none() -> Self {
-        let one = || Curve::Constant(1.0);
-        Self {
-            cadence: one(),
-            duty: Curve::Constant(0.0),
-            lift: one(),
-            settle: Curve::Constant(0.0),
-            landing: Curve::Constant(0.0),
-            waddle: one(),
-            agility: one(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::f32::consts::PI;
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-
-    fn body(src: &str, edit: impl FnOnce(&mut BodyPlan)) -> Anatomy {
-        let mut plan: BodyPlan = ron::from_str(src).unwrap();
-        edit(&mut plan);
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
+    use crate::anatomy::build_src;
+    use crate::motion::testing::edited_body;
 
     #[test]
     fn big_bodies_are_heavier_and_carry_weight_forward() {
-        let dog = Heft::of(&body(include_str!("../../assets/mobs/quadruped.body.ron"), |_| {}));
-        let horse = Heft::of(&body(include_str!("../../assets/mobs/horse.body.ron"), |_| {}));
-        let human = Heft::of(&body(include_str!("../../assets/mobs/biped.body.ron"), |_| {}));
+        let dog = Heft::of(&build_src(include_str!("../../assets/mobs/quadruped.body.ron")));
+        let horse = Heft::of(&build_src(include_str!("../../assets/mobs/horse.body.ron")));
+        let human = Heft::of(&build_src(include_str!("../../assets/mobs/biped.body.ron")));
         println!("dog {dog:?}\nhorse {horse:?}\nhuman {human:?}");
         assert!((0.8..1.25).contains(&dog.heaviness) && (0.8..1.25).contains(&human.heaviness));
         assert!(horse.heaviness > 1.6, "a horse should feel heavy: {}", horse.heaviness);
@@ -179,8 +161,8 @@ mod tests {
     #[test]
     fn density_scales_a_part() {
         let src = include_str!("../../assets/mobs/quadruped.body.ron");
-        let plain = body(src, |_| {});
-        let dense = body(src, |p| p.root.density = 2.0);
+        let plain = build_src(src);
+        let dense = edited_body(src, |p| p.root.density = 2.0);
         // Only the root part (the torso) doubles.
         assert!(dense.mass.total > plain.mass.total * 1.2 && dense.mass.total < plain.mass.total * 2.0);
     }

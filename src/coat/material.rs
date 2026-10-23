@@ -8,9 +8,9 @@ use bevy::shader::ShaderRef;
 use super::CoatUniform;
 use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT, ATTRIBUTE_SOFT};
 
-pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
-pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
-pub const COAT_PREPASS: &str = "embedded://ornisculpt/coat/coat_prepass.wesl";
+const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
+const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
+const COAT_PREPASS: &str = "embedded://ornisculpt/coat/coat_prepass.wesl";
 
 /// Every mob surface: `StandardMaterial` lighting with coat shading on top.
 pub type MobMaterial = ExtendedMaterial<StandardMaterial, CoatExt>;
@@ -102,17 +102,14 @@ impl MaterialExtension for CoatExt {
         if soft {
             defs.push("COAT_SOFT".into());
         }
-        // The crowd bone buffer's slot stride (`CROWD_SLOT`) is wider with soft tissue.
-        if cfg!(feature = "soft-tissue") {
-            defs.push("SOFT_TISSUE".into());
-        }
+        defs.extend(crate::mob::crowd_slot_defs());
         // Optional inputs by what the mesh has: the prepass would otherwise drop the ones it
         // doesn't need itself (shell heights in UV0, for one).
-        for (attribute, def) in [(Mesh::ATTRIBUTE_UV_0, "COAT_UV"), (Mesh::ATTRIBUTE_TANGENT, "COAT_TANGENT"), (Mesh::ATTRIBUTE_COLOR, "COAT_COLOR")] {
-            if layout.0.contains(attribute) {
-                defs.push(def.into());
-            }
-        }
+        let inputs: Vec<_> = [(Mesh::ATTRIBUTE_UV_0, 2, "COAT_UV"), (Mesh::ATTRIBUTE_TANGENT, 4, "COAT_TANGENT"), (Mesh::ATTRIBUTE_COLOR, 5, "COAT_COLOR")]
+            .into_iter()
+            .filter(|(attribute, ..)| layout.0.contains(*attribute))
+            .collect();
+        defs.extend(inputs.iter().map(|(_, _, def)| (*def).into()));
         match key.bind_group_data.layer {
             CoatLayer::Skin => defs.push("COAT_SKIN".into()),
             CoatLayer::Shell => defs.push("COAT_SHELL".into()),
@@ -133,15 +130,7 @@ impl MaterialExtension for CoatExt {
         // muscle flex are custom attributes Bevy doesn't lay out, and the prepass would use its own
         // locations otherwise.
         let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
-        if layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
-            attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
-        }
-        if layout.0.contains(Mesh::ATTRIBUTE_TANGENT) {
-            attributes.push(Mesh::ATTRIBUTE_TANGENT.at_shader_location(4));
-        }
-        if layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
-            attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
-        }
+        attributes.extend(inputs.into_iter().map(|(attribute, location, _)| attribute.at_shader_location(location)));
         if key.bind_group_data.crowd {
             attributes.push(ATTRIBUTE_CROWD_JOINT_INDEX.at_shader_location(6));
             attributes.push(ATTRIBUTE_CROWD_JOINT_WEIGHT.at_shader_location(7));

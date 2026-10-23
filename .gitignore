@@ -10,3 +10,6 @@ devenv.local.nix
 
 # Accepted benchmark screenshots (~46 MB; recorded locally)
 /bench/golden
+
+# Python bytecode (tools/)
+__pycache__/
