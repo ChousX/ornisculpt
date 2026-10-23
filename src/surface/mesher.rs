@@ -53,6 +53,17 @@ impl RawMesh {
     pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
+
+    /// The mesh, or an error when it is empty or over `max_triangles`.
+    pub(super) fn checked(self, max_triangles: u32) -> Result<Self, SurfaceError> {
+        if self.indices.is_empty() {
+            return Err(SurfaceError::Empty);
+        }
+        if self.triangle_count() > max_triangles.idx() {
+            return Err(SurfaceError::TooManyTriangles { got: self.triangle_count(), max: max_triangles.idx() });
+        }
+        Ok(self)
+    }
 }
 
 /// Naive Surface Nets via the `fast-surface-nets` crate, over sparse chunks: chunks whose
@@ -101,16 +112,7 @@ impl Mesher for SurfaceNets {
             mesh.normals.extend(part.normals);
             mesh.indices.extend(part.indices.iter().map(|i| i + base));
         }
-        if mesh.indices.is_empty() {
-            return Err(SurfaceError::Empty);
-        }
-        if mesh.triangle_count() > settings.max_triangles.idx() {
-            return Err(SurfaceError::TooManyTriangles {
-                got: mesh.triangle_count(),
-                max: settings.max_triangles.idx(),
-            });
-        }
-        Ok(mesh)
+        mesh.checked(settings.max_triangles)
     }
 }
 

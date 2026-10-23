@@ -163,11 +163,6 @@ pub struct BodyMeshData {
 
 impl BodyMeshData {
     #[must_use]
-    pub const fn vertex_count(&self) -> usize {
-        self.positions.len()
-    }
-
-    #[must_use]
     pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
@@ -251,6 +246,7 @@ impl BodyMeshData {
     }
 
     fn split_meshes(&self, crowd: bool) -> Vec<(MaterialSlot, Mesh)> {
+        use VertexChannel::{Cloth, Coverage, Flow, Muscle, Soft, Uvs};
         let mut slots: Vec<MaterialSlot> = self.submeshes.iter().map(|s| s.slot).collect();
         slots.sort();
         slots.dedup();
@@ -271,24 +267,7 @@ impl BodyMeshData {
                             if *r == u32::MAX {
                                 *r = part.positions.len().clamp_u32();
                                 part.push_vertex(v);
-                                if let Some(uv) = self.uvs.get(i) {
-                                    part.uvs.push(*uv);
-                                }
-                                if let Some(c) = self.coverage.get(i) {
-                                    part.coverage.push(*c);
-                                }
-                                if let Some(f) = self.flow.get(i) {
-                                    part.flow.push(*f);
-                                }
-                                if let Some(c) = self.cloth.get(i) {
-                                    part.cloth.push(*c);
-                                }
-                                if let Some(m) = self.muscle.get(i) {
-                                    part.muscle.push(*m);
-                                }
-                                if let Some(m) = self.soft.get(i) {
-                                    part.soft.push(*m);
-                                }
+                                part.push_from(self, i, &[Uvs, Coverage, Flow, Cloth, Muscle, Soft]);
                             }
                             part.indices.push(*r);
                         }
@@ -320,6 +299,33 @@ impl BodyMeshData {
         self.mob_data.push(v.mob_data);
     }
 
+    /// Appends vertex `i`'s values of `channels` from `src`, each one `src` has at `i`.
+    pub fn push_from(&mut self, src: &Self, i: usize, channels: &[VertexChannel]) {
+        for channel in channels {
+            match channel {
+                VertexChannel::Uvs => self.uvs.extend(src.uvs.get(i)),
+                VertexChannel::Coverage => self.coverage.extend(src.coverage.get(i)),
+                VertexChannel::Flow => self.flow.extend(src.flow.get(i)),
+                VertexChannel::Cloth => self.cloth.extend(src.cloth.get(i)),
+                VertexChannel::Cor => self.cor.extend(src.cor.get(i)),
+                VertexChannel::Muscle => self.muscle.extend(src.muscle.get(i)),
+                VertexChannel::Soft => self.soft.extend(src.soft.get(i)),
+            }
+        }
+    }
+
+    /// Per vertex, whether a [`MaterialSlot::Skin`] triangle uses it.
+    #[must_use]
+    pub fn skin_vertex_mask(&self) -> Vec<bool> {
+        let mut skin = vec![false; self.positions.len()];
+        for &i in self.slot_triangles(MaterialSlot::Skin).flatten() {
+            if let Some(s) = skin.get_mut(i.idx()) {
+                *s = true;
+            }
+        }
+        skin
+    }
+
     /// The index buffer slice of a submesh; empty if its range lies outside the buffer.
     #[must_use]
     pub fn submesh_indices(&self, s: &Submesh) -> &[u32] {
@@ -333,6 +339,34 @@ impl BodyMeshData {
             .filter(move |s| s.slot == slot)
             .flat_map(|s| self.submesh_indices(s).as_chunks::<3>().0)
     }
+}
+
+/// Area-weighted vertex normals of a triangle list (`Y` where no triangle gives one).
+pub(super) fn vertex_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
+    let mut normals = vec![Vec3::ZERO; positions.len()];
+    for t in indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(Idx::idx);
+        let (Some(&pa), Some(&pb), Some(&pc)) = (positions.get(a), positions.get(b), positions.get(c)) else { continue };
+        let n = (pb - pa).cross(pc - pa);
+        for v in [a, b, c] {
+            if let Some(slot) = normals.get_mut(v) {
+                *slot += n;
+            }
+        }
+    }
+    normals.into_iter().map(|n| n.normalize_or(Vec3::Y)).collect()
+}
+
+/// An optional per-vertex channel of [`BodyMeshData`] (see [`BodyMeshData::push_from`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VertexChannel {
+    Uvs,
+    Coverage,
+    Flow,
+    Cloth,
+    Cor,
+    Muscle,
+    Soft,
 }
 
 /// The attributes every [`BodyMeshData`] vertex has.

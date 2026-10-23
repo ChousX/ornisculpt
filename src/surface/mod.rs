@@ -5,9 +5,6 @@
 //! → [`weld`] / [`smooth`] → [`skin_and_attrs`] → [`simplify`] → [`BodyMeshData`] → Bevy `Mesh`.
 //! Hard parts (claws, horns, eyes) are generated separately by a [`HardPartGen`] and merged.
 
-// Stub phase: bodies are `todo!()`, so parameters are intentionally unused.
-#![allow(unused_variables, dead_code)]
-
 mod binding;
 mod body;
 mod combinators;
@@ -29,14 +26,14 @@ pub use cor::centres_of_rotation;
 #[cfg(feature = "soft-tissue")]
 pub(crate) use body::primitive_parts;
 pub use body::{BodyField, BodyFieldOptions, ChunkView};
-pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
+pub use combinators::{Displace, Intersect, RegionClip};
 pub use field::{Field, Influences, SurfaceInfo};
 pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
     ATTRIBUTE_SOFT, BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
-    NOT_CLOTH, SoftVertex, Submesh, Vertex,
+    NOT_CLOTH, SoftVertex, Submesh, Vertex, VertexChannel,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;

@@ -8,7 +8,7 @@ use super::{Coat, Feathers};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, RegionId, RegionKind, RegionMask};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 use crate::random::{RngExt, fork};
-use crate::surface::{BodyMeshData, MaterialSlot, MobVertexData, Submesh, Vertex, simplify};
+use crate::surface::{BodyMeshData, MaterialSlot, MobVertexData, Submesh, Vertex, VertexChannel, simplify};
 
 /// Fraction of the hero skin's triangles used as the source for fur shells.
 const SHELL_SOURCE_RATIO: f32 = 0.2;
@@ -94,15 +94,7 @@ fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<Body
             // in place of these coordinates (see `BodyMeshData::build_mesh`).
             out.uvs.push([h, 0.0]);
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
-            if let Some(c) = body.cor.get(i) {
-                out.cor.push(*c);
-            }
-            if let Some(m) = body.muscle.get(i) {
-                out.muscle.push(*m);
-            }
-            if let Some(s) = body.soft.get(i) {
-                out.soft.push(*s);
-            }
+            out.push_from(body, i, &[VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
         }
         let base = (k - 1) * n;
         out.indices.extend(tris.iter().flat_map(|t| t.map(|v| base + remap.get(v.idx()).copied().unwrap_or(0))));
@@ -130,12 +122,7 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
     }
     let masks = coat.coverage(anatomy);
     let model = anatomy.skeleton.rest_model();
-    let mut skin = vec![false; n];
-    for &v in body.slot_triangles(MaterialSlot::Skin).flatten() {
-        if let Some(s) = skin.get_mut(v.idx()) {
-            *s = true;
-        }
-    }
+    let skin = body.skin_vertex_mask();
     let vertex_coat = |i: usize| -> Option<(Vec3, Vec3)> {
         let region = region_of(body, i)?;
         let cover = Vec3::new(
@@ -295,17 +282,9 @@ fn feather_cards(
                 out.push_vertex(Vertex { position, normal: n, ..va });
                 out.uvs.push(uv);
                 out.flow.push(along.extend(0.0).to_array());
-                // A card turns about its root vertex's centre (it shares that vertex's weights).
-                if let Some(c) = body.cor.get(a.idx()) {
-                    out.cor.push(*c);
-                }
-                // And rides its root vertex's muscle.
-                if let Some(m) = body.muscle.get(a.idx()) {
-                    out.muscle.push(*m);
-                }
-                if let Some(s) = body.soft.get(a.idx()) {
-                    out.soft.push(*s);
-                }
+                // A card turns about its root vertex's centre (it shares that vertex's weights),
+                // and rides its root vertex's muscle and soft tissue.
+                out.push_from(body, a.idx(), &[VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
             }
             out.indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
         }

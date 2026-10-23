@@ -19,7 +19,7 @@ use bevy::shape::Aabb3d;
 use smallvec::SmallVec;
 
 use super::{BodyField, ChunkView, Field, MeshSettings, Mesher, RawMesh, SurfaceError};
-use crate::num::{Clamp, Idx, Saturate, ToF32};
+use crate::num::{Clamp, Saturate, ToF32};
 
 /// Octree dual contouring; see the module docs.
 #[derive(Default, Clone, Copy)]
@@ -124,7 +124,6 @@ impl Grid {
 
 /// One thread's octree builder: shares corner samples between neighbouring cells.
 struct Builder<'a> {
-    field: &'a BodyField,
     grid: &'a Grid,
     corners: HashMap<IVec3, f32>,
 }
@@ -137,6 +136,12 @@ impl Builder<'_> {
         let d = view.distance(self.grid.point(c));
         self.corners.insert(c, d);
         d
+    }
+
+    /// The field at a cell's eight corners.
+    fn corners(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> [f32; 8] {
+        let span = 1i32 << level;
+        std::array::from_fn(|i| self.corner(view, cell + child(i) * span))
     }
 
     fn build(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Node> {
@@ -153,11 +158,7 @@ impl Builder<'_> {
         };
         // A cell whose corners imply more than one sheet of surface (the gap between thumb and
         // palm) would pinch them into one vertex: split it while it can be.
-        let split = split || level > 0 && {
-            let span = 1i32 << level;
-            let mask = (0..8).fold(0u8, |m, i| if self.corner(view, cell + child(i) * span) < 0.0 { m | 1 << i } else { m });
-            ambiguous(mask) || !self.consistent(view, cell, level)
-        };
+        let split = split || level > 0 && (ambiguous(inside_mask(&self.corners(view, cell, level))) || !self.consistent(view, cell, level));
         if !split {
             return self.leaf(view, cell, level).map(Node::Leaf);
         }
@@ -174,7 +175,7 @@ impl Builder<'_> {
     /// contour differently from its neighbours and leave a crack.
     fn consistent(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> bool {
         let span = 1i32 << level;
-        let inside: [bool; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span) < 0.0);
+        let inside = self.corners(view, cell, level).map(|d| d < 0.0);
         for [a, b] in EDGEVMAP {
             let (Some(&in_a), Some(&in_b)) = (inside.get(a), inside.get(b)) else { continue };
             let dir = child(b) - child(a);
@@ -216,8 +217,8 @@ impl Builder<'_> {
     fn leaf(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Leaf> {
         let g = self.grid;
         let span = 1i32 << level;
-        let d: [f32; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span));
-        let corners = d.iter().enumerate().fold(0u8, |m, (i, v)| if *v < 0.0 { m | 1 << i } else { m });
+        let d = self.corners(view, cell, level);
+        let corners = inside_mask(&d);
         if corners == 0 || corners == 0xff {
             return None;
         }
@@ -279,7 +280,7 @@ impl Mesher for AdaptiveContour {
                     for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
                         // A fresh corner cache per job: corners on a job's border are sampled through its
                         // own view, so the mesh doesn't depend on which jobs share a thread.
-                        let mut builder = Builder { field, grid, corners: HashMap::new() };
+                        let mut builder = Builder { grid, corners: HashMap::new() };
                         let view = field.view(grid.region(*cell, job_level, grid.fine));
                         out.push((i, builder.build(&view, *cell, job_level)));
                     }
@@ -304,13 +305,7 @@ impl Mesher for AdaptiveContour {
             number(r, &mut mesh);
             cell_proc(r, &mut mesh.indices);
         }
-        if mesh.indices.is_empty() {
-            return Err(SurfaceError::Empty);
-        }
-        if mesh.triangle_count() > settings.max_triangles.idx() {
-            return Err(SurfaceError::TooManyTriangles { got: mesh.triangle_count(), max: settings.max_triangles.idx() });
-        }
-        Ok(mesh)
+        mesh.checked(settings.max_triangles)
     }
 }
 
@@ -489,6 +484,11 @@ fn local_radius(view: &ChunkView, p: Vec3A, limit: f32) -> f32 {
     deepest
 }
 
+/// Bit `i` set where corner `i` is inside.
+fn inside_mask(d: &[f32; 8]) -> u8 {
+    (0u8..).zip(d).fold(0, |m, (i, v)| if *v < 0.0 { m | 1 << i } else { m })
+}
+
 /// Labels the corners on one side of the surface (`inside` or not) by connected group along the
 /// cube's edges (`u8::MAX` for the other side's corners), and counts the groups.
 fn corner_groups(mask: u8, inside: bool) -> ([u8; 8], u8) {
@@ -548,6 +548,7 @@ mod tests {
 
     use super::*;
     use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::num::Idx;
     use crate::surface::{BodyFieldOptions, SurfaceNets};
 
     fn field(src: &str) -> BodyField {

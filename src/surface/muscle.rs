@@ -64,12 +64,7 @@ pub fn muscle_flex(mesh: &BodyMeshData, anatomy: &Anatomy, level: LodLevel) -> V
     if bellies.is_empty() {
         return out;
     }
-    let mut skin = vec![false; mesh.positions.len()];
-    for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-        if let Some(s) = skin.get_mut(i.idx()) {
-            *s = true;
-        }
-    }
+    let skin = mesh.skin_vertex_mask();
     for ((flex, p), _) in out.iter_mut().zip(&mesh.positions).zip(&skin).filter(|(_, s)| **s) {
         // The strongest belly under the vertex drives it, less the runner-up: where two bellies
         // overlap the flex fades to nothing at the switch (a groove between the muscles) rather
@@ -227,10 +222,7 @@ mod tests {
             assert!(f.joint.idx() < crowd.len(), "joint {} is not a crowd bone", f.joint);
         }
         // Off the skin (hard parts, sheets) nothing flexes.
-        let mut skin = vec![false; mesh.positions.len()];
-        for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-            skin[i.idx()] = true;
-        }
+        let skin = mesh.skin_vertex_mask();
         assert!(flex.iter().zip(&skin).all(|(f, s)| *s || f.amplitude == 0.0));
         // Far keeps no muscle stamps: its mesh gets no flex at all.
         let far = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();

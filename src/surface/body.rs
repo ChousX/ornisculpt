@@ -4,7 +4,7 @@ use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
 use crate::num::{Idx, Saturate, ToF32};
-use crate::anatomy::{Anatomy, BoneId, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
+use crate::anatomy::{Anatomy, BoneId, BuiltPart, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 
 /// Inputs to building a [`BodyField`] beyond the anatomy itself.
@@ -298,14 +298,6 @@ impl BodyField {
         });
         let fold_pad = if creases.is_some() { fold_amp } else { 0.0 };
 
-        // A limb part, or a part growing straight from one (hands, toes, hooves), belongs to that limb.
-        let limb_of = |part: usize| -> Option<u16> {
-            let p = anatomy.parts.get(part)?;
-            if p.role.is_some() {
-                return u16::try_from(part).ok();
-            }
-            p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
-        };
         let mut prims = Vec::new();
         for (p, &part) in anatomy.primitives.iter().zip(&prim_part) {
             if anatomy.parts.get(part.idx()).is_none_or(|part| part.lod < opts.level) || p.lod < opts.level {
@@ -334,7 +326,7 @@ impl BodyField {
                 region: p.region,
                 bone: p.bone,
                 part,
-                limb: limb_of(part.idx()),
+                limb: limb_of(anatomy, part),
                 aabb,
             });
         }
@@ -504,10 +496,16 @@ impl BodyField {
 
 /// Owning part index of every primitive (from the parts' primitive ranges).
 pub fn primitive_parts(anatomy: &Anatomy) -> Vec<u16> {
-    let mut out = vec![0u16; anatomy.primitives.len()];
+    range_owners(anatomy, anatomy.primitives.len(), |p| p.primitives.start.idx()..p.primitives.end.idx())
+}
+
+/// Owning part index of each of `len` items, from the item range `range` gives every part (0 for
+/// items in none).
+pub(super) fn range_owners(anatomy: &Anatomy, len: usize, range: impl Fn(&BuiltPart) -> std::ops::Range<usize>) -> Vec<u16> {
+    let mut out = vec![0u16; len];
     for (pi, part) in (0u16..).zip(&anatomy.parts) {
-        for i in part.primitives.clone() {
-            if let Some(slot) = out.get_mut(i.idx()) {
+        for i in range(part) {
+            if let Some(slot) = out.get_mut(i) {
                 *slot = pi;
             }
         }
@@ -572,22 +570,37 @@ impl<'a> ChunkView<'a> {
 }
 
 impl BodyField {
-    /// Whether `a` and `b` are the same bone or one is a near ancestor of the other (within three
-    /// steps: chest bone → clavicle → arm still counts).
+    /// Whether `a` and `b` are in line (see [`in_line`]).
     pub(crate) fn in_line(&self, a: BoneId, b: BoneId) -> bool {
-        let up = |from: BoneId, to: BoneId| {
-            let mut cur = Some(from);
-            for _ in 0..=3 {
-                match cur {
-                    Some(c) if c == to => return true,
-                    Some(c) => cur = self.bone_parent.get(c.index()).copied().flatten(),
-                    None => return false,
-                }
-            }
-            false
-        };
-        up(a, b) || up(b, a)
+        in_line(&self.bone_parent, a, b)
     }
+}
+
+/// Whether `a` and `b` are the same bone or one is a near ancestor of the other by `parent`
+/// (within three steps: chest bone → clavicle → arm still counts).
+pub(super) fn in_line(parent: &[Option<BoneId>], a: BoneId, b: BoneId) -> bool {
+    let up = |from: BoneId, to: BoneId| {
+        let mut cur = Some(from);
+        for _ in 0..=3 {
+            match cur {
+                Some(c) if c == to => return true,
+                Some(c) => cur = parent.get(c.index()).copied().flatten(),
+                None => return false,
+            }
+        }
+        false
+    };
+    up(a, b) || up(b, a)
+}
+
+/// The limb `part` belongs to: itself if it is a limb, else its parent if that is one (hands,
+/// toes, hooves).
+pub(super) fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
+    let p = anatomy.parts.get(part.idx())?;
+    if p.role.is_some() {
+        return Some(part);
+    }
+    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
 }
 
 impl BodyField {
