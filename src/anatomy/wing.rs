@@ -256,6 +256,17 @@ pub struct Sheet {
     pub indices: Vec<u32>,
 }
 
+impl Sheet {
+    fn push_vertex(&mut self, pos: Vec3, joints: [u16; 4], weights: [f32; 4], uv: [f32; 2], dir: Vec3, thickness: f32) {
+        self.positions.push(pos);
+        self.joints.push(joints);
+        self.weights.push(weights);
+        self.uvs.push(uv);
+        self.dirs.push(dir);
+        self.thickness.push(thickness);
+    }
+}
+
 /// Folded local rotations for a wing's bones; the pose blends rest → folded by `fold`, through
 /// `half` at a fold of one half where the wing has one.
 #[derive(Clone, Debug)]
@@ -556,12 +567,7 @@ fn ruled_panel(
                 }
                 None => skin(start),
             };
-            sheet.positions.push(pos);
-            sheet.joints.push(joints);
-            sheet.weights.push(weights);
-            sheet.uvs.push([c, v]);
-            sheet.dirs.push(next_a.lerp(next_b, c).normalize_or(Vec3::X));
-            sheet.thickness.push(rib_thickness(c, v).clamp(0.0, 1.0));
+            sheet.push_vertex(pos, joints, weights, [c, v], next_a.lerp(next_b, c).normalize_or(Vec3::X), rib_thickness(c, v).clamp(0.0, 1.0));
         }
     }
     if let Some(f) = fit {
@@ -947,10 +953,7 @@ impl<'a> MainFit<'a> {
 /// cross-section, an ellipse, grown by a twelfth for the muscle and fat over it); unchanged if
 /// already outside.
 fn outside(axis: &[AxisSample], p: Vec3, gap: f32) -> Vec3 {
-    let Some(s) = axis.iter().min_by(|a, b| a.centre().distance_squared(p).total_cmp(&b.centre().distance_squared(p))) else { return p };
-    let local = s.model.rotation.inverse() * (p - s.centre());
-    let (rx, rz) = (s.radii.x.mul_add(1.08, gap), s.radii.y.mul_add(1.08, gap));
-    let e = (local.x / rx).hypot(local.z / rz);
+    let Some((s, local, e)) = nearest_ellipse(axis, p, gap) else { return p };
     if e >= 1.0 || e < 1e-4 {
         return p;
     }
@@ -961,14 +964,20 @@ fn outside(axis: &[AxisSample], p: Vec3, gap: f32) -> Vec3 {
 /// `p` moved along its nearest cross-section's radius to `gap` beyond the skin (as [`outside`]),
 /// from inside or out: laid on the body.
 fn onto(axis: &[AxisSample], p: Vec3, gap: f32) -> Vec3 {
-    let Some(s) = axis.iter().min_by(|a, b| a.centre().distance_squared(p).total_cmp(&b.centre().distance_squared(p))) else { return p };
-    let local = s.model.rotation.inverse() * (p - s.centre());
-    let (rx, rz) = (s.radii.x.mul_add(1.08, gap), s.radii.y.mul_add(1.08, gap));
-    let e = (local.x / rx).hypot(local.z / rz);
+    let Some((s, local, e)) = nearest_ellipse(axis, p, gap) else { return p };
     if e < 1e-4 {
         return p;
     }
     s.centre() + s.model.rotation * Vec3::new(local.x / e, local.y, local.z / e)
+}
+
+/// `p`'s nearest cross-section (by centre), `p` in its frame from its centre, and how far out `p`
+/// lies relative to the ellipse `gap` beyond its skin (`1` = on that ellipse; see [`outside`]).
+fn nearest_ellipse(axis: &[AxisSample], p: Vec3, gap: f32) -> Option<(&AxisSample, Vec3, f32)> {
+    let s = axis.iter().min_by(|a, b| a.centre().distance_squared(p).total_cmp(&b.centre().distance_squared(p)))?;
+    let local = s.model.rotation.inverse() * (p - s.centre());
+    let (rx, rz) = (s.radii.x.mul_add(1.08, gap), s.radii.y.mul_add(1.08, gap));
+    Some((s, local, (local.x / rx).hypot(local.z / rz)))
 }
 
 /// Body point (and its bone) where a membrane's trailing edge attaches.
@@ -980,11 +989,9 @@ fn trailing_point(b: &AnatomyBuilder, trailing: Trailing, ax: &Axes, at: &Attach
     };
     let axis = b.parent_axis();
     if let Some(s) = sample_axis(&axis, t) {
-        let a = around.to_radians();
-        let dorsal = s.model.rotation * Vec3::NEG_Z;
-        let side = (s.model.rotation * Vec3::X) * ax.out.x.signum();
-        let normal = (dorsal * a.cos() + side * a.sin()).normalize();
-        return (s.centre() + normal * s.radius_toward(a) * 0.9, Some(s.bone));
+        // Round toward the wing's side.
+        let a = around.to_radians() * ax.out.x.signum();
+        return (s.centre() + s.normal_toward(a) * s.radius_toward(a) * 0.9, Some(s.bone));
     }
     (ax.root - ax.fwd * chord.max(span * 0.3), at.bone)
 }
@@ -1130,18 +1137,10 @@ fn feather_card(sheet: &mut Sheet, root: Vec3, dir: Vec3, up: Vec3, len: f32, wi
         let half = width * 0.5 * t.powi(4).mul_add(-0.55, 1.0);
         let centre = root + dir * len * t - up * len * 0.04 * (PI * t).sin();
         for (k, sgn) in [(0.0, -1.0), (1.0, 1.0)] {
-            sheet.positions.push(centre + side * half * sgn);
-            sheet.joints.push([u16::from(bone_a.0), u16::from(bone_b.0), 0, 0]);
-            sheet.weights.push([1.0 - wb, wb, 0.0, 0.0]);
-            sheet.uvs.push([k, t]);
-            sheet.dirs.push(dir);
-            sheet.thickness.push(0.35);
+            sheet.push_vertex(centre + side * half * sgn, [u16::from(bone_a.0), u16::from(bone_b.0), 0, 0], [1.0 - wb, wb, 0.0, 0.0], [k, t], dir, 0.35);
         }
     }
-    for j in 0..rows {
-        let i = base + j * 2;
-        sheet.indices.extend([i, i + 2, i + 1, i + 1, i + 2, i + 3]);
-    }
+    grid_indices(sheet, base, rows, 1);
 }
 
 fn build_blade(
@@ -1176,12 +1175,8 @@ fn build_blade(
             let v = m.to_f32() / cols.to_f32();
             let dome = if blade.elytron { width * 0.35 * (PI * v).sin() } else { 0.0 };
             let pos = ax.root + dir * span * u + back * (v - 0.15) * width + up * dome;
-            sheet.positions.push(pos);
-            sheet.joints.push([u16::from(hinge.0), 0, 0, 0]);
-            sheet.weights.push([1.0, 0.0, 0.0, 0.0]);
-            sheet.uvs.push([u, v]);
-            sheet.dirs.push(dir);
-            sheet.thickness.push(if blade.elytron { 1.0 } else { 0.3f32.mul_add((1.0 - v).powi(4), 0.08) });
+            let thickness = if blade.elytron { 1.0 } else { 0.3f32.mul_add((1.0 - v).powi(4), 0.08) };
+            sheet.push_vertex(pos, [u16::from(hinge.0), 0, 0, 0], [1.0, 0.0, 0.0, 0.0], [u, v], dir, thickness);
         }
     }
     grid_indices(&mut sheet, base, rows, cols);
