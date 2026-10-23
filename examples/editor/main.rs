@@ -44,20 +44,24 @@ use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo, VariantType};
 use bevy::reflect::{GetPath, PartialReflect, ReflectMut, ReflectRef, TypeInfo};
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::window::{PresentMode, PrimaryWindow};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{
-    Anatomy, AttachSlot, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, PartNode, PartPath, Repeat, apply_form, build_anatomy, mirror_point,
-    path_matches, referenced_assets, sample_axis,
+    Anatomy, AttachSlot, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, PartNode, PartPath, Repeat, apply_form, mirror_point, path_matches,
+    referenced_assets, sample_axis,
 };
-use ornisculpt::num::{Idx, ToF32};
+use ornisculpt::num::Idx;
 use ornisculpt::mob::{BodyFailed, BodyKey, BodyReady, GenBudget, GenCache, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, PartAssetCache};
 use ornisculpt::surface::{BodyField, BodyFieldOptions, Field as _, SdfPreview, SdfPreviewAssets, SdfPreviewPlugin};
 
+#[path = "../common/mod.rs"]
+mod common;
+mod script;
+
+use script::{Script, scripted_edits};
+
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
-    let path = path.strip_prefix("assets/").map(str::to_owned).unwrap_or(path);
+    let path = common::asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
     let mut app = App::new();
     app.add_plugins((
         DefaultPlugins
@@ -547,8 +551,7 @@ struct BuildCtx<'a> {
 
 impl BuildCtx<'_> {
     fn build(&self, plan: &BodyPlan) -> Result<Anatomy, String> {
-        let live = apply_form(plan, &Form::default()).map_err(|e| e.to_string())?;
-        build_anatomy(&live, self.rules, self.assets).map_err(|e| e.to_string())
+        common::build_plan(plan, *self.rules, self.assets)
     }
 }
 
@@ -657,6 +660,13 @@ fn walk(value: &dyn PartialReflect, reflect: &str, label: &str, skip: &[&str], o
     }
 }
 
+/// Calls `$m!` with every integer type a plan holds.
+macro_rules! with_int_types {
+    ($m:ident) => {
+        $m!(u8, u16, u32, u64, usize, i8, i16, i32, i64)
+    };
+}
+
 /// How a leaf value is edited, and how it reads.
 fn leaf(v: &dyn PartialReflect) -> (FieldKind, String) {
     if let Some(x) = v.try_downcast_ref::<f32>() {
@@ -672,7 +682,7 @@ fn leaf(v: &dyn PartialReflect) -> (FieldKind, String) {
             }
         )*};
     }
-    try_ints!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
+    with_int_types!(try_ints);
     if let Some(x) = v.try_downcast_ref::<String>() {
         return (FieldKind::Fixed, format!("{x:?}"));
     }
@@ -717,7 +727,7 @@ fn adjust(value: &mut dyn PartialReflect, dir: f32, scale: f32, degrees: bool) -
             }
         )*};
     }
-    try_ints!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
+    with_int_types!(try_ints);
     let ReflectMut::Enum(e) = value.reflect_mut() else { return false };
     if e.variant_type() != VariantType::Unit {
         return false;
@@ -734,16 +744,12 @@ fn adjust(value: &mut dyn PartialReflect, dir: f32, scale: f32, degrees: bool) -
     true
 }
 
-
 #[derive(Component)]
 struct Panel;
 
 #[derive(Resource)]
 struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
+    view: common::Orbit,
     /// A left-drag that began on empty space orbits.
     dragging: bool,
     /// This frame's scroll scaled a part instead of zooming.
@@ -752,15 +758,16 @@ struct Orbit {
 
 impl Default for Orbit {
     fn default() -> Self {
-        Self { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0), dragging: false, scroll_used: false }
+        let view = common::Orbit { yaw: 0.9, pitch: 0.35, distance: 3.0, target: Vec3::new(0.0, 0.5, 0.0), zoom: (0.3, 30.0) };
+        Self { view, dragging: false, scroll_used: false }
     }
 }
 
 impl Orbit {
     /// Frames a grounded body of this radius (the first body only; after that the view is yours).
     fn fit(&mut self, radius: f32) {
-        self.target = Vec3::new(0.0, radius * 0.5, 0.0);
-        self.distance = (radius * 2.6).clamp(0.3, 30.0);
+        self.view.target = Vec3::new(0.0, radius * 0.5, 0.0);
+        self.view.distance = (radius * 2.6).clamp(0.3, 30.0);
     }
 
     /// `ORNISCULPT_VIEW=yaw,pitch[,distance]` (radians, metres): a fixed first view, for
@@ -769,9 +776,9 @@ impl Orbit {
         let Ok(view) = std::env::var("ORNISCULPT_VIEW") else { return };
         let values: Vec<f32> = view.split(',').filter_map(|v| v.trim().parse().ok()).collect();
         if let [yaw, pitch, rest @ ..] = values.as_slice() {
-            (self.yaw, self.pitch) = (*yaw, pitch.clamp(-1.4, 1.4));
+            (self.view.yaw, self.view.pitch) = (*yaw, pitch.clamp(-1.4, 1.4));
             if let Some(distance) = rest.first() {
-                self.distance = distance.clamp(0.3, 30.0);
+                self.view.distance = distance.clamp(0.3, 30.0);
             }
         }
     }
@@ -807,7 +814,6 @@ impl KeyRepeat {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
     mut editor: ResMut<Editor>,
@@ -818,16 +824,7 @@ fn setup(
     // Bones are inside the body: draw them over it.
     gizmo_config.config_mut::<DefaultGizmoConfigGroup>().0.depth_bias = -1.0;
     commands.spawn(Camera3d::default());
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(preview_assets.meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
-        MeshMaterial3d(
-            preview_assets.standard.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() }),
-        ),
-    ));
+    common::spawn_stage(&mut commands, &mut preview_assets.meshes, &mut preview_assets.standard, 20.0, Vec3::new(3.0, 6.0, 2.0));
     editor.handle = assets.load(editor.path.clone());
     editor.mob = commands.spawn(Mob::new(editor.handle.clone())).id();
     // The preview shares the mob's model space: both sit at the origin.
@@ -928,7 +925,6 @@ fn pointer(
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "one key per branch")]
 fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -1166,172 +1162,13 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
     }
 }
 
-/// Scripted edits (`ORNISCULPT_EDITOR_TEST`): a held key on the first number of the first
-/// child part, a drag of the first part attached to its parent's skin, a pause, then undo back.
-/// Frames count from the first preview.
-#[derive(Resource, Default)]
-struct Script {
-    frame: u32,
-    done: bool,
-    logged: String,
-    /// Preview build times (ms) over the edits.
-    preview_ms: Vec<f64>,
-    /// Per preview built: percentage of its bricks baked anew, outside a drag (the held key edits
-    /// the body tone: every brick) and during it.
-    rebaked: [Vec<f64>; 2],
-    /// Where the dragged part's root was at the grab.
-    grab: Option<Vec3>,
-    /// Frame times (ms): the preview standing, the preview rebuilt that frame, the mesh.
-    frames: [Vec<f64>; 3],
-    /// The preview version last frame.
-    last_previewed: Option<(u64, usize)>,
-}
-
-/// Files the last frame's time (`ms`) by what was on screen, and how much of a preview that went
-/// up then was baked anew.
-fn measure_frame(script: &mut Script, editor: &Editor, ms: f64) {
-    // Skip the first frames: pipelines compile.
-    // Frame time is the time since the last frame: the frame before this one, which rebuilt the
-    // preview if the version moved since the frame before it.
-    if script.frame > 30 {
-        let kind = if editor.shown == Some(editor.version) {
-            2
-        } else {
-            usize::from(script.last_previewed != editor.previewed)
-        };
-        if let Some(frames) = script.frames.get_mut(kind) {
-            frames.push(ms);
-        }
-    }
-    if script.last_previewed != editor.previewed && editor.previewed.is_some_and(|(v, _)| v == editor.version) {
-        let share = f64::from(editor.rebaked.0) * 100.0 / f64::from(editor.rebaked.1.max(1));
-        if let Some(shares) = script.rebaked.get_mut(usize::from(editor.drag.is_some())) {
-            shares.push(share);
-        }
-    }
-    script.last_previewed = editor.previewed;
-}
-
-fn scripted_edits(
-    mut commands: Commands,
-    mut script: ResMut<Script>,
-    mut editor: ResMut<Editor>,
-    rules: Res<PartLodRules>,
-    cache: Res<PartAssetCache>,
-    time: Res<Time>,
-) {
-    if script.done || editor.body.is_none() {
-        return;
-    }
-    script.frame += 1;
-    measure_frame(&mut script, &editor, time.delta_secs_f64() * 1000.0);
-    let frame = script.frame;
-    // The part to drag: the first whose attach slides, and a ray straight down onto its root.
-    let slider = || {
-        let plan = editor.plan.as_ref()?;
-        let body = editor.body.as_ref()?;
-        let entry = editor.parts.iter().position(|e| {
-            plan.node(&e.path).is_some_and(|n| matches!(n.attach, AttachSlot::Surface { .. }) && n.name != plan.root.name)
-        })?;
-        let authored = &editor.parts.get(entry)?.path;
-        let copy = body.anatomy.parts.iter().position(|p| path_matches(authored, &p.path) && !p.mirrored)?;
-        let root = body.model.get(usize::from(body.anatomy.parts.get(copy)?.bones.start))?.translation;
-        Some((entry, copy, Vec3::from(root)))
-    };
-    let down = |p: Vec3| Ray3d::new(p + Vec3::Y * 2.0, Dir3::NEG_Y);
-    match frame {
-        1 => {
-            editor.select_part(1);
-            editor.field = editor.fields.iter().position(|f| f.kind == FieldKind::Float).unwrap_or(0);
-        }
-        // Held key: an edit every third frame (the key repeat rate).
-        10..=100 if frame % 3 == 0 => editor.adjust_selected(1.0, 1.0),
-        // A drag: grab the part, then slide the cursor backwards 2 mm a frame.
-        120 => {
-            if let Some((entry, copy, root)) = slider() {
-                editor.select_part(entry);
-                let ctx = BuildCtx { rules: &rules, assets: &cache.assets };
-                let hit = editor.pick(down(root)).map_or(root, |(_, hit)| hit);
-                editor.begin_drag(copy, hit, down(root), Vec2::ZERO, false, &ctx);
-                script.grab = Some(root);
-                script.logged.clear();
-                info!("test: dragging {}", editor.parts.get(entry).map_or("?", |e| e.path.0.as_str()));
-            }
-        }
-        121..=180 => {
-            if let Some(Drag { mode: DragMode::Slide { .. }, .. }) = &editor.drag
-                && let Some(root) = script.grab
-            {
-                let at = root - Vec3::Z * 0.002 * (frame - 120).to_f32();
-                editor.continue_drag(down(at), Vec2::ZERO);
-            }
-            // The preview mid-drag, beside the final screenshot.
-            if frame == 170
-                && let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT")
-            {
-                let path = std::path::Path::new(&path).with_extension("preview.png");
-                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-            }
-        }
-        181 => editor.end_drag(),
-        260..=340 if frame % 8 == 0 => editor.undo(),
-        // Then wait for the full mesh (up to a while), so its frames are measured too.
-        420.. if script.frames.last().is_some_and(|m| m.len() >= 60) || frame > 3000 => {
-            script.done = true;
-            let stats_in = |mut ms: Vec<f64>, unit: &str| {
-                ms.sort_by(f64::total_cmp);
-                let pick = |percent: usize| ms.get(ms.len().saturating_sub(1) * percent / 100).copied().unwrap_or_default();
-                format!("{} samples, p50 {:.2}{unit}, p95 {:.2}{unit}, max {:.2}{unit}", ms.len(), pick(50), pick(95), pick(100))
-            };
-            let stats = |ms: Vec<f64>| stats_in(ms, " ms");
-            info!("test: preview builds: {}", stats(script.preview_ms.clone()));
-            let [still, dragged] = script.rebaked.clone();
-            info!("test: bricks rebaked per preview, not dragging: {}", stats_in(still, "%"));
-            info!("test: bricks rebaked per preview, dragging: {}", stats_in(dragged, "%"));
-            let [standing, rebuilt, mesh] = script.frames.clone();
-            info!("test: frames with the preview standing: {}", stats(standing));
-            info!("test: frames with the preview rebuilt: {}", stats(rebuilt));
-            info!("test: frames with the mesh: {}", stats(mesh));
-            // The screenshot counts from the full body: the one shown, or the one on its way.
-            editor.ready_frames = (editor.shown == Some(editor.version)).then_some(0);
-        }
-        _ => {}
-    }
-    if editor.is_changed()
-        && let Some(ms) = editor.preview_ms
-        && editor.previewed.is_some_and(|(v, _)| v == editor.version)
-    {
-        script.preview_ms.push(ms);
-    }
-    let attach = editor.parts.get(editor.part).and_then(|e| editor.plan.as_ref()?.node(&e.path)).map(|n| format!("{:?}", n.attach));
-    let line = format!(
-        "{} [{}] full {:?} ms ({} = {}, attach {})",
-        editor.status,
-        if editor.shown == Some(editor.version) { "mesh" } else { "preview" },
-        editor.full_ms.map(f64::round),
-        editor.fields.get(editor.field).map_or("", |f| f.label.as_str()),
-        editor.fields.get(editor.field).map_or("", |f| f.value.as_str()),
-        attach.unwrap_or_default(),
-    );
-    if script.logged != line {
-        info!("test frame {frame}: {line}");
-        script.logged = line;
-    }
-}
-
 fn screenshot(mut commands: Commands, mut editor: ResMut<Editor>, script: Option<Res<Script>>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     if script.is_some_and(|s| !s.done) {
         return;
     }
-    let Some(frames) = editor.ready_frames.as_mut() else { return };
-    *frames += 1;
-    // Give pipelines time to compile before capturing.
-    if *frames == 120 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frames == 140 {
-        exit.write(AppExit::Success);
+    if let Some(frames) = editor.ready_frames.as_mut() {
+        common::shoot_when_ready(&mut commands, &mut exit, frames, path);
     }
 }
 
@@ -1342,16 +1179,12 @@ fn orbit_camera(
     scroll: Res<AccumulatedMouseScroll>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
-    if (orbit.dragging && buttons.pressed(MouseButton::Left)) || buttons.pressed(MouseButton::Right) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    if !orbit.scroll_used {
-        orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
-    }
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
+    let rotate = (orbit.dragging && buttons.pressed(MouseButton::Left)) || buttons.pressed(MouseButton::Right);
+    let zoom = !orbit.scroll_used;
+    orbit.view.step(rotate, motion.delta, scroll.delta.y, zoom);
+    let view = orbit.view.transform_at(orbit.view.target, 0.0);
     for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
+        *t = view;
     }
 }
 
