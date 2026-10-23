@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::mesh_data::vertex_normals;
 use super::{
     BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
     Submesh, SurfaceError, merge,
@@ -131,15 +132,7 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
 
 /// Owning part of every hard part (from the parts' hard-part ranges).
 fn hard_part_owners(anatomy: &Anatomy) -> Vec<u16> {
-    let mut out = vec![0u16; anatomy.hard_parts.len()];
-    for (pi, part) in (0u16..).zip(&anatomy.parts) {
-        for i in part.hard_parts.clone() {
-            if let Some(slot) = out.get_mut(i.idx()) {
-                *slot = pi;
-            }
-        }
-    }
-    out
+    super::body::range_owners(anatomy, anatomy.hard_parts.len(), |p| p.hard_parts.start.idx()..p.hard_parts.end.idx())
 }
 
 /// All three levels, built in parallel (near and far beside hero, which is most of the work).
@@ -173,20 +166,7 @@ pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
 /// the shading direction (xyz) and thickness (w).
 fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
     let n = sheet.positions.len();
-    let mut normals = vec![Vec3::ZERO; n];
-    for t in sheet.indices.as_chunks::<3>().0 {
-        let [a, b, c] = t.map(Idx::idx);
-        let (Some(&pa), Some(&pb), Some(&pc)) = (sheet.positions.get(a), sheet.positions.get(b), sheet.positions.get(c)) else {
-            continue;
-        };
-        let nrm = (pb - pa).cross(pc - pa);
-        for v in [a, b, c] {
-            if let Some(n) = normals.get_mut(v) {
-                *n += nrm;
-            }
-        }
-    }
-    let normals = normals.into_iter().map(|v| v.normalize_or(Vec3::Y)).collect();
+    let normals = vertex_normals(&sheet.positions, &sheet.indices);
     let mob_data = sheet
         .joints
         .iter()

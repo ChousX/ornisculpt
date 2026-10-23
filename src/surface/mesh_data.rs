@@ -341,6 +341,22 @@ impl BodyMeshData {
     }
 }
 
+/// Area-weighted vertex normals of a triangle list (`Y` where no triangle gives one).
+pub(super) fn vertex_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
+    let mut normals = vec![Vec3::ZERO; positions.len()];
+    for t in indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(Idx::idx);
+        let (Some(&pa), Some(&pb), Some(&pc)) = (positions.get(a), positions.get(b), positions.get(c)) else { continue };
+        let n = (pb - pa).cross(pc - pa);
+        for v in [a, b, c] {
+            if let Some(slot) = normals.get_mut(v) {
+                *slot += n;
+            }
+        }
+    }
+    normals.into_iter().map(|n| n.normalize_or(Vec3::Y)).collect()
+}
+
 /// An optional per-vertex channel of [`BodyMeshData`] (see [`BodyMeshData::push_from`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VertexChannel {

@@ -41,6 +41,7 @@ use bevy::shape::{Aabb3d, BoundingVolume};
 use xxhash_rust::xxh3::Xxh3;
 
 use super::BodyField;
+use super::mesh_data::vertex_normals;
 use super::body::{PreparedShape, local_bounds, transform_aabb};
 use super::hard::{horn_dims, plate_radii};
 use crate::anatomy::{Anatomy, CrossSection, HardKind, HardPart, PrimOp, PrimShape};
@@ -147,22 +148,8 @@ impl PreviewSheets {
                     })
                 })
                 .collect();
-            let sheet_positions = &posed;
-            let mut normals = vec![Vec3::ZERO; sheet.positions.len()];
-            for t in sheet.indices.as_chunks::<3>().0 {
-                let [a, b, c] = t.map(Idx::idx);
-                let (Some(&pa), Some(&pb), Some(&pc)) = (sheet_positions.get(a), sheet_positions.get(b), sheet_positions.get(c)) else {
-                    continue;
-                };
-                let n = (pb - pa).cross(pc - pa);
-                for v in [a, b, c] {
-                    if let Some(slot) = normals.get_mut(v) {
-                        *slot += n;
-                    }
-                }
-            }
-            out.positions.extend(posed.iter());
-            out.normals.extend(normals.into_iter().map(|n| n.normalize_or(Vec3::Y)));
+            out.normals.extend(vertex_normals(&posed, &sheet.indices));
+            out.positions.extend(posed);
             out.shade.extend((0..sheet.positions.len()).map(|i| [sheet.thickness.get(i).copied().unwrap_or(0.0), lit]));
             out.indices.extend(sheet.indices.iter().map(|i| base + i));
         }
