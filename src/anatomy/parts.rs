@@ -1319,13 +1319,13 @@ mod arm_clearance {
         down.angle_between(Vec3::NEG_Y).to_degrees()
     }
 
-    /// A slim body keeps its authored splay (6°); padding pushes the arms out, more for more.
+    /// A slim body keeps its authored splay (10°); padding pushes the arms out, more for more.
     #[test]
     fn arms_clear_padding() {
         let biped = arm_angle(include_str!("../../assets/mobs/biped.body.ron"));
         let curvy = arm_angle(include_str!("../../assets/mobs/curvy.body.ron"));
         let thick = arm_angle(include_str!("../../assets/mobs/thick.body.ron"));
-        assert!((biped - 6.0).abs() < 0.5, "biped arm {biped}°");
+        assert!((biped - 10.0).abs() < 0.5, "biped arm {biped}°");
         assert!(curvy >= biped && thick > curvy + 4.0, "biped {biped}°, curvy {curvy}°, thick {thick}°");
     }
 }

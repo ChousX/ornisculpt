@@ -9,7 +9,7 @@
         kind: Torso((
             // Pelvis → waist → chest → shoulders: hips wide, the waist drawn in, narrow shoulders. The
             // pelvis end narrows so its rounded cap tucks between the thighs rather than hanging.
-            chain: (segments: 3, length: 0.46, radius: (curve: [(0.0, 0.8), (0.12, 1.12), (0.24, 1.04), (0.44, 0.7), (0.72, 0.9), (1.0, 0.66)], scale: 0.125, cross: Ellipse(aspect: 1.55))),
+            chain: (segments: 3, length: 0.49, radius: (curve: [(0.0, 0.8), (0.12, 1.12), (0.24, 1.04), (0.44, 0.7), (0.72, 0.9), (0.88, 0.84), (1.0, 0.48)], scale: 0.125, cross: Ellipse(aspect: 1.55))),
             belly: 0.08,
         )),
         offset: (rotate_deg: (-90.0, 0.0, 0.0)),
@@ -17,8 +17,8 @@
         // Upright torso stamps (`tone::upright_torso_stamps`) with softer muscle, plus breasts and
         // the fat of the hips and buttocks. Around 0 = back, 90 = left, 180 = front.
         stamps: Custom([
-            (at: Surface(t: 0.68, around_deg: 148.0), kind: Fat, size: (0.56, 0.52, 0.6), depth: 0.4, mirror: true),   // breast
-            (at: Surface(t: 0.84, around_deg: 150.0), kind: Muscle, size: (0.6, 0.4, 0.35), depth: 0.03, mirror: true), // chest under it
+            (at: Surface(t: 0.72, around_deg: 148.0), kind: Fat, size: (0.56, 0.52, 0.6), depth: 0.4, mirror: true),   // breast
+            (at: Surface(t: 0.87, around_deg: 150.0), kind: Muscle, size: (0.6, 0.4, 0.35), depth: 0.03, mirror: true), // chest under it
             (at: Surface(t: 0.92, around_deg: 100.0), kind: Muscle, size: (0.3, 0.3, 0.3), depth: 0.03, mirror: true),  // top of the shoulder
             (at: Surface(t: 0.8, around_deg: 35.0), kind: Landmark, size: (0.28, 0.4, 0.15), depth: 0.02, mirror: true), // shoulder blade
             (at: Surface(t: 0.12, around_deg: 26.0), kind: Fat, size: (0.6, 0.55, 0.55), depth: 0.34, mirror: true),   // buttock
@@ -29,7 +29,7 @@
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 2, length: 0.17, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.12, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
                 attach: End,
                 detail: Always,
                 children: [

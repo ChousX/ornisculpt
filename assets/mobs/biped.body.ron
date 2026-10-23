@@ -6,7 +6,7 @@
         name: "torso",
         kind: Torso((
             // Pelvis → waist → chest → shoulders; ~1.5× wider than deep.
-            chain: (segments: 3, length: 0.47, radius: (curve: [(0.0, 0.95), (0.35, 0.8), (0.75, 1.0), (1.0, 0.72)], scale: 0.125, cross: Ellipse(aspect: 1.5))),
+            chain: (segments: 3, length: 0.5, radius: (curve: [(0.0, 0.95), (0.35, 0.8), (0.75, 1.0), (0.88, 0.92), (1.0, 0.5)], scale: 0.125, cross: Ellipse(aspect: 1.5))),
             belly: 0.15,
         )),
         offset: (rotate_deg: (-90.0, 0.0, 0.0)),
@@ -14,7 +14,7 @@
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 2, length: 0.17, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.12, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
                 attach: End,
                 detail: Always,
                 children: [
@@ -62,7 +62,7 @@
                     role: Manipulator,
                     end: Hand(palm: 0.09),
                     joints: Some((plan: Arm, swing: 0.0, flex: [15.0])),
-                    splay_deg: 6.0,
+                    splay_deg: 10.0,
                 )),
                 attach: Surface(t: 0.9, around_deg: 92.0),
                 offset: (translate: (0.0, 0.035, 0.0)),
