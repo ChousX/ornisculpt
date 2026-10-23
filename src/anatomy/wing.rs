@@ -1204,14 +1204,8 @@ fn planform(p: Planform, elytron: bool, u: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src as build;
     use crate::num::Idx;
-
-    fn build(src: &str) -> crate::anatomy::Anatomy {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
 
     /// Every winged sample builds, with mirrored sheets, a fold rig per wing, and skin weights
     /// that sum to one on every sheet vertex.

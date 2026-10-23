@@ -112,27 +112,12 @@ pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-
-    fn body(src: &str) -> Anatomy {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
-
-    fn model(a: &Anatomy, local: &[Transform]) -> Vec<Affine3A> {
-        let mut out: Vec<Affine3A> = Vec::new();
-        for (i, b) in a.skeleton.bones.iter().enumerate() {
-            let l = local[i].compute_affine();
-            out.push(b.parent.map_or(l, |p| out[p.index()] * l));
-        }
-        out
-    }
+    use crate::anatomy::build_src as body;
 
     #[test]
     fn arms_rise_to_an_a_pose_and_legs_stay() {
         let a = body(include_str!("../../assets/mobs/biped.body.ron"));
-        let spread = model(&a, &spread_pose(&a, &Spread::default()));
+        let spread = a.skeleton.model_from(&spread_pose(&a, &Spread::default()));
         let rest = a.skeleton.model_rest();
         for p in a.parts.iter().filter(|p| p.role == Some(LimbRole::Manipulator)) {
             let root = a.clavicles.iter().find(|c| c.bone.0 == p.bones.start).map_or_else(|| usize::from(p.bones.start), |c| c.arm.index());

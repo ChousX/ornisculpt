@@ -1176,16 +1176,13 @@ impl PartBuild for SculptParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{Anatomy, BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy, sample_axis};
+    use crate::anatomy::{Anatomy, build_src, sample_axis};
 
     /// A lone torso (3 bones, 1 m, radius 0.2) with the given `Profile` fields.
     fn torso(profile: &str) -> Anatomy {
-        let src = format!(
+        build_src(&format!(
             "(root: (name: \"torso\", kind: Torso((chain: (segments: 3, length: 1.0, radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.2, {profile}))))))"
-        );
-        let plan: BodyPlan = ron::from_str(&src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        ))
     }
 
     /// The torso's base-layer cones, in model space: (start, end, r0, r1, scale).
@@ -1271,12 +1268,11 @@ mod tests {
 mod arm_clearance {
     use bevy::math::Vec3;
 
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
 
     /// How far a plan's left arm hangs out from straight down, degrees.
     fn arm_angle(ron: &str) -> f32 {
-        let plan: BodyPlan = ron::from_str(ron).unwrap();
-        let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(ron);
         let rest = a.skeleton.rest_model();
         let arm = a.clavicles.first().unwrap().arm;
         let elbow = a.skeleton.children(arm).next().unwrap();
