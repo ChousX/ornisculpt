@@ -47,22 +47,6 @@ impl Hand {
         self
     }
 
-    #[must_use]
-    pub const fn with_weight(mut self, weight: f32) -> Self {
-        self.weight = weight;
-        self
-    }
-
-    /// Blends toward `other` by `t` (curl, spread and weight).
-    #[must_use]
-    pub fn lerp(self, other: Self, t: f32) -> Self {
-        let mut curl = self.curl;
-        for (c, o) in curl.iter_mut().zip(other.curl) {
-            *c = c.lerp(o, t);
-        }
-        Self { curl, spread: self.spread.lerp(other.spread, t), weight: self.weight.lerp(other.weight, t) }
-    }
-
     fn digit(&self, i: usize) -> f32 {
         self.curl.get(i).or_else(|| self.curl.last()).copied().unwrap_or(0.0)
     }

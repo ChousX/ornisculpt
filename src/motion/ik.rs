@@ -53,23 +53,18 @@ fn place_from_tip(joints: &mut [Vec3], lengths: &[f32], target: Vec3) {
     }
 }
 
-/// Fraction of full extension where [`two_bone`] starts easing toward straight.
+/// Fraction of full extension where [`two_bone_soft`] starts easing toward straight by default.
 pub const SOFT_START: f32 = 0.95;
 
 /// Exact IK for a two-bone chain (`joints` = root, middle, tip): the middle joint bends toward
 /// `pole`. Bone lengths come from the current joints.
 ///
-/// Soft near full extension: past [`SOFT_START`] of the reach the chain approaches straight
-/// asymptotically (the tip falls slightly short of the target) instead of locking. A hard lock
-/// snaps the knee, because near straight a tiny change in distance swings the knee a long way.
-pub fn two_bone(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3) {
-    two_bone_soft(joints, target, pole, SOFT_START);
-}
-
-/// [`two_bone`], easing toward straight from `soft` of the full reach instead of [`SOFT_START`].
-///
-/// A leg that stands nearly straight (a bear's columns) is already past [`SOFT_START`] at rest,
-/// so it would stand short of its own feet: start its easing just past its rest reach instead.
+/// Soft near full extension: past `soft` of the reach (usually [`SOFT_START`]) the chain
+/// approaches straight asymptotically (the tip falls slightly short of the target) instead of
+/// locking. A hard lock snaps the knee, because near straight a tiny change in distance swings the
+/// knee a long way. A leg that stands nearly straight (a bear's columns) is already past
+/// [`SOFT_START`] at rest, so it would stand short of its own feet: start its easing just past its
+/// rest reach instead.
 pub fn two_bone_soft(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3, soft: f32) {
     let (l1, l2) = (joints[0].distance(joints[1]), joints[1].distance(joints[2]));
     let root = joints[0];
@@ -88,39 +83,6 @@ pub fn two_bone_soft(joints: &mut [Vec3; 3], target: Vec3, pole: Vec3, soft: f32
     let side = (pole - axis * pole.dot(axis)).normalize_or(axis.any_orthonormal_vector());
     joints[1] = root + axis * along + side * out;
     joints[2] = root + axis * d;
-}
-
-/// Turns the interior joints about the root→tip line so the chain bends toward `pole`.
-///
-/// Knees go forward, elbows back; the chain keeps its shape and the first interior joint sets the
-/// side. Without this a leg whose solve starts near-straight can pick either side from one frame to
-/// the next, and the knee snaps across. A straight chain is left alone.
-pub fn orient_to_pole(joints: &mut [Vec3], pole: Vec3) {
-    let n = joints.len();
-    let (Some(&root), Some(&first), Some(&tip)) = (joints.first(), joints.get(1), joints.last()) else { return };
-    if n < 3 {
-        return;
-    }
-    let axis = (tip - root).normalize_or_zero();
-    let want = (pole - axis * pole.dot(axis)).normalize_or_zero();
-    if axis == Vec3::ZERO || want == Vec3::ZERO {
-        return;
-    }
-    let perpendicular = |p: Vec3| {
-        let d = p - root;
-        d - axis * d.dot(axis)
-    };
-    // The first joint (knee/elbow) sets the side; later joints (a hock bending back) ride along.
-    let bend = perpendicular(first);
-    let length: f32 = joints.array_windows().map(|[a, b]| a.distance(*b)).sum();
-    if bend.length() < length * 1e-3 {
-        return;
-    }
-    let bend = bend.normalize();
-    let turn = if bend.dot(want) < -0.9999 { Quat::from_axis_angle(axis, std::f32::consts::PI) } else { Quat::from_rotation_arc(bend, want) };
-    for j in joints.iter_mut().skip(1).take(n - 2) {
-        *j = root + turn * (*j - root);
-    }
 }
 
 #[cfg(test)]

@@ -292,16 +292,6 @@ impl Layer {
         self.transitions.push(Transition { from, to: to.into(), when, blend, switch: Switch::Immediate });
         self
     }
-
-    /// Like [`transition`](Self::transition) with an explicit [`Switch`].
-    #[must_use]
-    pub fn transition_with(mut self, from: &str, to: &str, when: Condition, blend: f32, switch: Switch) -> Self {
-        self = self.transition(from, to, when, blend);
-        if let Some(t) = self.transitions.last_mut() {
-            t.switch = switch;
-        }
-        self
-    }
 }
 
 impl Condition {

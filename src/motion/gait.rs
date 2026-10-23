@@ -234,11 +234,6 @@ impl BodyMotion {
     pub const fn rigid() -> Self {
         Self { yaw: 2.5, roll: 2.0, sway: 0.0, rock: 0.01, counter: 0.0, steady: 0.3, nod: 0.0, tail: 0.5 }
     }
-
-    #[must_use]
-    pub const fn none() -> Self {
-        Self { yaw: 0.0, roll: 0.0, sway: 0.0, rock: 0.0, counter: 0.0, steady: 0.0, nod: 0.0, tail: 0.0 }
-    }
 }
 
 impl BodyMotion {

@@ -1,15 +1,16 @@
-//! Motion systems: binding, root movement, then each pose stage (see [`stages`](super::stages))
+//! Motion systems: binding, root movement, then the whole pose (see [`stages`](super::stages))
 //! on every mob in parallel, then the joints.
 
 use std::f32::consts::{PI, TAU};
 
+use bevy::ecs::query::QueryData;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::heft::Heft;
-use super::stages::{self, Frame, leg_length};
+use super::stages::{self, Frame, PoseInput, PoseState, leg_length};
 use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState, MotionTime};
-use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, MobGait, MobIntent};
+use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, HandPose, MobGait, MobIntent};
 use crate::anatomy::Anatomy;
 use crate::mob::{BodyReady, GeneratedBody, MobBody, MobJoint, MobSkeleton};
 
@@ -140,96 +141,57 @@ pub(super) fn write_probes(assets: MotionAssets, mut mobs: Query<(&Transform, &M
     });
 }
 
-/// Starts each hero pose from rest, keeping the joints' scales (set by levers).
-pub(super) fn rest_poses(
-    assets: MotionAssets,
-    mut mobs: Query<(&MobBody, &MobSkeleton, &mut MobPose), With<MobSkeleton>>,
-    joints: Query<&Transform, With<MobJoint>>,
-) {
-    mobs.par_iter_mut().for_each(|(body, skeleton, mut pose)| {
-        let Some(b) = assets.bodies.get(&body.0) else { return };
-        let scales = skeleton.0.iter().map(|e| joints.get(*e).map_or(Vec3::ONE, |t| t.scale));
-        stages::rest_pose(&b.anatomy, scales, &mut pose);
-    });
+/// One hero mob, as [`pose_heroes`] reads and writes it.
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(super) struct HeroPose {
+    entity: Entity,
+    tf: &'static Transform,
+    body: &'static MobBody,
+    skeleton: &'static MobSkeleton,
+    gait: Option<&'static MobGait>,
+    intent: &'static MobIntent,
+    loco: &'static Locomotion,
+    clock: &'static GaitClock,
+    step: &'static ActiveStep,
+    heft: &'static Heft,
+    cycles: &'static CyclePose,
+    hands: Option<&'static HandPose>,
+    ground: Option<&'static FootGround>,
+    feet: &'static mut Feet,
+    springs: &'static mut SpringState,
+    look: &'static mut LookState,
+    torso: &'static mut TorsoState,
+    pose: &'static mut MobPose,
 }
 
-pub(super) fn fold_wings(assets: MotionAssets, mut mobs: Query<(&MobBody, &CyclePose, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(body, cycles, mut pose)| {
-        let Some(b) = assets.bodies.get(&body.0) else { return };
-        stages::fold_wings(&b.anatomy, cycles.0.as_ref(), &mut pose);
-    });
-}
-
-/// Feet plant and swing; a foot touching down triggers [`Footstep`].
-#[allow(clippy::type_complexity)]
-pub(super) fn plant_feet(
-    assets: MotionAssets,
-    mut mobs: Query<(Entity, &Transform, &MobBody, Option<&MobGait>, &Locomotion, &GaitClock, &ActiveStep, Option<&FootGround>, &mut Feet), With<MobSkeleton>>,
-    commands: ParallelCommands,
-) {
-    mobs.par_iter_mut().for_each(|(entity, tf, body, gait, loco, clock, step, ground, mut feet)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        let hits = ground.map_or(&[][..], |g| &g.0[..]);
-        let landed = stages::plant_feet(&f, loco, clock, step, hits, &mut feet);
+/// Every hero mob's pose, all stages ([`stages::pose_frame`]), in parallel. The pose starts from
+/// rest with the joints' scales (set by levers); a foot touching down triggers [`Footstep`].
+pub(super) fn pose_heroes(assets: MotionAssets, mut mobs: Query<HeroPose>, joints: Query<&Transform, With<MobJoint>>, commands: ParallelCommands) {
+    mobs.par_iter_mut().for_each(|mut m| {
+        let Some(f) = assets.frame(m.body, m.gait, m.tf) else { return };
+        let scales = m.skeleton.0.iter().map(|e| joints.get(*e).map_or(Vec3::ONE, |t| t.scale));
+        let input = PoseInput {
+            loco: m.loco,
+            clock: m.clock,
+            step: m.step,
+            heft: m.heft,
+            cycles: m.cycles.0.as_ref(),
+            hands: m.hands,
+            ground: m.ground.map_or(&[][..], |g| &g.0[..]),
+            look_at: m.intent.look_at,
+        };
+        let state = PoseState { feet: &mut m.feet, springs: &mut m.springs, look: &mut m.look, torso: &mut m.torso, pose: &mut m.pose };
+        let landed = stages::pose_frame(&f, &input, scales, state);
         if !landed.is_empty() {
             commands.command_scope(|mut commands| {
                 for leg in landed {
-                    if let Some(foot) = feet.0.get(leg) {
-                        commands.trigger(Footstep { entity, leg, position: foot.position });
+                    if let Some(foot) = m.feet.0.get(leg) {
+                        commands.trigger(Footstep { entity: m.entity, leg, position: foot.position });
                     }
                 }
             });
         }
-    });
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn bob_and_bend(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, Option<&MobGait>, &Locomotion, &GaitClock, &ActiveStep, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(tf, body, gait, loco, clock, step, mut pose)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        stages::bob_and_bend(&f, loco, clock, step, &mut pose);
-    });
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn ride_torso(
-    assets: MotionAssets,
-    mut mobs: Query<(&Transform, &MobBody, Option<&MobGait>, &Locomotion, &GaitClock, &ActiveStep, &Heft, &mut TorsoState, &mut MobPose), With<MobSkeleton>>,
-) {
-    mobs.par_iter_mut().for_each(|(tf, body, gait, loco, clock, step, heft, mut torso, mut pose)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        stages::ride_torso(&f, loco, clock, step, heft, &mut torso, &mut pose);
-    });
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn swing_springs(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, Option<&MobGait>, &Locomotion, &mut SpringState, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(tf, body, gait, loco, mut springs, mut pose)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        stages::swing_springs(&f, loco, &mut springs, &mut pose);
-    });
-}
-
-pub(super) fn apply_cycles(assets: MotionAssets, mut mobs: Query<(&MobBody, &CyclePose, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(body, cycles, mut pose)| {
-        let (Some(b), Some(c)) = (assets.bodies.get(&body.0), &cycles.0) else { return };
-        stages::apply_cycles(&b.anatomy, c, &mut pose);
-    });
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn solve_legs(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, Option<&MobGait>, &Feet, &CyclePose, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(tf, body, gait, feet, cycles, mut pose)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        stages::solve_legs(&f, feet, cycles.0.as_ref(), &mut pose);
-    });
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn look_at(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, Option<&MobGait>, &MobIntent, &mut LookState, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(tf, body, gait, intent, mut look, mut pose)| {
-        let Some(f) = assets.frame(body, gait, tf) else { return };
-        stages::look_at(&f, intent.look_at, &mut look, &mut pose);
     });
 }
 
@@ -262,27 +224,5 @@ pub(super) fn write_soft_joints(mut joints: Query<(&crate::mob::SoftJoint, &mut 
         if tf.translation != offset {
             tf.translation = offset;
         }
-    });
-}
-
-#[cfg(feature = "joint-limits")]
-pub(super) fn limit_joints(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(body, mut pose)| {
-        let Some(b) = assets.bodies.get(&body.0) else { return };
-        stages::limit_joints(&b.anatomy, &mut pose);
-    });
-}
-
-pub(super) fn shoulder_rhythm(assets: MotionAssets, mut mobs: Query<(&MobBody, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(body, mut pose)| {
-        let Some(b) = assets.bodies.get(&body.0) else { return };
-        stages::shoulder_rhythm(&b.anatomy, &mut pose);
-    });
-}
-
-pub(super) fn pose_hands(assets: MotionAssets, mut mobs: Query<(&MobBody, &super::HandPose, &mut MobPose), With<MobSkeleton>>) {
-    mobs.par_iter_mut().for_each(|(body, hands, mut pose)| {
-        let Some(b) = assets.bodies.get(&body.0) else { return };
-        super::hand::pose_hands(&b.anatomy, hands, &mut pose);
     });
 }

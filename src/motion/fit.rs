@@ -225,9 +225,4 @@ impl BodyTraits {
         }
         Self { family, legs, stances, features, leg_length }
     }
-
-    #[must_use]
-    pub fn has(&self, feature: Feature) -> bool {
-        self.features.contains(&feature)
-    }
 }

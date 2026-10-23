@@ -138,23 +138,6 @@ impl Default for HeftResponse {
     }
 }
 
-impl HeftResponse {
-    /// No effect at any weight.
-    #[must_use]
-    pub fn none() -> Self {
-        let one = || Curve::Constant(1.0);
-        Self {
-            cadence: one(),
-            duty: Curve::Constant(0.0),
-            lift: one(),
-            settle: Curve::Constant(0.0),
-            landing: Curve::Constant(0.0),
-            waddle: one(),
-            agility: one(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::f32::consts::PI;

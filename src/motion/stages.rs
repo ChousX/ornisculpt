@@ -1,9 +1,9 @@
-//! The procedural pose, one stage per function, over the motion components. The systems in
-//! `pose` run each stage on every mob in parallel; [`Sim`] chains the same stages on plain data
-//! for the crowd baker and the tests.
+//! The procedural pose, one stage per function, over the motion components. [`pose_frame`]
+//! chains the hero stages; the `pose` systems run it on every mob in parallel, and [`Sim`] runs
+//! it on plain data for the crowd baker and the tests.
 //!
-//! Order: choose step → advance clock → rest pose → wings → feet → bob → torso → springs →
-//! cycles → leg IK → look-at.
+//! Order: choose step → advance clock, then [`pose_frame`]: rest pose → wings → feet → bob →
+//! torso → springs → cycles → hands → shoulders → leg IK → look-at → joint limits.
 
 use std::f32::consts::{PI, TAU};
 
@@ -13,6 +13,7 @@ use smallvec::SmallVec;
 
 use super::eval::LayerPose;
 use super::gait::BodyMotion;
+use super::hand::{HandPose, pose_hands};
 use super::heft::{Heft, HeftResponse};
 use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
 use super::{Gait, SOFT_START, fabrik, two_bone_soft};
@@ -788,11 +789,64 @@ impl<'a> Torso<'a> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The whole pose
+// ---------------------------------------------------------------------------------------------
+
+/// What the pose stages read about a mob this frame.
+pub struct PoseInput<'a> {
+    pub loco: &'a Locomotion,
+    pub clock: &'a GaitClock,
+    pub step: &'a ActiveStep,
+    pub heft: &'a Heft,
+    /// What the playing cycles add, if any.
+    pub cycles: Option<&'a LayerPose>,
+    pub hands: Option<&'a HandPose>,
+    /// Ground hit per leg (empty: root height).
+    pub ground: &'a [Option<Vec3>],
+    /// World point for the head to look at.
+    pub look_at: Option<Vec3>,
+}
+
+/// What the pose stages carry from frame to frame, and the pose they build.
+pub struct PoseState<'a> {
+    pub feet: &'a mut Feet,
+    pub springs: &'a mut SpringState,
+    pub look: &'a mut LookState,
+    pub torso: &'a mut TorsoState,
+    pub pose: &'a mut MobPose,
+}
+
+/// Every hero stage in order, from the rest pose (with the joints' `scales`) to the joint
+/// limits. Returns the legs that touched down this frame.
+pub fn pose_frame(f: &Frame, input: &PoseInput, scales: impl Iterator<Item = Vec3>, state: PoseState) -> SmallVec<[usize; 8]> {
+    let (a, i) = (f.a, input);
+    let PoseState { feet, springs, look, torso, pose } = state;
+    rest_pose(a, scales, pose);
+    fold_wings(a, i.cycles, pose);
+    let landed = plant_feet(f, i.loco, i.clock, i.step, i.ground, feet);
+    bob_and_bend(f, i.loco, i.clock, i.step, pose);
+    ride_torso(f, i.loco, i.clock, i.step, i.heft, torso, pose);
+    swing_springs(f, i.loco, springs, pose);
+    if let Some(cycles) = i.cycles {
+        apply_cycles(a, cycles, pose);
+    }
+    if let Some(hands) = i.hands {
+        pose_hands(a, hands, pose);
+    }
+    shoulder_rhythm(a, pose);
+    solve_legs(f, feet, i.cycles, pose);
+    look_at(f, i.look_at, look, pose);
+    #[cfg(feature = "joint-limits")]
+    limit_joints(a, pose);
+    landed
+}
+
+// ---------------------------------------------------------------------------------------------
 // Offline
 // ---------------------------------------------------------------------------------------------
 
 /// Every stage chained on plain data, for the crowd baker and tests (the ECS runs the same
-/// stages as separate systems).
+/// [`pose_frame`]).
 #[derive(Default)]
 pub struct Sim {
     pub loco: Locomotion,
@@ -815,20 +869,11 @@ impl Sim {
 
     /// One frame at constant velocity; returns the local pose.
     pub fn frame(&mut self, f: &Frame, target: Option<Vec3>) -> &[Transform] {
-        let a = f.a;
         choose_step(f, &self.loco, &self.heft, &GaitOverride(None), &mut self.clock, &mut self.step);
         advance_clock(f, &self.loco, &self.heft, &self.step, Some(&self.feet), &mut self.clock);
-        rest_pose(a, std::iter::repeat(Vec3::ONE), &mut self.pose);
-        fold_wings(a, None, &mut self.pose);
-        plant_feet(f, &self.loco, &self.clock, &self.step, &[], &mut self.feet);
-        bob_and_bend(f, &self.loco, &self.clock, &self.step, &mut self.pose);
-        ride_torso(f, &self.loco, &self.clock, &self.step, &self.heft, &mut self.torso, &mut self.pose);
-        swing_springs(f, &self.loco, &mut self.springs, &mut self.pose);
-        shoulder_rhythm(a, &mut self.pose);
-        solve_legs(f, &self.feet, None, &mut self.pose);
-        look_at(f, target, &mut self.look, &mut self.pose);
-        #[cfg(feature = "joint-limits")]
-        limit_joints(a, &mut self.pose);
+        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles: None, hands: None, ground: &[], look_at: target };
+        let state = PoseState { feet: &mut self.feet, springs: &mut self.springs, look: &mut self.look, torso: &mut self.torso, pose: &mut self.pose };
+        pose_frame(f, &input, std::iter::repeat(Vec3::ONE), state);
         &self.pose.local
     }
 }

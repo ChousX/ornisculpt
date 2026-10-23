@@ -149,7 +149,7 @@ impl MotionRig {
 
     /// Bones a target moves (for masks and fit reporting).
     #[must_use]
-    pub fn target_bones(&self, target: Target) -> Vec<BoneId> {
+    fn target_bones(&self, target: Target) -> Vec<BoneId> {
         match target {
             Target::Root => self.roots.clone(),
             Target::Spine => self.spine.clone(),

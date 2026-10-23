@@ -40,7 +40,7 @@ pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePat
 pub use hand::{Hand, HandPose, pose_hands};
 pub use heft::{Heft, HeftResponse, StepShape};
 pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, SpringState, TorsoState};
-pub use ik::{SOFT_START, fabrik, orient_to_pole, two_bone, two_bone_soft};
+pub use ik::{SOFT_START, fabrik, two_bone_soft};
 pub use player::{Footstep, MobMotion, MotionCache, MotionParams, MotionRuntime, PlayCycle, RootMotionDelta, TRIGGER_LIFETIME};
 
 use bevy::prelude::*;
@@ -101,7 +101,7 @@ pub enum MotionSystems {
     Player,
     /// Every tier: gait mode, step and phase.
     Clock,
-    /// Hero tier: the pose, stage by stage, then the joints. Crowd tier: baked frame choice.
+    /// Hero tier: the whole pose, then the joints. Crowd tier: baked frame choice.
     Pose,
 }
 
@@ -131,30 +131,12 @@ impl Plugin for MotionPlugin {
                     (player::prepare_motion, player::update_motion).chain().in_set(M::Player),
                     (pose::choose_steps, pose::advance_clocks).chain().in_set(M::Clock),
                     (
-                        (
-                            pose::write_probes,
-                            player::evaluate_cycles,
-                            pose::rest_poses,
-                            pose::fold_wings,
-                            pose::plant_feet,
-                            pose::bob_and_bend,
-                            pose::ride_torso,
-                            pose::swing_springs,
-                            pose::apply_cycles,
-                            pose::pose_hands,
-                            pose::shoulder_rhythm,
-                            pose::solve_legs,
-                            pose::look_at,
-                            pose::write_joints,
-                        )
-                            .chain(),
+                        (pose::write_probes, player::evaluate_cycles, pose::pose_heroes, pose::write_joints).chain(),
                         crowd::crowd_animate,
                     )
                         .in_set(M::Pose),
                 ),
             );
-        #[cfg(feature = "joint-limits")]
-        app.add_systems(Update, pose::limit_joints.after(pose::look_at).before(pose::write_joints).in_set(M::Pose));
         // The final pose moves the tissue: after the joints are written (nothing changes the pose
         // after that).
         #[cfg(feature = "soft-tissue")]
