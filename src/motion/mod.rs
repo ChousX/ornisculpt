@@ -22,6 +22,8 @@ mod player;
 mod pose;
 mod stages;
 mod state;
+#[cfg(test)]
+mod testing;
 
 pub use bake::{BAKE_FRAMES, BakedClip, BakedMotion, SkinFrame, bake_motion};
 pub use cycle::{

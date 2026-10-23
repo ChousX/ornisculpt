@@ -680,44 +680,25 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
-
-    fn biped() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
+    use crate::motion::testing::{sample_body, walk};
 
     /// Walks a biped and reports the largest frame-to-frame knee jump, relative to the typical
     /// one. A snapping knee (bend flipping or a straightened leg popping back) shows as a spike.
     #[test]
     fn knees_move_smoothly() {
-        let a = biped();
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(&a);
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&a, root);
-        let dt = 1.0 / 60.0;
+        let a = sample_body(include_str!("../../assets/mobs/biped.body.ron"));
         let mut knees: Vec<(f32, Vec3, f32, bool)> = Vec::new();
         let mut extra: Vec<(Vec3, Vec3)> = Vec::new();
-        for speed in [0.6, 1.2] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let f = Frame { a: &a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&f, None).to_vec();
-                let world = forward_kinematics(&a.skeleton.bones, &local, root);
-                let l = &a.legs[0];
-                let knee = Vec3::from(world[l.chain[1].index()].translation) - Vec3::from(root.translation);
-                let hip = Vec3::from(world[l.chain[0].index()].translation);
-                let chain: f32 = l.chain.iter().map(|b| a.skeleton.get(*b).unwrap().length).sum();
-                let reach = hip.distance(sim.feet.0[0].position) / chain;
-                knees.push((sim.clock.phase, knee, reach, sim.feet.0[0].planted));
-                extra.push((hip - Vec3::from(root.translation), sim.feet.0[0].position - Vec3::from(root.translation)));
-            }
-        }
+        walk(&a, &[0.6, 1.2], 240, |sim, local, root, _| {
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
+            let l = &a.legs[0];
+            let knee = Vec3::from(world[l.chain[1].index()].translation) - Vec3::from(root.translation);
+            let hip = Vec3::from(world[l.chain[0].index()].translation);
+            let chain: f32 = l.chain.iter().map(|b| a.skeleton.get(*b).unwrap().length).sum();
+            let reach = hip.distance(sim.feet.0[0].position) / chain;
+            knees.push((sim.clock.phase, knee, reach, sim.feet.0[0].planted));
+            extra.push((hip - Vec3::from(root.translation), sim.feet.0[0].position - Vec3::from(root.translation)));
+        });
         let steps: Vec<f32> = knees.windows(2).map(|w| w[0].1.distance(w[1].1)).collect();
         let mut sorted = steps.clone();
         sorted.sort_by(f32::total_cmp);
@@ -735,39 +716,26 @@ mod tests {
 #[cfg(test)]
 mod all_plans {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::motion::testing::{sample_body, walk};
 
     /// Largest frame-to-frame step of any leg's first joint, over its median, while walking at
     /// two speeds. A snapping joint shows as a spike far above the median.
     fn worst_joint_step(a: &Anatomy) -> (f32, f32) {
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(a);
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(a, root);
-        let dt = 1.0 / 60.0;
         let mut prev: Option<Vec<Vec3>> = None;
         let mut steps = Vec::new();
-        for speed in [0.5, 1.0] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let f = Frame { a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&f, None).to_vec();
-                let world = forward_kinematics(&a.skeleton.bones, &local, root);
-                let joints: Vec<Vec3> = a
-                    .legs
-                    .iter()
-                    .map(|l| Vec3::from(world[l.chain[1.min(l.chain.len() - 1)].index()].translation) - Vec3::from(root.translation))
-                    .collect();
-                if let Some(p) = &prev {
-                    steps.extend(p.iter().zip(&joints).map(|(a, b)| a.distance(*b)));
-                }
-                prev = Some(joints);
+        walk(a, &[0.5, 1.0], 240, |_, local, root, _| {
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
+            let joints: Vec<Vec3> = a
+                .legs
+                .iter()
+                .map(|l| Vec3::from(world[l.chain[1.min(l.chain.len() - 1)].index()].translation) - Vec3::from(root.translation))
+                .collect();
+            if let Some(p) = &prev {
+                steps.extend(p.iter().zip(&joints).map(|(a, b)| a.distance(*b)));
             }
-        }
-        let mut sorted = steps.clone();
+            prev = Some(joints);
+        });
+        let mut sorted = steps;
         sorted.sort_by(f32::total_cmp);
         (sorted[sorted.len() - 1], sorted[sorted.len() / 2])
     }
@@ -780,9 +748,7 @@ mod all_plans {
             ("horse", include_str!("../../assets/mobs/horse.body.ron")),
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            let live = apply_form(&plan, &Form::default()).unwrap();
-            let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let a = sample_body(src);
             let (worst, median) = worst_joint_step(&a);
             println!("{name}: worst {worst:.4} median {median:.4} ratio {:.1}", worst / median);
             assert!(worst < f32::mul_add(median, 8.0, 0.01), "{name}: a leg joint snaps ({worst} vs median {median})");
@@ -793,8 +759,7 @@ mod all_plans {
 #[cfg(test)]
 mod torso {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::motion::testing::{sample_body, walk};
 
     /// World yaw and roll (degrees) of a bone, relative to its rest.
     fn yaw_roll(world: &Affine3A, rest: &Affine3A) -> (f32, f32) {
@@ -805,34 +770,22 @@ mod torso {
 
     /// Walks a body and returns the yaw/roll ranges (peak to peak) of hips, chest and head, and
     /// how the hips' yaw follows the hind left foot (negative = turns away from a forward foot).
-    fn walk(src: &str) -> [(f32, f32); 3] {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        let gait = Gait::for_legs(a.legs.len());
-        let leg = leg_length(&a);
+    fn walk_ranges(src: &str) -> [(f32, f32); 3] {
+        let a = sample_body(src);
         let rest = a.skeleton.rest_model();
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&a, root);
-        let dt = 1.0 / 60.0;
-        sim.loco.velocity = Vec3::Z * leg;
-        sim.loco.prev_velocity = sim.loco.velocity;
         let head = a.skeleton.find("skull").unwrap_or_else(|| *a.spine.last().unwrap());
         let watch = [a.spine[0], *a.spine.last().unwrap(), head];
         let mut ranges = [(f32::MAX, f32::MIN, f32::MAX, f32::MIN); 3];
-        for i in 0..360 {
-            root.translation += Vec3A::from(sim.loco.velocity * dt);
-            let f = Frame { a: &a, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-            let local = sim.frame(&f, None).to_vec();
+        walk(&a, &[1.0], 360, |_, local, root, i| {
             if i < 120 {
-                continue;
+                return;
             }
-            let world = forward_kinematics(&a.skeleton.bones, &local, root);
+            let world = forward_kinematics(&a.skeleton.bones, local, root);
             for (r, b) in ranges.iter_mut().zip(watch) {
                 let (y, ro) = yaw_roll(&world[b.index()], &rest[b.index()]);
                 *r = (r.0.min(y), r.1.max(y), r.2.min(ro), r.3.max(ro));
             }
-        }
+        });
         ranges.map(|r| (r.1 - r.0, r.3 - r.2))
     }
 
@@ -845,7 +798,7 @@ mod torso {
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
             ("bird", include_str!("../../assets/mobs/bird.body.ron")),
         ] {
-            let [hips, chest, head] = walk(src);
+            let [hips, chest, head] = walk_ranges(src);
             println!("{name}: hips yaw {:.1}° roll {:.1}° | chest yaw {:.1}° roll {:.1}° | head yaw {:.1}° roll {:.1}°", hips.0, hips.1, chest.0, chest.1, head.0, head.1);
             assert!(hips.0 > 2.0 && hips.1 > 1.5, "{name}: the hips barely move");
             assert!(head.0 < chest.0.max(hips.0), "{name}: the head swings more than the body");
@@ -856,12 +809,10 @@ mod torso {
 #[cfg(test)]
 mod shoulders {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::motion::testing::sample_body;
 
     fn human() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        sample_body(include_str!("../../assets/mobs/biped.body.ron"))
     }
 
     /// The arm's direction and its shoulder's height (world), after raising it by `degrees` and
@@ -909,8 +860,8 @@ mod shoulders {
 #[cfg(test)]
 mod joint_limits {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, JointLimit, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::motion::Gait;
+    use crate::anatomy::JointLimit;
+    use crate::motion::testing::{sample_body, walk};
 
     /// A hinge's name, the flexion range it went through, and its limits.
     type Seen = (String, (f32, f32), (f32, f32));
@@ -918,11 +869,7 @@ mod joint_limits {
     /// Walks and runs a body and returns each declared hinge's flexion range over every frame,
     /// with its limits.
     fn hinge_ranges(src: &str) -> Vec<Seen> {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let body = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        let gait = Gait::for_legs(body.legs.len());
-        let leg = leg_length(&body);
+        let body = sample_body(src);
         let hinges: Vec<_> = body
             .joint_limits
             .iter()
@@ -932,24 +879,14 @@ mod joint_limits {
             })
             .collect();
         let mut seen = vec![(f32::MAX, f32::MIN); hinges.len()];
-        let mut root = Affine3A::IDENTITY;
-        let mut sim = Sim::new(&body, root);
-        let dt = 1.0 / 60.0;
-        for speed in [0.5, 1.5, 3.0] {
-            sim.loco.velocity = Vec3::Z * speed * leg;
-            sim.loco.prev_velocity = sim.loco.velocity;
-            for i in 0..240 {
-                root.translation += Vec3A::from(sim.loco.velocity * dt);
-                let frame = Frame { a: &body, gait: &gait, root, dt, time: i.to_f32() * dt, leg };
-                let local = sim.frame(&frame, None);
-                for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
-                    let q = local[bone.index()].rotation;
-                    let q = if q.w < 0.0 { -q } else { q };
-                    let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
-                    *s = (s.0.min(flex), s.1.max(flex));
-                }
+        walk(&body, &[0.5, 1.5, 3.0], 240, |_, local, _, _| {
+            for ((bone, flexes, _), s) in hinges.iter().zip(&mut seen) {
+                let q = local[bone.index()].rotation;
+                let q = if q.w < 0.0 { -q } else { q };
+                let flex = flexes.from_angle(2.0 * q.xyz().dot(flexes.axis()).atan2(q.w).to_degrees());
+                *s = (s.0.min(flex), s.1.max(flex));
             }
-        }
+        });
         hinges.iter().zip(seen).map(|((b, _, limit), s)| (body.skeleton.get(*b).unwrap().name.clone(), s, *limit)).collect()
     }
 
