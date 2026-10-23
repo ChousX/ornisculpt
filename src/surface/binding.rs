@@ -383,32 +383,14 @@ fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: G
     };
     // Bones spread independently, so they run in parallel (each thread with its own scratch) and
     // merge in bone order: the same result on any thread count.
-    let count = anatomy.skeleton.bones.len();
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = super::worker_threads().min(count).max(1);
-    let mut per_bone: Vec<(usize, Reached)> = super::scope(|scope| {
-        let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                let (one_bone, next) = (&one_bone, &next);
-                scope.spawn(move || {
-                    let (mut dist, mut touched, mut frontier) = (vec![f32::INFINITY; grid.len()], Vec::new(), BinaryHeap::new());
-                    let mut out = Vec::new();
-                    loop {
-                        let bi = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if bi >= count {
-                            break out;
-                        }
-                        if let Some(r) = one_bone(bi, &mut dist, &mut touched, &mut frontier) {
-                            out.push((bi, r));
-                        }
-                    }
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    });
-    per_bone.sort_unstable_by_key(|(bi, _)| *bi);
-    nearest_four(per_bone.into_iter().map(|(_, r)| r), grid.len())
+    let bones: Vec<usize> = (0..anatomy.skeleton.bones.len()).collect();
+    let per_bone = super::par_jobs(
+        &bones,
+        || (vec![f32::INFINITY; grid.len()], Vec::new(), BinaryHeap::new()),
+        |(dist, touched, frontier), &bi| one_bone(bi, dist, touched, frontier),
+    )
+    .unwrap_or_else(|e| std::panic::resume_unwind(e));
+    nearest_four(per_bone.into_iter().flatten(), grid.len())
 }
 
 /// A bone and the cells its spread reached, with their distances (in the order first reached).

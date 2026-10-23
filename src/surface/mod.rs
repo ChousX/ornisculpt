@@ -95,6 +95,51 @@ pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync)
     })
 }
 
+/// Runs `f` on every job on up to [`worker_threads`] workers, which take jobs one at a time from a
+/// shared counter; each worker makes its own `scratch` once. Results come back in job order, so
+/// they don't depend on the thread count or on which worker ran what.
+///
+/// # Errors
+///
+/// A worker's panic payload, returned once every worker has been joined; each caller decides what
+/// a panic means for its stage.
+pub(crate) fn par_jobs<J: Sync, S, R: Send>(
+    jobs: &[J],
+    scratch: impl Fn() -> S + Sync,
+    f: impl Fn(&mut S, &J) -> R + Sync,
+) -> std::thread::Result<Vec<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = worker_threads().min(jobs.len()).max(1);
+    // Join every worker before looking at any result: a scope panics over an unjoined panicked thread.
+    let joined: Vec<std::thread::Result<Vec<(usize, R)>>> = scope(|s| {
+        let (next, scratch, f) = (&next, &scratch, &f);
+        // Spawn every worker before joining any.
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            handles.push(s.spawn(move || {
+                let mut state = scratch();
+                let mut out = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(job) = jobs.get(i) else { break out };
+                    out.push((i, f(&mut state, job)));
+                }
+            }));
+        }
+        let mut joined = Vec::with_capacity(threads);
+        for handle in handles {
+            joined.push(handle.join());
+        }
+        joined
+    });
+    let mut all = Vec::with_capacity(jobs.len());
+    for worker in joined {
+        all.extend(worker?);
+    }
+    all.sort_unstable_by_key(|(i, _)| *i);
+    Ok(all.into_iter().map(|(_, r)| r).collect())
+}
+
 /// Scoped workers for the parallel stages: [`std::thread::scope`], or with the `web` feature (no
 /// threads in the browser) [`sequential::scope`], where every spawned closure runs at once on the
 /// calling thread. Each stage merges its workers' output in job order, so the result is the same.
@@ -161,6 +206,7 @@ pub enum SurfaceError {
 mod tests {
     use super::*;
     use crate::anatomy::{LodLevel, build_src};
+
 
     /// The hero mesh and its centres of rotation are the same whatever the worker thread count
     /// (the app caps it while several bodies generate; coat geometry is placed on the vertices).
