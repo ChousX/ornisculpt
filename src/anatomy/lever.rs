@@ -271,10 +271,7 @@ impl PartNode {
                 };
             }
             L::Segments => chain_mut(&mut self.kind).ok_or(unsupported)?.segments = count(1, 8),
-            L::Arch | L::Belly | L::Skull | L::Snout | L::Jaw | L::EyeSpacing | L::EyeLateral | L::EndSize | L::Splay
-            | L::Count | L::Spread | L::Webbing | L::Width | L::Height | L::Depth | L::Size | L::Curve | L::Twist | L::Tines => {
-                apply_kind_lever(&mut self.kind, lever, value)?;
-            }
+            _ => apply_kind_lever(&mut self.kind, lever, value)?,
         }
         Ok(())
     }

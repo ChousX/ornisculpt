@@ -99,26 +99,13 @@ pub fn apply_form(plan: &BodyPlan, form: &Form) -> Result<BodyPlan, FormError> {
 /// its expansion suffixes (`.l`, `.r`, `.<n>`) removed.
 #[must_use]
 pub fn path_matches(pattern: &PartPath, path: &PartPath) -> bool {
-    let (mut a, mut b) = (pattern.segments(), path.segments());
-    loop {
-        match (a.next(), b.next()) {
-            (None, None) => return true,
-            (Some(p), Some(s)) if p == s || p == strip_suffixes(s) || p == strip_mirror(s) => {}
-            _ => return false,
-        }
-    }
+    pattern.segments().count() == path.segments().count() && path_prefix_matches(pattern, path)
 }
 
 /// Like [`path_matches`], but `pattern` may also name an ancestor of `path`.
-pub fn path_prefix_matches(pattern: &PartPath, path: &PartPath) -> bool {
+pub(super) fn path_prefix_matches(pattern: &PartPath, path: &PartPath) -> bool {
     let mut b = path.segments();
-    for p in pattern.segments() {
-        match b.next() {
-            Some(s) if p == s || p == strip_suffixes(s) || p == strip_mirror(s) => {}
-            _ => return false,
-        }
-    }
-    true
+    pattern.segments().all(|p| b.next().is_some_and(|s| p == s || p == strip_suffixes(s) || p == strip_mirror(s)))
 }
 
 fn strip_mirror(s: &str) -> &str {

@@ -104,8 +104,7 @@ impl Anatomy {
             // The crowd bone buffer holds MAX_CROWD_BONES per mob: past that, bones fold too.
             let room = crowd.bones.len() < MAX_CROWD_BONES;
             let kept = bone.parent.is_none()
-                || (room && self.parts.get(bone.part.idx()).is_some_and(|p| p.lod >= LodLevel::Near) && !extra_crowd.contains(&id))
-                || (room && extra_crowd.contains(&id));
+                || (room && (extra_crowd.contains(&id) || self.parts.get(bone.part.idx()).is_some_and(|p| p.lod >= LodLevel::Near)));
             let mapped = if kept {
                 crowd.bones.push(id);
                 (crowd.bones.len() - 1).clamp_u8()
