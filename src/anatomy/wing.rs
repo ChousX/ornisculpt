@@ -344,7 +344,7 @@ fn tubes(b: &mut AnatomyBuilder, bones: &[BoneId], frames: &[Transform], r0: f32
         let (a, c) = ((r1 - r0).mul_add(t0, r0), (r1 - r0).mul_add(t1, r0));
         let len = start.translation.distance(end.translation).max(1e-3);
         let blend = if i == 0 { first_blend } else { 0.4 * a.min(c) };
-        b.primitive(*bone, PrimShape::RoundCone { r0: a, r1: c, len }, *start, blend, PrimOp::Union, PrimLayer::Base, region);
+        b.base(*bone, PrimShape::RoundCone { r0: a, r1: c, len }, *start, blend, region);
         b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * a));
     }
 }

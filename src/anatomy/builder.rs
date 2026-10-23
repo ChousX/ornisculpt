@@ -411,6 +411,11 @@ impl AnatomyBuilder {
         bone: BoneId,
         mut shape: PrimShape,
         model: Transform,
+    /// A part's own base shape: a [`primitive`](Self::primitive) unioned on the base layer.
+    pub fn base(&mut self, bone: BoneId, shape: PrimShape, model: Transform, blend: f32, region: RegionId) {
+        self.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
+    }
+
         blend: f32,
         op: PrimOp,
         layer: PrimLayer,
