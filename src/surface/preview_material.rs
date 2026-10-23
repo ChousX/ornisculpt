@@ -135,7 +135,7 @@ impl MaterialExtension for SdfPreviewExt {
 
 /// A ray-marched body, drawn with the field's hull: a child of the mob (its model space is the
 /// mob's), or at the origin for a mob there. Fill it with [`SdfPreview::show`].
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Default)]
 #[require(Visibility, Transform, NotShadowCaster, NoFrustumCulling)]
 pub struct SdfPreview {
     pub material: Handle<SdfPreviewMaterial>,
@@ -229,11 +229,6 @@ fn atlas(layers: u32) -> Image {
     image
 }
 
-/// Bricks an atlas this deep holds.
-const fn atlas_bricks(image: &Image) -> u32 {
-    atlas_slots(image.texture_descriptor.size.depth_or_array_layers)
-}
-
 /// Bricks an atlas `depth` texels deep holds.
 const fn atlas_slots(depth: u32) -> u32 {
     depth / BRICK_SAMPLES * BRICK_ROW * BRICK_ROW
@@ -255,16 +250,7 @@ impl SdfPreview {
         let sheet_material =
             assets.standard.add(StandardMaterial { perceptual_roughness: 0.6, double_sided: true, cull_mode: None, ..default() });
         (
-            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, sheets: sheets.clone(), color,
-                bricks: Arc::new([]),
-                slots: HashMap::new(),
-                free: Vec::new(),
-                capacity: 0,
-                rebake_all: false,
-                shown: 0,
-                rebaked: 0,
-                offset: Vec3::ZERO,
-            },
+            Self { material: material.clone(), buffer, hull: hull.clone(), atlas, sheets: sheets.clone(), color, ..default() },
             Mesh3d(hull),
             MeshMaterial3d(material),
             Visibility::Hidden,
@@ -298,7 +284,7 @@ impl SdfPreview {
         if let Some(mut mesh) = assets.meshes.get_mut(&self.sheets) {
             *mesh = sheets_mesh(&field.sheets, self.color, highlight);
         }
-        if assets.images.get(&self.atlas).is_some_and(|image| atlas_bricks(image) < self.capacity) {
+        if assets.images.get(&self.atlas).is_some_and(|image| atlas_slots(image.texture_descriptor.size.depth_or_array_layers) < self.capacity) {
             // A new texture: the render world bakes every brick into it.
             if let Some(mut image) = assets.images.get_mut(&self.atlas) {
                 *image = atlas(self.capacity.div_ceil(BRICK_ROW * BRICK_ROW));
@@ -540,30 +526,11 @@ mod tests {
         PreviewField { bricks: (0u32..).zip(keys).map(|(cell, &key)| Brick { cell, key }).collect(), ..default() }
     }
 
-    fn preview() -> SdfPreview {
-        SdfPreview {
-            material: Handle::default(),
-            buffer: Handle::default(),
-            hull: Handle::default(),
-            atlas: Handle::default(),
-            shown: 0,
-            rebaked: 0,
-            offset: Vec3::ZERO,
-            sheets: Handle::default(),
-            color: Color::WHITE,
-            bricks: Arc::new([]),
-            slots: HashMap::new(),
-            free: Vec::new(),
-            capacity: 0,
-            rebake_all: false,
-        }
-    }
-
     /// Keys shown before keep their slots; new keys fill the slots freed, lowest first, before
     /// the atlas grows.
     #[test]
     fn bricks_keep_their_slots() {
-        let mut p = preview();
+        let mut p = SdfPreview { color: Color::WHITE, ..default() };
         let slot_of = |bricks: &[SlotBrick], key: u64| bricks.iter().find(|b| b.key == key).map(|b| b.slot);
         let first = p.assign_slots(&field(&[11, 21, 31, 41]));
         assert_eq!(first.iter().map(|b| b.slot).collect::<Vec<_>>(), [0, 1, 2, 3]);
