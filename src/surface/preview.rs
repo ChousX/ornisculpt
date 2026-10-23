@@ -596,8 +596,8 @@ mod tests {
     /// Each packed cell lists the primitives that come within the list pad of it, in field order:
     /// evaluating a point's cell list (as the shaders do) gives what a meshing chunk over the
     /// padded cell gives, and every cell the surface passes through is marked as holding it. (Not quite
-    /// the whole field's value: which limb is nearest so far depends on primitives beyond the
-    /// cell, and a smooth union away from the surface can feel them too.)
+    /// the whole field's value: a smooth union away from the surface can feel primitives beyond
+    /// the cell.)
     #[test]
     fn cell_lists_reproduce_the_field() {
         let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();

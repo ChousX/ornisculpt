@@ -2,9 +2,10 @@
 // fragment shader (`sdf_preview.wesl`) and the volume bake (`sdf_bake.wesl`). `SDF_GROUP` is the
 // bind group the packed words are in (the material's, or the bake's own).
 //
-// The field mirrors `BodyField::eval`: primitives in field order, smooth union (different limbs
-// only meet), smooth subtraction, ellipsoid displacement. Each grid cell lists the primitives that
-// reach it, so within a cell its list gives the field (as a meshing chunk does).
+// The field mirrors `BodyField::eval`: primitives in field order, smooth union (limbs blend into
+// the body and only meet each other), smooth subtraction, ellipsoid displacement. Each grid cell
+// lists the primitives that reach it, so within a cell its list gives the field (as a meshing
+// chunk does).
 
 @group(constants::SDF_GROUP) @binding(100) var<storage, read> words: array<vec4<f32>>;
 
@@ -15,6 +16,8 @@ const HEADER_WORDS: u32 = 5u;
 const BRICK_ROW: u32 = 16u;
 const NO_LIMB: u32 = 0xffffffffu;
 const FAR: f32 = 1e9;
+// Limbs the field keeps apart at one point (as `LIMB_SLOTS` in `surface/body.rs`).
+const LIMB_SLOTS: u32 = 8u;
 
 fn word_u(i: u32) -> vec4<u32> {
     return bitcast<vec4<u32>>(words[i]);
@@ -140,12 +143,17 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
     let header = word_u(0u);
     let item_start = header.w;
     let grid_start = word_u(2u).w;
-    var d = FAR;
+    // The body (primitives on no limb) and, per limb, its smooth union with the body: limbs blend
+    // into the body, never into each other (as `BodyField::eval`; past the last slot they share it).
+    var body = FAR;
     var have = false;
+    var limb_id: array<u32, LIMB_SLOTS>;
+    var limb_d: array<f32, LIMB_SLOTS>;
+    var limb_r: array<f32, LIMB_SLOTS>;
+    var used = 0u;
     var raised = 0.0;
     var best = FAR;
     var nearest = NO_LIMB;
-    var nearest_limb = NO_LIMB;
     var eye = FAR;
     var hard = FAR;
     for (var k = 0u; k < count; k++) {
@@ -178,21 +186,52 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
             blend *= clamp(1.0 - length(q - anchor.xyz) * min_scale / anchor.w, 0.0, 1.0);
         }
         dl *= min_scale;
+        // This primitive's limb slot, opened if new (past the last slot, limbs share it).
+        var slot = LIMB_SLOTS;
+        if info.z != NO_LIMB {
+            for (var i = 0u; i < used; i++) {
+                if limb_id[i] == info.z {
+                    slot = i;
+                }
+            }
+            if slot == LIMB_SLOTS {
+                slot = min(used, LIMB_SLOTS - 1u);
+                if used < LIMB_SLOTS {
+                    limb_id[slot] = info.z;
+                    limb_d[slot] = FAR;
+                    limb_r[slot] = 0.0;
+                    used += 1u;
+                }
+            }
+        }
         switch info.y {
             case 0u: {
-                let apart = nearest != NO_LIMB && info.z != NO_LIMB && nearest_limb != NO_LIMB && info.z != nearest_limb;
-                if !have {
-                    d = dl;
-                    have = true;
-                } else if apart {
-                    d = min(d, dl);
+                if slot < LIMB_SLOTS {
+                    // A new limb starts from the body so far.
+                    if limb_d[slot] < FAR {
+                        limb_d[slot] = smin(limb_d[slot], dl, blend);
+                    } else if have {
+                        limb_d[slot] = smin(body, dl, blend);
+                    } else {
+                        limb_d[slot] = dl;
+                    }
                 } else {
-                    d = smin(d, dl, blend);
+                    if have {
+                        body = smin(body, dl, blend);
+                    } else {
+                        body = dl;
+                        have = true;
+                    }
+                    // (A limb with only raised stamps so far has no union yet: it takes the body.)
+                    for (var i = 0u; i < used; i++) {
+                        if limb_d[i] < FAR {
+                            limb_d[i] = smin(limb_d[i], dl, blend);
+                        }
+                    }
                 }
                 if dl < best {
                     best = dl;
                     nearest = index;
-                    nearest_limb = info.z;
                 }
                 if (info.w & EYE) != 0u {
                     eye = min(eye, dl);
@@ -202,21 +241,43 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
             }
             case 1u: {
                 if have {
-                    d = -smin(-d, dl, blend);
+                    body = -smin(-body, dl, blend);
+                }
+                for (var i = 0u; i < used; i++) {
+                    if limb_d[i] < FAR {
+                        limb_d[i] = -smin(-limb_d[i], dl, blend);
+                    }
                 }
             }
             case 2u: {
                 if info.x == 1u {
                     let s = 1.0 - dot(q / a.xyz, q / a.xyz);
                     if s > 0.0 {
-                        raised += blend_w.z * min_scale * s * s;
+                        // A limb's stamps raise only that limb.
+                        let rise = blend_w.z * min_scale * s * s;
+                        if slot < LIMB_SLOTS {
+                            limb_r[slot] += rise;
+                        } else {
+                            raised += rise;
+                        }
                     }
                 }
             }
             default: {}
         }
     }
-    return Sample(d - raised, nearest, eye, hard);
+    // Each limb with its own stamps raised; a limb with no union (only raised stamps here) raises
+    // the body.
+    var d = body;
+    for (var i = 0u; i < used; i++) {
+        if limb_d[i] < FAR {
+            d = min(d, limb_d[i] - limb_r[i]);
+        } else if have {
+            d = min(d, body - limb_r[i]);
+        }
+    }
+    d -= raised;
+    return Sample(d, nearest, eye, hard);
 }
 
 struct Grid {

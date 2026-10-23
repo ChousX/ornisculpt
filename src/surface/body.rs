@@ -73,6 +73,37 @@ impl Creases {
     }
 }
 
+/// Limbs [`BodyField::eval`] keeps apart at one point (as `LIMB_SLOTS` in `sdf_field.wesl`).
+const LIMB_SLOTS: usize = 8;
+
+/// One limb's share of [`BodyField::eval`] at a point.
+#[derive(Clone, Copy)]
+struct LimbField {
+    id: u16,
+    /// Its smooth union with the body (`f32::MAX` until its first primitive).
+    with_body: f32,
+    /// Its own raised stamps.
+    raised: f32,
+}
+
+impl LimbField {
+    const EMPTY: Self = Self { id: u16::MAX, with_body: f32::MAX, raised: 0.0 };
+}
+
+/// The slot of `limb` in [`BodyField::eval`]'s per-limb fields, opened if new (limbs past the last
+/// slot share it).
+fn slot<'a>(limbs: &'a mut [LimbField; LIMB_SLOTS], used: &mut usize, limb: u16) -> Option<&'a mut LimbField> {
+    let i = limbs.iter().take(*used).position(|l| l.id == limb).unwrap_or_else(|| {
+        *used = (*used + 1).min(LIMB_SLOTS);
+        *used - 1
+    });
+    let l = limbs.get_mut(i)?;
+    if l.id == u16::MAX {
+        l.id = limb;
+    }
+    Some(l)
+}
+
 /// A primitive moved into model space at rest pose, ready for evaluation.
 pub(super) struct PreparedPrim {
     /// Model space → primitive local space.
@@ -328,7 +359,12 @@ impl BodyField {
         joints: impl Iterator<Item = &'j CreaseJoint>,
         p: Vec3A,
     ) -> (f32, Option<&'a PreparedPrim>) {
-        let mut d: Option<f32> = None;
+        // The body (primitives on no limb) and, per limb, that limb's smooth union with the body:
+        // a limb blends into the body, never into another limb, so two only ever meet. Limbs past
+        // the last slot share it.
+        let mut body: Option<f32> = None;
+        let mut limbs = [LimbField::EMPTY; LIMB_SLOTS];
+        let mut used = 0;
         let mut raised = 0.0;
         let mut nearest: Option<&PreparedPrim> = None;
         let mut best = f32::INFINITY;
@@ -336,33 +372,50 @@ impl BodyField {
             let (dl, blend) = prim.eval(p);
             match prim.op {
                 PrimOp::Union => {
-                    // Two different limbs only meet, never blend.
-                    let apart = nearest.is_some_and(|n| prim.limb.is_some() && n.limb.is_some() && prim.limb != n.limb);
-                    d = Some(match d {
-                        None => dl,
-                        Some(d) if apart => d.min(dl),
-                        Some(d) => sdf::smin(d, dl, blend).0,
-                    });
+                    if let Some(l) = prim.limb.and_then(|limb| slot(&mut limbs, &mut used, limb)) {
+                        // A new limb starts from the body so far.
+                        let from = if l.with_body < f32::MAX { Some(l.with_body) } else { body };
+                        l.with_body = from.map_or(dl, |d| sdf::smin(d, dl, blend).0);
+                    } else {
+                        body = Some(body.map_or(dl, |d| sdf::smin(d, dl, blend).0));
+                        // (A limb with only raised stamps so far has no union yet: it takes the body.)
+                        for l in limbs.iter_mut().take(used).filter(|l| l.with_body < f32::MAX) {
+                            l.with_body = sdf::smin(l.with_body, dl, blend).0;
+                        }
+                    }
                     if dl < best {
                         best = dl;
                         nearest = Some(prim);
                     }
                 }
                 PrimOp::Subtract => {
-                    if let Some(cur) = d {
-                        d = Some(sdf::ssub(cur, dl, blend));
+                    body = body.map(|d| sdf::ssub(d, dl, blend));
+                    for l in limbs.iter_mut().take(used).filter(|l| l.with_body < f32::MAX) {
+                        l.with_body = sdf::ssub(l.with_body, dl, blend);
                     }
                 }
                 PrimOp::Displace { height } => {
                     if let PreparedShape::Simple(PrimShape::Ellipsoid { radii }) = &prim.shape {
                         let s = 1.0 - (prim.to_local.transform_point3a(p) / Vec3A::from(*radii)).length_squared();
                         if s > 0.0 {
-                            raised = (height * prim.min_scale * s).mul_add(s, raised);
+                            // A limb's stamps raise only that limb.
+                            let rise = height * prim.min_scale * s * s;
+                            match prim.limb.and_then(|limb| slot(&mut limbs, &mut used, limb)) {
+                                Some(l) => l.raised += rise,
+                                None => raised += rise,
+                            }
                         }
                     }
                 }
             }
         }
+        // Each limb with its own stamps raised; a limb with no union (only raised stamps here)
+        // raises the body.
+        let limbs = limbs.get(..used).unwrap_or_default();
+        let d = limbs
+            .iter()
+            .filter_map(|l| Some(if l.with_body < f32::MAX { l.with_body } else { body? } - l.raised))
+            .fold(body, |d, l| Some(d.map_or(l, |d| d.min(l))));
         let mut d = d.map_or(f32::MAX, |d| d - raised);
         if let Some(c) = &self.creases
             && d.abs() < 0.03 {
@@ -560,4 +613,50 @@ mod spread_tests {
         field.unbind(&mut data);
         assert!(data.positions[0].distance(rest) < 1e-4, "{} vs {}", data.positions[0], rest);
     }
+}
+
+#[cfg(test)]
+mod limb_tests {
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, LimbRole, PartAssets, PartLodRules, apply_form, build_anatomy};
+
+    /// Between the thighs, from the crotch to the knees, the field is the nearer thigh's (with the
+    /// body it blends into), never a blend of the two: thighs touch, they don't web together.
+    #[test]
+    fn thighs_never_web() {
+        let mut webbed = Vec::new();
+        for (name, ron) in [
+            ("biped", include_str!("../../assets/mobs/biped.body.ron")),
+            ("curvy", include_str!("../../assets/mobs/curvy.body.ron")),
+            ("thick", include_str!("../../assets/mobs/thick.body.ron")),
+        ] {
+            let plan: BodyPlan = ron::from_str(ron).unwrap();
+            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+            let rest = anatomy.skeleton.model_rest();
+            let legs: Vec<usize> = (0..anatomy.parts.len()).filter(|&i| anatomy.parts[i].role == Some(LimbRole::Locomotor)).collect();
+            assert_eq!(legs.len(), 2, "{name}");
+            let limbs: Vec<Option<u16>> = field.prims.iter().map(|p| p.limb).collect();
+            // Each leg with the body: its primitives and every primitive on no limb.
+            let with_body = |leg: usize| -> Vec<usize> {
+                (0..limbs.len()).filter(|&i| limbs[i].is_none() || limbs[i] == u16::try_from(leg).ok()).collect()
+            };
+            let (left, right) = (with_body(legs[0]), with_body(legs[1]));
+            let joint = |leg: usize, k: usize| rest[usize::from(anatomy.parts[leg].bones.start) + k].translation;
+            let (hip, knee) = ((joint(legs[0], 0) + joint(legs[1], 0)) * 0.5, (joint(legs[0], 1) + joint(legs[1], 1)) * 0.5);
+            let mut worst = 0.0f32;
+            for i in 0..=20u8 {
+                let p = hip.lerp(knee, f32::from(i) / 20.0);
+                let want = field.distance_of(&left, p).min(field.distance_of(&right, p));
+                let got = field.distance(p);
+                worst = worst.max(want - got);
+                println!("{name} {i:2}: field {got:+.4}, apart {want:+.4}");
+            }
+            if worst >= 1e-4 {
+                webbed.push(format!("{name} by {worst} m"));
+            }
+        }
+        assert!(webbed.is_empty(), "the thighs web together: {}", webbed.join(", "));
+    }
+
 }
