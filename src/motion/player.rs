@@ -564,13 +564,32 @@ fn cycles_per_second(cycle: &Cycle, speed: f32) -> Option<f32> {
     }
 }
 
-/// Events in `(t0, t1]`, wrapping when `t1 < t0`.
-fn crossed(cycle: &Cycle, t0: f32, t1: f32, out: &mut Out) {
+/// Steps cycle time `t0` by `rate` (cycles per second) over `dt`: a looping cycle wraps, an
+/// action stops at its end. Returns the new time and whether it looped.
+fn advance(cycle: &Cycle, t0: f32, rate: f32, dt: f32) -> (f32, bool) {
+    let t1 = rate.mul_add(dt, t0);
+    if !cycle.kind.loops() {
+        (t1.min(1.0), false)
+    } else if t1 >= 1.0 {
+        (t1.fract(), true)
+    } else {
+        (t1, false)
+    }
+}
+
+/// What a cycle stepping from `t0` to `t1` emits: its events in `(t0, t1]` (wrapping when
+/// `t1 < t0`) and, with a `root` weight, its root motion scaled by it.
+fn emit(cycle: &Cycle, (t0, t1, looped): (f32, f32, bool), root: Option<f32>, leg: f32, out: &mut Out) {
     for e in &cycle.events {
         let hit = if t1 >= t0 { e.at > t0 && e.at <= t1 } else { e.at > t0 || e.at <= t1 };
         if hit {
             out.events.push((e.name.clone(), cycle.name.clone()));
         }
+    }
+    if let Some(weight) = root {
+        let (offset, yaw) = root_delta(cycle, t0, t1, looped);
+        out.root += offset * leg * weight;
+        out.yaw = yaw.to_radians().mul_add(weight, out.yaw);
     }
 }
 
@@ -785,24 +804,13 @@ fn play_cycle(
         return frame.phase_wrapped;
     };
     let t0 = run.t;
-    let mut t1 = f32::mul_add(rate * rate_scale, frame.dt, t0);
+    let (t1, looped) = advance(&cycle, t0, rate * rate_scale, frame.dt);
     let action = !cycle.kind.loops();
     let hold = matches!(cycle.kind, CycleKind::Action { hold: true, .. });
-    let mut wrapped = false;
-    if action {
-        t1 = t1.min(1.0);
-        wrapped = t1 >= 1.0 && t0 < 1.0;
-    } else if t1 >= 1.0 {
-        t1 = t1.fract();
-        wrapped = true;
-    }
+    // An action "wraps" the frame it reaches its end.
+    let wrapped = looped || (action && t1 >= 1.0 && t0 < 1.0);
     if rt.fits(c, frame.cycles, out) {
-        crossed(&cycle, t0, t1, out);
-        if layer.root_motion {
-            let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped && !action);
-            out.root += offset * frame.leg * fade_in * layer.weight;
-            out.yaw = (yaw.to_radians() * fade_in).mul_add(layer.weight, out.yaw);
-        }
+        emit(&cycle, (t0, t1, looped), layer.root_motion.then_some(fade_in * layer.weight), frame.leg, out);
         let done = action && t0 >= 1.0;
         if !done || hold {
             rt.active.push(Active { src: Src::Graph(c), t: Some(t1), weight: fade_in, layer: Src::Graph(li) });
@@ -850,25 +858,13 @@ fn play_direct(rt: &mut MotionRuntime, play: Option<(&PlayCycle, bool)>, rig: &M
         }
         let t0 = d.t;
         let t = cycles_per_second(&cycle, frame.speed).map(|rate| {
-            let mut t1 = (rate * d.play.speed).mul_add(dt, t0);
-            let action = !cycle.kind.loops();
-            let wrapped = !action && t1 >= 1.0;
-            if action {
-                t1 = t1.min(1.0);
-                if t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
-                    out.finished = true;
-                    d.leaving = true;
-                }
-            } else {
-                t1 = t1.fract();
+            let (t1, looped) = advance(&cycle, t0, rate * d.play.speed, dt);
+            if !cycle.kind.loops() && t1 >= 1.0 && !d.leaving && !matches!(cycle.kind, CycleKind::Action { hold: true, .. }) {
+                out.finished = true;
+                d.leaving = true;
             }
             if d.fits == Some(true) {
-                crossed(&cycle, t0, t1, out);
-                if d.play.root_motion {
-                    let (offset, yaw) = root_delta(&cycle, t0, t1, wrapped);
-                    out.root += offset * frame.leg * d.level;
-                    out.yaw = f32::mul_add(yaw.to_radians(), d.level, out.yaw);
-                }
+                emit(&cycle, (t0, t1, looped), d.play.root_motion.then_some(d.level), frame.leg, out);
             }
             d.t = t1;
             t1
