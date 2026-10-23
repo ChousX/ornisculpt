@@ -22,6 +22,7 @@ use super::stages::leg_length;
 use super::{ActiveStep, CyclePose, ExternalRoot, GaitClock, GaitOverride, Locomotion, MotionEvent};
 use crate::anatomy::Anatomy;
 use crate::mob::{GeneratedBody, MobBody, MobSkeleton};
+use crate::num::smoothstep;
 
 /// The motion graphs this mob runs, composed in order (see [`compose`]).
 #[derive(Component, Clone, Debug, Default)]
@@ -730,7 +731,7 @@ fn advance_layer(rt: &mut MotionRuntime, g: &ComposedGraph, li: usize, frame: &F
                 run.gait = choice;
             }
             if let Some(c) = choice {
-                let weight = smooth(speed / 0.25) * (1.0 - run.fade.map_or(0.0, |f| f.weight()));
+                let weight = smoothstep(0.0, 1.0, speed / 0.25) * (1.0 - run.fade.map_or(0.0, |f| f.weight()));
                 if rt.plan.is_none() && rt.cycle(Src::Graph(c), cycles).is_some_and(|cycle| cycle.feet.is_some()) {
                     rt.plan = Some(Src::Graph(c));
                 }
@@ -919,11 +920,6 @@ const fn stride(cycle: &Cycle) -> f32 {
     }
 }
 
-fn smooth(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * 2.0f32.mul_add(-x, 3.0)
-}
-
 /// Linear weights between the two blend points around `value`.
 fn blend_weights(points: &[(f32, usize)], value: f32) -> SmallVec<[f32; 4]> {
     let mut weights: SmallVec<[f32; 4]> = SmallVec::from_elem(0.0, points.len());
@@ -1003,7 +999,7 @@ fn push_state(
     let list: SmallVec<[(usize, f32); 4]> = match &st.play {
         CPlay::Empty => SmallVec::new(),
         CPlay::Cycle(c) => smallvec::smallvec![(*c, 1.0)],
-        CPlay::Locomotion(_) => gait.map(|c| (c, smooth(speed / 0.25))).into_iter().collect(),
+        CPlay::Locomotion(_) => gait.map(|c| (c, smoothstep(0.0, 1.0, speed / 0.25))).into_iter().collect(),
         CPlay::Blend { by, points } => {
             let w = blend_weights(points, rt.values.get(*by).copied().unwrap_or_default());
             points.iter().zip(w).map(|((_, c), w)| (*c, w)).collect()

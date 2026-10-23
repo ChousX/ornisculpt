@@ -22,7 +22,7 @@ use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 
 use crate::anatomy::{Anatomy, BoneId, CROWD_SLOT, LodLevel, PrimLayer, PrimOp, PrimShape, WATER};
-use crate::num::{Idx, ToF32};
+use crate::num::{Idx, ToF32, smoothstep};
 use crate::surface::{BodyMeshData, MaterialSlot, SoftVertex, primitive_parts};
 
 /// Most regions on a hero body (the heaviest are kept).
@@ -302,12 +302,6 @@ fn region_weight(r: &SoftRegion, q: Vec3A) -> f32 {
     };
     let held = if r.shape == RegionShape::Drop { smoothstep(-1.0, 0.25, q.y * SPREAD) } else { 1.0 };
     s * s * held
-}
-
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
 }
 
 /// One region's spring, frame to frame.

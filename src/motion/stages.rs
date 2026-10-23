@@ -17,7 +17,7 @@ use super::heft::{Heft, HeftResponse};
 use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
 use super::{Gait, SOFT_START, fabrik, two_bone_soft};
 use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
-use crate::num::ToF32;
+use crate::num::{ToF32, smoothstep};
 
 pub fn leg_length(a: &Anatomy) -> f32 {
     if a.legs.is_empty() {
@@ -354,12 +354,6 @@ fn points_rest_tip(a: &Anatomy, last: BoneId, rest_model: &[Affine3A]) -> Vec3 {
 
 /// How high (in leg lengths) a lifting foot rises before what hangs off it stops lying flat.
 const FLAT_FOOT_LIFT: f32 = 0.12;
-
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
-}
 
 /// Legs reach their feet (plus any cycle foot offsets), then cycles flex the lower joints, then
 /// loose cloth swings with the thighs. Leaves the pre-IK world transforms in `pose.world`.

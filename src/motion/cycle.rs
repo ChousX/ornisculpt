@@ -32,6 +32,7 @@ use super::PhasePattern;
 use super::gait::BodyMotion;
 use super::heft::StepShape;
 use crate::anatomy::Side;
+use crate::num::smoothstep;
 
 use super::fit::Fit;
 
@@ -398,14 +399,12 @@ impl Curve {
                 if t <= *from || t >= *to { 0.0 } else { peak * (PI * (t - from) / (to - from).max(1e-6)).sin() }
             }
             Self::Envelope { peak, attack, hold, release } => {
-                let ease = |x: f32| x * x * 2.0f32.mul_add(-x, 3.0);
                 if t < *attack {
-                    peak * ease((t / attack.max(1e-4)).clamp(0.0, 1.0))
+                    peak * smoothstep(0.0, 1.0, t / attack.max(1e-4))
                 } else if t < attack + hold {
                     *peak
                 } else {
-                    let r = ((t - attack - hold) / release.max(1e-4)).clamp(0.0, 1.0);
-                    peak * (1.0 - ease(r))
+                    peak * (1.0 - smoothstep(0.0, 1.0, (t - attack - hold) / release.max(1e-4)))
                 }
             }
         }
