@@ -2,9 +2,6 @@
 //!
 //! Data flow: [`BodyPlan`] + [`Form`] → [`apply_form`] → [`build_anatomy`] → [`Anatomy`].
 
-// Stub phase: bodies are `todo!()`, so parameters are intentionally unused.
-#![allow(unused_variables, dead_code)]
-
 mod build;
 mod builder;
 mod external;

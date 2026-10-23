@@ -117,11 +117,6 @@ impl Anatomy {
         }
         self.skeleton.crowd = crowd;
     }
-
-    /// Parts present at `level`.
-    pub fn parts_at(&self, level: LodLevel) -> impl Iterator<Item = &BuiltPart> {
-        self.parts.iter().filter(move |p| p.lod >= level)
-    }
 }
 
 /// Expanded, form-applied plan (see [`apply_form`](super::apply_form)) → `Anatomy`.

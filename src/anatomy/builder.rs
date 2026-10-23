@@ -239,11 +239,7 @@ impl AnatomyBuilder {
 
     /// Whether the part being built is a reflected (right-side) copy.
     #[must_use]
-    pub fn is_mirrored(&self) -> bool {
-        self.mirrored()
-    }
-
-    fn mirrored(&self) -> bool {
+    pub fn mirrored(&self) -> bool {
         self.stack.last().is_some_and(|f| f.mirrored)
     }
 
@@ -372,13 +368,6 @@ impl AnatomyBuilder {
     #[must_use]
     pub fn bone_region(&self, bone: BoneId) -> RegionId {
         self.anatomy.skeleton.get(bone).map_or(RegionId(0), |b| b.region)
-    }
-
-    /// Logical model-space rest transform of a bone (mirrored back if needed).
-    #[must_use]
-    pub fn model(&self, bone: BoneId) -> Transform {
-        let stored = self.bone_model(bone);
-        if self.mirrored() { mirror_transform(stored) } else { stored }
     }
 
     /// Adds (or reuses) a region of the current part.

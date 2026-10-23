@@ -1097,7 +1097,7 @@ impl PartBuild for DigitParams {
                 end = Some(slot(AttachSlot::End, last, tip_frame));
             }
         }
-        b.hand(HandDef { side: cx.side, mirrored: b.is_mirrored(), digits, thumb });
+        b.hand(HandDef { side: cx.side, mirrored: b.mirrored(), digits, thumb });
         Ok(PartSlots { fixed: end.into_iter().collect(), ..default() })
     }
 }

@@ -106,13 +106,6 @@ impl Lever {
         }
     }
 
-    /// Changes bone count or hard-part topology. Such mobs can't share a skeleton (and
-    /// therefore baked motion) with unpatched mobs of the same body plan.
-    #[must_use]
-    pub fn changes_topology(self) -> bool {
-        self.kind() == LeverKind::Count
-    }
-
     /// The values this lever may take, in its [`kind`](Self::kind)'s terms: a factor's
     /// multiplier, a delta's change, a count's value. Every patch must lie within it, and so must
     /// all the patches on one part combined ([`apply_form`](super::apply_form) checks both).
@@ -434,8 +427,7 @@ mod tests {
     fn lever_kinds() {
         assert_eq!(Lever::Length.kind(), LeverKind::Factor);
         assert_eq!(Lever::Pitch.kind(), LeverKind::Delta);
-        assert!(Lever::Segments.changes_topology());
-        assert!(!Lever::Girth.changes_topology());
+        assert_eq!(Lever::Segments.kind(), LeverKind::Count);
     }
 
     #[test]
