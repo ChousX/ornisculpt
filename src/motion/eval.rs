@@ -209,11 +209,11 @@ impl MotionRig {
         let half = self.spine.len() / 2;
         let wing_bones: Vec<BoneId> = self.wings.iter().map(|w| w.2).collect();
         let head: Vec<BoneId> = self.head.into_iter().chain(self.jaw).collect();
-        let pairs = |list: &[(Side, Vec<BoneId>)]| -> Vec<BoneId> { list.iter().flat_map(|(_, b)| b.iter().copied()).collect() };
+        let pairs = |list: &[(Side, Vec<BoneId>)]| sided(list, Sides::Both);
         let (mut root, mut feet, mut wings) = (0.0, 0.0, 0.0);
         match mask {
             BodyMask::All => {
-                set(&(0..n).map(|i| BoneId(i.clamp_u8())).collect::<Vec<_>>());
+                m.bones.fill(1.0);
                 (root, feet, wings) = (1.0, 1.0, 1.0);
             }
             BodyMask::Upper => {
@@ -324,8 +324,8 @@ impl LayerPose {
         }
     }
 
-    fn turn(&mut self, rig: &MotionRig, bone: BoneId, axis_model: Vec3, degrees: f32, post: bool) {
-        let q = Quat::from_axis_angle(rig.local(bone, axis_model), degrees.to_radians());
+    /// Turns `bone` by `q` (after leg IK when `post`) and marks it driven.
+    fn rotate(&mut self, bone: BoneId, q: Quat, post: bool) {
         let i = bone.index();
         let slot = if post { self.post.get_mut(i) } else { self.rot.get_mut(i) };
         if let (Some(slot), Some(touched)) = (slot, self.touched.get_mut(i)) {
@@ -334,19 +334,17 @@ impl LayerPose {
         }
     }
 
+    fn turn(&mut self, rig: &MotionRig, bone: BoneId, axis_model: Vec3, degrees: f32, post: bool) {
+        self.rotate(bone, Quat::from_axis_angle(rig.local(bone, axis_model), degrees.to_radians()), post);
+    }
+
     /// A `Flex` channel's turn: a declared hinge flexes its own way (positive closes it, an
     /// elbow forward and a knee back); any other joint turns about model -X.
     fn flex(&mut self, rig: &MotionRig, a: &Anatomy, bone: BoneId, degrees: f32, post: bool) {
         let Some(JointLimit::Hinge { flexes, .. }) = a.joint_limit(bone) else {
             return self.turn(rig, bone, Vec3::NEG_X, degrees, post);
         };
-        let q = flexes.turn(degrees);
-        let i = bone.index();
-        let slot = if post { self.post.get_mut(i) } else { self.rot.get_mut(i) };
-        if let (Some(slot), Some(touched)) = (slot, self.touched.get_mut(i)) {
-            *slot *= q;
-            *touched = 1.0;
-        }
+        self.rotate(bone, flexes.turn(degrees), post);
     }
 
     /// Adds `other` scaled by `weight`: how the cycles inside one layer mix (crossfades, blend
@@ -620,29 +618,20 @@ fn apply_arms(track: &Track, input: &EvalInput, out: &mut LayerPose, sides: Side
             input.t
         };
         let v = value_at(t) * mirror(*side, ch);
-        match ch {
-            Channel::Swing => {
-                if let Some(b) = bones.first() {
-                    out.turn(rig, *b, Vec3::NEG_X, v, false);
-                }
+        if let Channel::Flex(joint) = ch {
+            if let Some(b) = bones.get(joint_index(joint)) {
+                out.flex(rig, a, *b, v, false);
             }
-            Channel::Raise => {
-                if let Some(b) = bones.first() {
-                    // About the long axis; `v` is already mirrored, so + is outward.
-                    out.turn(rig, *b, Vec3::Z, v, false);
-                }
-            }
-            Channel::Roll => {
-                if let Some(b) = bones.first() {
-                    out.turn(rig, *b, rig.rest_dir(*b), v, false);
-                }
-            }
-            Channel::Flex(joint) => {
-                if let Some(b) = bones.get(joint_index(joint)) {
-                    out.flex(rig, a, *b, v, false);
-                }
-            }
-            _ => {}
+            continue;
         }
+        let Some(&b) = bones.first() else { continue };
+        let axis = match ch {
+            Channel::Swing => Vec3::NEG_X,
+            // About the long axis; `v` is already mirrored, so + is outward.
+            Channel::Raise => Vec3::Z,
+            Channel::Roll => rig.rest_dir(b),
+            _ => continue,
+        };
+        out.turn(rig, b, axis, v, false);
     }
 }
