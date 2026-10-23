@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Browser build (wasm32-unknown-unknown; `tools/web.sh`): Bevy's web platform support and the
-# WebGPU backend (the crowd skinning compute shader and storage buffers rule out WebGL2), randomness
-# from the browser, and the parallel meshing stages on the calling thread (browsers have no threads).
 # Motion holds every joint a body declares limits for (`Anatomy::joint_limits`) within them, as
 # the last pose stage: no knee bends like an elbow, whatever the cycles, IK or hands ask for.
 joint-limits = []
 # Soft tissue (`src/soft.rs`): fat pads and muscle bellies jiggle on damped springs, hang with
 # gravity and tense under load. Hero mobs run the springs; crowd tiers play them baked.
 soft-tissue = []
+# Browser build (wasm32-unknown-unknown; `tools/web.sh`): Bevy's web platform support and the
+# WebGPU backend (the crowd skinning compute shader and storage buffers rule out WebGL2), randomness
+# from the browser, and the parallel meshing stages on the calling thread (browsers have no threads).
 web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
 
 [dependencies]
