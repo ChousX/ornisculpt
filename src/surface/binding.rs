@@ -63,6 +63,8 @@ pub struct VoxelBinding {
     /// Each cell's nearest primitive's bone (`NO_BONE` outside).
     owner: Vec<u8>,
     parent: Vec<Option<u8>>,
+    /// Per bone, the part it belongs to.
+    part: Vec<u16>,
     /// Per bone: the arm it moves (part index; `None` for every other bone, clavicles included)
     /// and that arm's shoulder joint (position, radius) in the field's pose.
     limb: Vec<Option<(u16, Vec3A, f32)>>,
@@ -161,6 +163,7 @@ impl VoxelBinding {
             near,
             owner: cells.iter().map(|c| c.bone).collect(),
             parent: anatomy.skeleton.bones.iter().map(|b| b.parent.map(|p| p.0)).collect(),
+            part: anatomy.skeleton.bones.iter().map(|b| b.part).collect(),
             limb: arm_roots(anatomy, field.bone_model()),
             falloff: settings.falloff,
         }
@@ -195,7 +198,10 @@ impl VoxelBinding {
                 continue;
             }
             let offset = p.distance(self.grid.centre(q));
-            for &(bone, d) in near.iter().filter(|(bone, _)| *bone != NO_BONE) {
+            // Nor, at cells too coarse to part them, distances that leaked across from the next
+            // finger: a bone of this vertex's own part that isn't in line with it is a sibling.
+            let sibling = |bone: u8| self.part.get(bone.idx()) == self.part.get(home.idx()) && !self.in_line(home, bone);
+            for &(bone, d) in near.iter().filter(|(bone, _)| *bone != NO_BONE && !sibling(*bone)) {
                 let d = d + offset;
                 match best.iter_mut().find(|s| s.0 == bone) {
                     Some(s) => s.1 = s.1.min(d),
