@@ -1,5 +1,6 @@
-//! The pose bodies are meshed in: arms raised clear of the body and fingers fanned, so nothing
-//! that moves apart touches while the surface is built (an A-pose, not a T-pose: hanging arms
+//! The pose bodies are meshed in: arms raised clear of the body, fingers fanned and legs that
+//! overlap at rest (thick thighs) swung apart, so nothing that moves apart touches while the
+//! surface is built (an A-pose, not a T-pose: hanging arms
 //! skinned from a T-pose collapse at the armpit). The animation rest pose is unchanged; the mesh
 //! is skinned back into it afterwards (see `surface::BodyField`).
 
@@ -16,11 +17,14 @@ pub struct Spread {
     pub arms: f32,
     /// Each finger turns this much further from the hand's middle, degrees.
     pub fingers: f32,
+    /// Each leg swings this much outward at the hip, degrees. Zero unless legs overlap at rest
+    /// (`surface::BodyField` finds the least that parts them).
+    pub legs: f32,
 }
 
 impl Default for Spread {
     fn default() -> Self {
-        Self { arms: 45.0, fingers: 10.0 }
+        Self { arms: 45.0, fingers: 10.0, legs: 0.0 }
     }
 }
 
@@ -61,6 +65,23 @@ pub fn spread_pose(a: &Anatomy, spread: &Spread) -> Vec<Transform> {
         let out = Vec3A::X * side.signum();
         let axis = dir.cross(out).normalize_or(Vec3A::Z * side.signum());
         turn(&mut local, &world, shoulder, Quat::from_axis_angle(axis.into(), want - from_down));
+    }
+
+    // Legs: swing each outward at the hip, away from the body's middle.
+    if spread.legs > 0.0 {
+        let world = model(&local);
+        for leg in &a.legs {
+            let Some(&hip) = leg.chain.first() else { continue };
+            let Some(m) = world.get(hip.index()) else { continue };
+            let side = m.translation.x;
+            if side.abs() < 1e-3 {
+                continue;
+            }
+            let dir = (m.matrix3 * Vec3A::Y).normalize_or(Vec3A::NEG_Y);
+            let out = Vec3A::X * side.signum();
+            let axis = dir.cross(out).normalize_or(Vec3A::Z * side.signum());
+            turn(&mut local, &world, hip, Quat::from_axis_angle(axis.into(), spread.legs.to_radians()));
+        }
     }
 
     // Fingers: fan each away from the hand's middle direction.

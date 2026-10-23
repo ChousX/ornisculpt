@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
-use crate::num::Idx;
+use crate::num::{Idx, Saturate, ToF32};
 use crate::anatomy::{Anatomy, BoneId, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 
@@ -72,6 +72,14 @@ impl Creases {
         self.amplitude * mask * mask * ridge
     }
 }
+
+/// How far apart legs must stand to mesh as separate surfaces, metres: two hero voxels.
+const LEG_GAP: f32 = 0.016;
+/// How far under the body legs may still overlap in the meshing pose, metres: the crotch.
+const LEG_CROTCH: f32 = 0.04;
+/// The most the meshing pose swings legs apart, degrees, and the step it searches in.
+const LEG_SPREAD_MAX: f32 = 24.0;
+const LEG_SPREAD_STEP: f32 = 2.0;
 
 /// Limbs [`BodyField::eval`] keeps apart at one point (as `LIMB_SLOTS` in `sdf_field.wesl`).
 const LIMB_SLOTS: usize = 8;
@@ -192,12 +200,57 @@ pub(super) fn transform_aabb(m: &Affine3A, (lo, hi): (Vec3, Vec3)) -> Aabb3d {
 impl BodyField {
     #[must_use]
     pub fn new(anatomy: &Anatomy, opts: &BodyFieldOptions) -> Self {
-        if opts.spread {
-            let pose = crate::anatomy::spread_pose(anatomy, &crate::anatomy::Spread::default());
-            Self::build(anatomy, opts, Some(&pose))
-        } else {
-            Self::build(anatomy, opts, None)
+        if !opts.spread {
+            return Self::build(anatomy, opts, None);
         }
+        // Legs that overlap at rest (thick thighs) swing apart, the least that parts them, so
+        // each meshes as its own surface and binds to its own leg: skinned back to rest they pass
+        // through each other, and part again as the legs move, instead of fusing into one.
+        let mut spread = crate::anatomy::Spread::default();
+        loop {
+            let field = Self::build(anatomy, opts, Some(&crate::anatomy::spread_pose(anatomy, &spread)));
+            if spread.legs >= LEG_SPREAD_MAX || field.legs_apart(anatomy, LEG_GAP) {
+                return field;
+            }
+            spread.legs += LEG_SPREAD_STEP;
+        }
+    }
+
+    /// Whether every two legs stand at least `gap` apart along their length below the body
+    /// (compared at equal shares of each, as mirrored legs are), by their own primitives. Inside
+    /// the body and the crotch just under it, where they join it anyway, they may overlap: no
+    /// swing at the hip parts thighs there.
+    fn legs_apart(&self, anatomy: &Anatomy, gap: f32) -> bool {
+        const SAMPLES: u8 = 16;
+        let legs: Vec<(Vec<usize>, Vec<Vec3A>)> = anatomy
+            .legs
+            .iter()
+            .filter_map(|leg| {
+                let part = anatomy.skeleton.bones.get(leg.chain.first()?.index())?.part;
+                let own = (0..self.prims.len()).filter(|&i| self.prims.get(i).is_some_and(|p| p.limb == Some(part))).collect();
+                let joints = leg.chain.iter().chain([&leg.foot]).filter_map(|b| self.bone_model.get(b.index())).map(|m| m.translation).collect();
+                Some((own, joints))
+            })
+            .collect();
+        let body: Vec<usize> = (0..self.prims.len()).filter(|&i| self.prims.get(i).is_some_and(|p| p.limb.is_none())).collect();
+        // The point a share `t` of the way down a chain of joints.
+        let along = |joints: &[Vec3A], t: f32| {
+            let segments = joints.len().saturating_sub(1).max(1);
+            let at = t * segments.to_f32();
+            let seg = at.sat_usize().min(segments - 1);
+            let start = joints.get(seg).copied().unwrap_or_default();
+            let end = joints.get(seg + 1).copied().unwrap_or(start);
+            start.lerp(end, at - seg.to_f32())
+        };
+        legs.iter().enumerate().all(|(i, (own_a, a))| {
+            legs.iter().skip(i + 1).all(|(own_b, b)| {
+                (0..=SAMPLES).all(|k| {
+                    let t = f32::from(k) / f32::from(SAMPLES);
+                    let mid = (along(a, t) + along(b, t)) * 0.5;
+                    self.distance_of(&body, mid) <= LEG_CROTCH || self.distance_of(own_a, mid) + self.distance_of(own_b, mid) >= gap
+                })
+            })
+        })
     }
 
     /// The field with the bones in the local pose `pose` (one transform per bone) rather than at
@@ -659,4 +712,24 @@ mod limb_tests {
         assert!(webbed.is_empty(), "the thighs web together: {}", webbed.join(", "));
     }
 
+    /// Legs that overlap at rest (thick's thighs) are swung apart for meshing until they clear,
+    /// and come back to rest with the mesh; legs already apart (the biped's) stay put.
+    #[test]
+    fn overlapping_legs_mesh_apart() {
+        let spread_of = |ron: &str| {
+            let plan: BodyPlan = ron::from_str(ron).unwrap();
+            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let opts = |spread| BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread };
+            let (rest, meshing) = (BodyField::new(&anatomy, &opts(false)), BodyField::new(&anatomy, &opts(true)));
+            let hip = anatomy.legs[0].chain[0].index();
+            let foot = anatomy.legs[0].foot.index();
+            let moved = meshing.bone_model[foot].translation.distance(rest.bone_model[foot].translation);
+            (rest.legs_apart(&anatomy, LEG_GAP), meshing.legs_apart(&anatomy, LEG_GAP), moved, meshing.unbind[hip])
+        };
+        let (rest, meshing, moved, _) = spread_of(include_str!("../../assets/mobs/biped.body.ron"));
+        assert!(rest && meshing && moved < 1e-5, "biped: apart {rest}/{meshing}, foot moved {moved}");
+        let (rest, meshing, moved, unbind) = spread_of(include_str!("../../assets/mobs/thick.body.ron"));
+        assert!(!rest && meshing && moved > 0.02, "thick: apart {rest}/{meshing}, foot moved {moved}");
+        assert!(!unbind.abs_diff_eq(Affine3A::IDENTITY, 1e-4), "the mesh is skinned back to rest");
+    }
 }
