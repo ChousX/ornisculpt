@@ -295,12 +295,22 @@ pub fn apply_stamps(
 // Default tables
 // ---------------------------------------------------------------------------------------------
 
+/// A plain raised (or sunk) stamp: no hang, default soft tissue.
+fn raised(at: StampAt, kind: StampKind, size: Vec3, depth: f32, mirror: bool) -> Stamp {
+    Stamp { at, kind, size, depth, mirror, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
+}
+
 fn surf(t: f32, around_deg: f32, kind: StampKind, size: [f32; 3], depth: f32, mirror: bool) -> Stamp {
-    Stamp { at: StampAt::Surface { t, around_deg }, kind, size: Vec3::from(size), depth, mirror, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
+    raised(StampAt::Surface { t, around_deg }, kind, Vec3::from(size), depth, mirror)
 }
 
 fn skull(dir: [f32; 3], kind: StampKind, size: [f32; 3], depth: f32) -> Stamp {
-    Stamp { at: StampAt::Skull { dir: Vec3::from(dir) }, kind, size: Vec3::from(size), depth, mirror: true, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
+    raised(StampAt::Skull { dir: Vec3::from(dir) }, kind, Vec3::from(size), depth, true)
+}
+
+/// A mirrored stamp at an attach slot, `offset` from it.
+fn slot(slot: AttachSlot, offset: Vec3, kind: StampKind, size: Vec3, depth: f32) -> Stamp {
+    raised(StampAt::Slot { slot, offset }, kind, size, depth, true)
 }
 
 /// The built-in stamp table for a part.
@@ -370,26 +380,8 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
             skull([0.85, 0.45, 0.10], K::Landmark, [0.30, 0.50, 0.25], 0.08),  // cheekbone
             skull([0.80, 0.10, 0.55], K::Muscle, [0.35, 0.50, 0.30], 0.10),    // jaw muscle
             skull([0.80, 0.20, -0.45], K::Hollow, [0.35, 0.40, 0.30], 0.06),   // temple
-            Stamp {
-                at: StampAt::Skull { dir: Vec3::new(0.0, -0.2, -1.0) },
-                kind: K::Landmark,
-                size: Vec3::new(0.15, 0.70, 0.15),
-                depth: 0.05,
-                mirror: false,
-                form: StampForm::Raise,
-                hang: 0.0,
-                soft: SoftTune::default(),
-            }, // crown ridge
-            Stamp {
-                at: StampAt::Slot { slot: AttachSlot::Eye, offset: Vec3::ZERO },
-                kind: K::Hollow,
-                size: Vec3::splat(0.45),
-                depth: 0.12,
-                mirror: true,
-                form: StampForm::Raise,
-                hang: 0.0,
-                soft: SoftTune::default(),
-            }, // eye socket
+            raised(StampAt::Skull { dir: Vec3::new(0.0, -0.2, -1.0) }, K::Landmark, Vec3::new(0.15, 0.70, 0.15), 0.05, false), // crown ridge
+            slot(AttachSlot::Eye, Vec3::ZERO, K::Hollow, Vec3::splat(0.45), 0.12), // eye socket
             nostril(h), // nostril
         ],
         PartKind::Digits(_) | PartKind::Mass(_) | PartKind::Hard(_) | PartKind::Sculpt(_) | PartKind::Wing(_) => vec![],
@@ -404,27 +396,9 @@ fn face_stamps() -> Vec<Stamp> {
         skull([0.85, 0.45, 0.25], K::Landmark, [0.25, 0.40, 0.20], 0.05), // cheekbone
         skull([0.85, 0.05, 0.75], K::Muscle, [0.30, 0.35, 0.30], 0.06),   // jaw muscle
         skull([0.85, 0.30, -0.45], K::Hollow, [0.30, 0.35, 0.30], 0.03),  // temple
-        Stamp {
-            at: StampAt::Slot { slot: AttachSlot::Eye, offset: Vec3::ZERO },
-            kind: K::Hollow,
-            // Almond opening: (across, up-down, depth into the head) in skull radii.
-            size: Vec3::new(0.16, 0.08, 0.2),
-            depth: 0.05,
-            mirror: true,
-            form: StampForm::Raise,
-            hang: 0.0,
-            soft: SoftTune::default(),
-        }, // eye socket
-        Stamp {
-            at: StampAt::Slot { slot: AttachSlot::Nose, offset: Vec3::new(0.12, -0.1, 0.1) },
-            kind: K::Hollow,
-            size: Vec3::new(0.06, 0.08, 0.05),
-            depth: 0.04,
-            mirror: true,
-            form: StampForm::Raise,
-            hang: 0.0,
-            soft: SoftTune::default(),
-        }, // nostril
+        // Eye socket, an almond opening: (across, up-down, depth into the head) in skull radii.
+        slot(AttachSlot::Eye, Vec3::ZERO, K::Hollow, Vec3::new(0.16, 0.08, 0.2), 0.05),
+        slot(AttachSlot::Nose, Vec3::new(0.12, -0.1, 0.1), K::Hollow, Vec3::new(0.06, 0.08, 0.05), 0.04), // nostril
     ]
 }
 
@@ -459,5 +433,5 @@ fn nostril(h: &HeadParams) -> Stamp {
     } else {
         (Vec3::new(0.25, -0.1, 0.0), Vec3::new(0.12, 0.15, 0.12))
     };
-    Stamp { at: StampAt::Slot { slot: AttachSlot::Nose, offset }, kind: StampKind::Hollow, size, depth: 0.06, mirror: true, form: StampForm::Raise, hang: 0.0, soft: SoftTune::default() }
+    slot(AttachSlot::Nose, offset, StampKind::Hollow, size, 0.06)
 }
