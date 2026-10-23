@@ -161,14 +161,13 @@ pub enum SurfaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
 
     /// The hero mesh and its centres of rotation are the same whatever the worker thread count
     /// (the app caps it while several bodies generate; coat geometry is placed on the vertices).
     #[test]
     fn meshing_is_independent_of_thread_count() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/bird.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/bird.body.ron"));
         let settings = SurfaceSettings::default();
         let mesh = |threads: usize| {
             set_worker_threads(threads);
@@ -185,8 +184,7 @@ mod tests {
 
     #[test]
     fn quadruped_meshes_at_far_level() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
         let data = mesh_lod(&SurfaceNets, &ProceduralHardParts, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 1)
             .expect("mesh");

@@ -241,15 +241,14 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
     use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, ProceduralHardParts, SurfaceSettings, mesh_lod};
 
     /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
     /// vertex (on the near-tier quadruped: small enough to brute-force).
     #[test]
     fn grouped_centres_match_brute_force() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
         let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
         let fast = centres_of_rotation(&mesh);
@@ -292,9 +291,7 @@ mod tests {
     /// computing them stays quick.
     #[test]
     fn centres_lie_inside_the_body() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let settings = SurfaceSettings::default();
         let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let t = std::time::Instant::now();

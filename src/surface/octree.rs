@@ -547,14 +547,12 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
     use crate::num::Idx;
     use crate::surface::{BodyFieldOptions, SurfaceNets};
 
     fn field(src: &str) -> BodyField {
-        let plan: BodyPlan = ron::from_str(src).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(src);
         BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true })
     }
 

@@ -155,13 +155,14 @@ mod tests {
     use std::f32::consts::PI;
 
     use super::*;
-    use crate::motion::testing::{edited_body, sample_body};
+    use crate::anatomy::build_src;
+    use crate::motion::testing::edited_body;
 
     #[test]
     fn big_bodies_are_heavier_and_carry_weight_forward() {
-        let dog = Heft::of(&sample_body(include_str!("../../assets/mobs/quadruped.body.ron")));
-        let horse = Heft::of(&sample_body(include_str!("../../assets/mobs/horse.body.ron")));
-        let human = Heft::of(&sample_body(include_str!("../../assets/mobs/biped.body.ron")));
+        let dog = Heft::of(&build_src(include_str!("../../assets/mobs/quadruped.body.ron")));
+        let horse = Heft::of(&build_src(include_str!("../../assets/mobs/horse.body.ron")));
+        let human = Heft::of(&build_src(include_str!("../../assets/mobs/biped.body.ron")));
         println!("dog {dog:?}\nhorse {horse:?}\nhuman {human:?}");
         assert!((0.8..1.25).contains(&dog.heaviness) && (0.8..1.25).contains(&human.heaviness));
         assert!(horse.heaviness > 1.6, "a horse should feel heavy: {}", horse.heaviness);
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn density_scales_a_part() {
         let src = include_str!("../../assets/mobs/quadruped.body.ron");
-        let plain = sample_body(src);
+        let plain = build_src(src);
         let dense = edited_body(src, |p| p.root.density = 2.0);
         // Only the root part (the torso) doubles.
         assert!(dense.mass.total > plain.mass.total * 1.2 && dense.mass.total < plain.mass.total * 2.0);

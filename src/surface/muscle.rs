@@ -186,13 +186,11 @@ fn mesh_joint(skeleton: &Skeleton, level: LodLevel, bone: BoneId, joint: BoneId)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::surface::{AdaptiveContour, ProceduralHardParts, SurfaceSettings, mesh_lod};
 
     fn quadruped() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        build_src(include_str!("../../assets/mobs/quadruped.body.ron"))
     }
 
     #[test]

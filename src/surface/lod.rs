@@ -203,7 +203,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 #[cfg(test)]
 mod stage_probe {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::surface::{AdaptiveContour, ProceduralHardParts};
 
     /// Where `mesh_lod`'s time goes, per level and stage.
@@ -212,8 +212,7 @@ mod stage_probe {
     fn mesh_lod_stage_times() {
         for body in ["biped", "horse"] {
             let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
-            let plan: BodyPlan = ron::from_str(&text).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(&text);
             let settings = SurfaceSettings::default();
             for level in LodLevel::ALL {
                 let spec = settings.get(level);

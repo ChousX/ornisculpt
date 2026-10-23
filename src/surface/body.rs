@@ -660,15 +660,13 @@ impl ChunkView<'_> {
 #[cfg(test)]
 mod spread_tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
 
     /// A vertex fully weighted to the hand, placed where the hand is in the spread pose, lands
     /// where the hand is at rest.
     #[test]
     fn unbind_returns_vertices_to_rest() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
         let arm = a.parts.iter().find(|p| p.role == Some(crate::anatomy::LimbRole::Manipulator)).unwrap();
         let hand = usize::from(arm.bones.end - 1);
@@ -684,7 +682,7 @@ mod spread_tests {
 #[cfg(test)]
 mod limb_tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LimbRole, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LimbRole, build_src};
 
     /// Between the thighs, from the crotch to the knees, the field is the nearer thigh's (with the
     /// body it blends into), never a blend of the two: thighs touch, they don't web together.
@@ -696,8 +694,7 @@ mod limb_tests {
             ("curvy", include_str!("../../assets/mobs/curvy.body.ron")),
             ("thick", include_str!("../../assets/mobs/thick.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(ron);
             let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
             let rest = anatomy.skeleton.model_rest();
             let legs: Vec<usize> = (0..anatomy.parts.len()).filter(|&i| anatomy.parts[i].role == Some(LimbRole::Locomotor)).collect();
@@ -730,8 +727,7 @@ mod limb_tests {
     #[test]
     fn overlapping_legs_mesh_apart() {
         let spread_of = |ron: &str| {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(ron);
             let opts = |spread| BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread };
             let (rest, meshing) = (BodyField::new(&anatomy, &opts(false)), BodyField::new(&anatomy, &opts(true)));
             let hip = anatomy.legs[0].chain[0].index();

@@ -260,7 +260,7 @@ impl Plugin for CoatPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LimbRole, LodLevel, PartAssets, PartLodRules, RegionKind, apply_form, build_anatomy};
+    use crate::anatomy::{LimbRole, LodLevel, RegionKind, build_src};
     use crate::num::Idx;
     use crate::surface::{AdaptiveContour, BodyMeshData, ProceduralHardParts, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
 
@@ -307,9 +307,7 @@ mod tests {
             ("horse", include_str!("../../assets/mobs/horse.body.ron")),
             ("dragon", include_str!("../../assets/mobs/dragon.body.ron")),
         ] {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            let live = apply_form(&plan, &Form::default()).unwrap();
-            let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let anatomy = build_src(src);
 
             let m = coat.coverage(&anatomy);
             assert!(m.scales.0 != 0 && m.fur.0 != 0 && m.feathers.0 != 0, "{name}: a covering lost its regions: {m:?}");
@@ -356,9 +354,7 @@ mod tests {
 
     #[test]
     fn later_coverings_take_regions() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let coat = Coat {
             coverings: vec![
                 Covering { regions: RegionSelector::All, kind: CoveringKind::Fur(Fur::default()) },

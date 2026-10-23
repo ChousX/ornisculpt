@@ -680,13 +680,14 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::motion::testing::{sample_body, walk};
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// Walks a biped and reports the largest frame-to-frame knee jump, relative to the typical
     /// one. A snapping knee (bend flipping or a straightened leg popping back) shows as a spike.
     #[test]
     fn knees_move_smoothly() {
-        let a = sample_body(include_str!("../../assets/mobs/biped.body.ron"));
+        let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let mut knees: Vec<(f32, Vec3, f32, bool)> = Vec::new();
         let mut extra: Vec<(Vec3, Vec3)> = Vec::new();
         walk(&a, &[0.6, 1.2], 240, |sim, local, root, _| {
@@ -716,7 +717,8 @@ mod tests {
 #[cfg(test)]
 mod all_plans {
     use super::*;
-    use crate::motion::testing::{sample_body, walk};
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// Largest frame-to-frame step of any leg's first joint, over its median, while walking at
     /// two speeds. A snapping joint shows as a spike far above the median.
@@ -748,7 +750,7 @@ mod all_plans {
             ("horse", include_str!("../../assets/mobs/horse.body.ron")),
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
         ] {
-            let a = sample_body(src);
+            let a = build_src(src);
             let (worst, median) = worst_joint_step(&a);
             println!("{name}: worst {worst:.4} median {median:.4} ratio {:.1}", worst / median);
             assert!(worst < f32::mul_add(median, 8.0, 0.01), "{name}: a leg joint snaps ({worst} vs median {median})");
@@ -759,7 +761,8 @@ mod all_plans {
 #[cfg(test)]
 mod torso {
     use super::*;
-    use crate::motion::testing::{sample_body, walk};
+    use crate::anatomy::build_src;
+    use crate::motion::testing::walk;
 
     /// World yaw and roll (degrees) of a bone, relative to its rest.
     fn yaw_roll(world: &Affine3A, rest: &Affine3A) -> (f32, f32) {
@@ -771,7 +774,7 @@ mod torso {
     /// Walks a body and returns the yaw/roll ranges (peak to peak) of hips, chest and head, and
     /// how the hips' yaw follows the hind left foot (negative = turns away from a forward foot).
     fn walk_ranges(src: &str) -> [(f32, f32); 3] {
-        let a = sample_body(src);
+        let a = build_src(src);
         let rest = a.skeleton.rest_model();
         let head = a.skeleton.find("skull").unwrap_or_else(|| *a.spine.last().unwrap());
         let watch = [a.spine[0], *a.spine.last().unwrap(), head];
@@ -809,10 +812,10 @@ mod torso {
 #[cfg(test)]
 mod shoulders {
     use super::*;
-    use crate::motion::testing::sample_body;
+    use crate::anatomy::build_src;
 
     fn human() -> Anatomy {
-        sample_body(include_str!("../../assets/mobs/biped.body.ron"))
+        build_src(include_str!("../../assets/mobs/biped.body.ron"))
     }
 
     /// The arm's direction and its shoulder's height (world), after raising it by `degrees` and
@@ -860,8 +863,8 @@ mod shoulders {
 #[cfg(test)]
 mod joint_limits {
     use super::*;
-    use crate::anatomy::JointLimit;
-    use crate::motion::testing::{sample_body, walk};
+    use crate::anatomy::{JointLimit, build_src};
+    use crate::motion::testing::walk;
 
     /// A hinge's name, the flexion range it went through, and its limits.
     type Seen = (String, (f32, f32), (f32, f32));
@@ -869,7 +872,7 @@ mod joint_limits {
     /// Walks and runs a body and returns each declared hinge's flexion range over every frame,
     /// with its limits.
     fn hinge_ranges(src: &str) -> Vec<Seen> {
-        let body = sample_body(src);
+        let body = build_src(src);
         let hinges: Vec<_> = body
             .joint_limits
             .iter()

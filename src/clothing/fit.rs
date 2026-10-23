@@ -425,7 +425,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
 
     fn tube() -> TriMesh {
         let (rows, cols) = (8u32, 16u32);
@@ -447,9 +447,7 @@ mod tests {
     }
 
     pub(super) fn biped() -> Anatomy {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        build_src(include_str!("../../assets/mobs/biped.body.ron"))
     }
 
     #[test]

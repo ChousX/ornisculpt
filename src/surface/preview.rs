@@ -568,7 +568,7 @@ fn hull(surface: &[bool], dims: UVec3, min: Vec3, cell: f32) -> Vec<([Vec3; 4], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{LodLevel, build_src};
     use crate::surface::{BodyFieldOptions, Field};
 
     /// Each packed cell lists the primitives that come within the list pad of it, in field order:
@@ -578,8 +578,7 @@ mod tests {
     /// the cell.)
     #[test]
     fn cell_lists_reproduce_the_field() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/quadruped.body.ron")).unwrap();
-        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
         let packed = field.preview(&anatomy, |_| false);
         let header = packed.words[0].map(f32::to_bits);
@@ -620,13 +619,9 @@ mod tests {
     /// keys of the bricks around it only, and changing the selection (the highlight) changes none.
     #[test]
     fn brick_keys_follow_local_edits() {
-        let build = |src: &str| {
-            let plan: BodyPlan = ron::from_str(src).unwrap();
-            build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap()
-        };
         let opts = BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false };
         let src = include_str!("../../assets/mobs/quadruped.body.ron");
-        let anatomy = build(src);
+        let anatomy = build_src(src);
         let field = BodyField::new(&anatomy, &opts);
         let plain = field.preview(&anatomy, |_| false);
         let keys = |f: &PreviewField| f.bricks.iter().map(|b| b.key).collect::<std::collections::HashSet<u64>>();
@@ -638,7 +633,7 @@ mod tests {
         assert_ne!(plain.words, lit.words, "but not the words");
 
         // Larger ears: a few bricks around the ears change, the rest keep their keys.
-        let ears = build(&src.replacen("length: 0.08,", "length: 0.09,", 1));
+        let ears = build_src(&src.replacen("length: 0.08,", "length: 0.09,", 1));
         let edited = BodyField::new(&ears, &opts).preview(&ears, |_| false);
         let before = keys(&plain);
         let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();
@@ -647,7 +642,7 @@ mod tests {
 
         // Longer front legs lift the whole body (grounding), but the bricks are keyed before it:
         // the legs' bricks change, the rest keep their keys.
-        let legs = build(&src.replacen("length: 0.42,", "length: 0.45,", 1));
+        let legs = build_src(&src.replacen("length: 0.42,", "length: 0.45,", 1));
         assert!((legs.ground - anatomy.ground).abs() > 1e-3, "the edit regrounds the body");
         let edited = BodyField::new(&legs, &opts).preview(&legs, |_| false);
         let changed = edited.bricks.iter().filter(|b| !before.contains(&b.key)).count();

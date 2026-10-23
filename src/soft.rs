@@ -447,18 +447,12 @@ pub fn crowd_matrices(anatomy: &Anatomy, regions: &[SoftRegion], root: Affine3A,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::motion::{BAKE_FRAMES, Gait, bake_motion};
     use crate::surface::{AdaptiveContour, MaterialSlot, ProceduralHardParts, SurfaceSettings, mesh_lod};
 
-    fn body(ron: &str) -> Anatomy {
-        let plan: BodyPlan = ron::from_str(ron).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
-
     fn quadruped() -> Anatomy {
-        body(include_str!("../assets/mobs/quadruped.body.ron"))
+        build_src(include_str!("../assets/mobs/quadruped.body.ron"))
     }
 
     #[test]
@@ -469,7 +463,7 @@ mod tests {
             ("dragon", include_str!("../assets/mobs/dragon.body.ron")),
             ("thick", include_str!("../assets/mobs/thick.body.ron")),
         ] {
-            let a = body(ron);
+            let a = build_src(ron);
             let t = SoftTissue::of(&a);
             assert!(t.hero.iter().any(|r| r.kind == SoftKind::Fat), "{name}: no fat");
             assert!(t.hero.iter().any(|r| r.kind == SoftKind::Muscle), "{name}: no muscle");
@@ -484,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_drop_swings_its_bulb_and_holds_its_top() {
-        let a = body(include_str!("../assets/mobs/thick.body.ron"));
+        let a = build_src(include_str!("../assets/mobs/thick.body.ron"));
         let t = SoftTissue::of(&a);
         let drop = t.hero.iter().find(|r| r.shape == RegionShape::Drop).expect("the thick plan has drops");
         // Points on the drop's own outside (shape units: the footprint is SPREAD times larger).
@@ -659,7 +653,7 @@ mod tests {
 #[cfg(test)]
 mod amplitude {
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::build_src;
     use crate::motion::{Gait, bake_motion};
 
     /// How far tissue moves over a baked walk and run (prints; for tuning).
@@ -667,8 +661,7 @@ mod amplitude {
     #[ignore = "prints tuning numbers"]
     fn walk_amplitudes() {
         for (name, ron) in [("quadruped", include_str!("../assets/mobs/quadruped.body.ron")), ("biped", include_str!("../assets/mobs/biped.body.ron")), ("curvy", include_str!("../assets/mobs/curvy.body.ron")), ("thick", include_str!("../assets/mobs/thick.body.ron"))] {
-            let plan: BodyPlan = ron::from_str(ron).unwrap();
-            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let a = build_src(ron);
             let t = SoftTissue::of(&a);
             let m = bake_motion(&a, &Gait::for_legs(a.legs.len()));
             let bones = a.skeleton.crowd.bones.len();

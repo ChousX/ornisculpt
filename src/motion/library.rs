@@ -217,7 +217,7 @@ pub fn standard() -> MotionGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::motion::testing::sample_body;
+    use crate::anatomy::build_src;
     use crate::motion::{BodyFamily, BodyTraits, compose};
 
     #[test]
@@ -241,7 +241,7 @@ mod tests {
             ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron"), BodyFamily::Hexapod),
             ("bird", include_str!("../../assets/mobs/bird.body.ron"), BodyFamily::Biped),
         ] {
-            let a = sample_body(src);
+            let a = build_src(src);
             let traits = BodyTraits::of(&a);
             assert_eq!(traits.family, family, "{name}: {traits:?}");
             let fitting: Vec<&str> = gaits.iter().filter(|g| g.fits.check(&traits).is_empty()).map(|g| g.name.as_str()).collect();

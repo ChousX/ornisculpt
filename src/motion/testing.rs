@@ -8,11 +8,6 @@ use super::stages::{Frame, Sim, leg_length};
 use crate::anatomy::{Anatomy, BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
 use crate::num::ToF32;
 
-/// The body a `*.body.ron` source builds.
-pub fn sample_body(src: &str) -> Anatomy {
-    edited_body(src, |_| {})
-}
-
 /// The body a `*.body.ron` source builds after `edit` changes its plan.
 pub fn edited_body(src: &str, edit: impl FnOnce(&mut BodyPlan)) -> Anatomy {
     let mut plan: BodyPlan = ron::from_str(src).unwrap();
