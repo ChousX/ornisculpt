@@ -109,7 +109,7 @@ impl Gait {
                 mode("run", 2.5, PhasePattern::Alternate, 0.4, 1.8, 0.2, 0.05, BodyMotion::run()),
             ],
             3..=4 => vec![
-                mode("walk", 0.0, PhasePattern::LateralSequence, 0.65, 1.0, 0.15, 0.025, BodyMotion::walk()),
+                mode("walk", 0.0, PhasePattern::LateralSequence, 0.65, 1.0, 0.15, 0.025, BodyMotion::amble()),
                 mode("trot", 2.0, PhasePattern::Diagonal, 0.5, 1.5, 0.2, 0.04, BodyMotion::trot()),
             ],
             5..=6 => vec![mode("tripod", 0.0, PhasePattern::Tripod, 0.55, 0.9, 0.2, 0.01, BodyMotion::rigid())],
@@ -201,6 +201,14 @@ impl BodyMotion {
     #[must_use]
     pub const fn run() -> Self {
         Self { yaw: 10.0, roll: 3.0, sway: 0.012, rock: 0.03, counter: 0.9, steady: 0.7, nod: 3.0, tail: 0.6 }
+    }
+
+    /// Four-legged walks: hips and shoulders each turn a little toward their forward leg, a
+    /// quarter cycle apart, so the back flexes gently between them. Kept subtle: big twist and
+    /// sway belong to fast gaits and hard turns.
+    #[must_use]
+    pub const fn amble() -> Self {
+        Self { yaw: 5.0, roll: 3.5, sway: 0.02, rock: 0.025, counter: 0.0, steady: 0.5, nod: 5.0, tail: 1.0 }
     }
 
     /// Diagonal pairs move together, so the back stays stiff and the hips and shoulders roll.

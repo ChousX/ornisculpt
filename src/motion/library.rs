@@ -54,7 +54,7 @@ pub fn gaits() -> Vec<Cycle> {
             .track(T::Neck, C::Pitch, Curve::Constant(-12.0))
             .with(Track::new(T::Tail, C::Pitch, Curve::wave(4.0)).lag(0.3)),
         // Dogs, horses, bears, dragons.
-        Cycle::gait("quadruped.walk", 0.0, 1.6, 1.0, plan(PhasePattern::LateralSequence, 0.65, 0.15, 0.025, BodyMotion::walk()))
+        Cycle::gait("quadruped.walk", 0.0, 1.6, 1.0, plan(PhasePattern::LateralSequence, 0.65, 0.15, 0.025, BodyMotion::amble()))
             .fits(quad())
             .track(T::Neck, C::Pitch, Curve::wave(4.0).harmonic(2, 0.5))
             .with(Track::new(T::Tail, C::Yaw, Curve::wave(8.0)).lag(0.3))

@@ -26,8 +26,12 @@ pub struct StepShape {
     pub reach: Curve,
     /// Foot in the air: its side of the girdle drops.
     pub raise: Curve,
-    /// Weight on the foot: the hips shift over it, the girdle vaults over it.
+    /// Weight on the foot: the hips shift over it.
     pub load: Curve,
+    /// Height of the girdle over the planted foot (`-1` at touchdown and lift-off, `+1` at
+    /// mid-stance), weighted by the foot's load: a pair rises and falls twice a cycle, which the
+    /// two feet's mean load (one foot down as the other lifts) never shows.
+    pub vault: Curve,
     /// How lively the torso is by speed (leg lengths per second → `0..1`).
     pub lively: Curve,
 }
@@ -40,6 +44,7 @@ impl Default for StepShape {
             reach: Curve::wave(1.0).phase(0.25),
             raise: Curve::bump(1.0, 0.5, 1.0),
             load: Curve::bump(1.0, 0.0, 0.5),
+            vault: Curve::keys([(0.0, -1.0), (0.25, 1.0), (0.5, -1.0), (0.75, 1.0), (1.0, -1.0)]),
             lively: Curve::keys([(0.0, 0.0), (0.4, 1.0)]),
         }
     }
