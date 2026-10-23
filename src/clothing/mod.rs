@@ -25,10 +25,8 @@ mod fit;
 
 pub use fit::{fit_outfit, garment_lods};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// Garments a mob wears, baked into its body.
 #[derive(Asset, Reflect, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -135,33 +133,13 @@ pub const MAX_GARMENTS: usize = 8;
 #[derive(Component, Clone, Debug)]
 pub struct MobOutfit(pub Handle<Outfit>);
 
+impl crate::ron_loader::RonAsset for Outfit {
+    const EXTENSIONS: &'static [&'static str] = &["outfit.ron"];
+}
+
 /// Loads `*.outfit.ron`.
-#[derive(Default, TypePath)]
-pub struct OutfitLoader;
-
-#[derive(Debug, Error)]
-pub enum OutfitLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for OutfitLoader {
-    type Asset = Outfit;
-    type Settings = ();
-    type Error = OutfitLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Outfit, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["outfit.ron"]
-    }
-}
+pub type OutfitLoader = crate::ron_loader::RonLoader<Outfit>;
+pub type OutfitLoaderError = crate::ron_loader::RonLoaderError;
 
 pub struct ClothingPlugin;
 

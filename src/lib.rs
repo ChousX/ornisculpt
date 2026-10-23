@@ -12,6 +12,7 @@ pub mod mob;
 pub mod motion;
 pub mod num;
 pub mod random;
+pub mod ron_loader;
 #[cfg(feature = "soft-tissue")]
 pub mod soft;
 pub mod surface;

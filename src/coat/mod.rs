@@ -16,11 +16,9 @@ mod material;
 pub use geometry::{CoatMeshes, annotate, build_coat_meshes, feather_cards, fur_shells};
 pub use material::{COAT_FRAGMENT, COAT_VERTEX, CoatExt, CoatKey, CoatLayer, MobMaterial};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::anatomy::{Anatomy, RegionMask, RegionSelector};
 
@@ -236,33 +234,13 @@ impl Coat {
     }
 }
 
+impl crate::ron_loader::RonAsset for Coat {
+    const EXTENSIONS: &'static [&'static str] = &["coat.ron"];
+}
+
 /// Loads `*.coat.ron`.
-#[derive(Default, TypePath)]
-pub struct CoatLoader;
-
-#[derive(Debug, Error)]
-pub enum CoatLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for CoatLoader {
-    type Asset = Coat;
-    type Settings = ();
-    type Error = CoatLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Coat, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["coat.ron"]
-    }
-}
+pub type CoatLoader = crate::ron_loader::RonLoader<Coat>;
+pub type CoatLoaderError = crate::ron_loader::RonLoaderError;
 
 pub struct CoatPlugin;
 

@@ -1,7 +1,5 @@
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use super::heft::{HeftResponse, StepShape};
 use crate::anatomy::{LegInfo, Side};
@@ -153,33 +151,13 @@ impl PhasePattern {
     }
 }
 
+impl crate::ron_loader::RonAsset for Gait {
+    const EXTENSIONS: &'static [&'static str] = &["gait.ron"];
+}
+
 /// Loads `*.gait.ron`.
-#[derive(Default, TypePath)]
-pub struct GaitLoader;
-
-#[derive(Debug, Error)]
-pub enum GaitLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for GaitLoader {
-    type Asset = Gait;
-    type Settings = ();
-    type Error = GaitLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Gait, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["gait.ron"]
-    }
-}
+pub type GaitLoader = crate::ron_loader::RonLoader<Gait>;
+pub type GaitLoaderError = crate::ron_loader::RonLoaderError;
 
 /// How the torso rides the feet.
 ///
