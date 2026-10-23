@@ -100,7 +100,7 @@ pub enum AnatomyError {
 #[cfg(test)]
 pub(crate) fn build_src(src: &str) -> Anatomy {
     let plan: BodyPlan = ron::from_str(src).unwrap();
-    build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap()
+    Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()).unwrap()
 }
 
 #[cfg(test)]
@@ -278,7 +278,7 @@ mod tests {
                 f(l.joints.as_mut().unwrap());
             }
         });
-        build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default())
+        Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default())
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
                 }
             });
             // Plans with authored meshes (the beast's crest) need assets loaded to build.
-            let a = match build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()) {
+            let a = match Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()) {
                 Ok(a) => a,
                 Err(AnatomyError::MissingAsset { .. }) => continue,
                 Err(e) => panic!("{name}: {e}"),

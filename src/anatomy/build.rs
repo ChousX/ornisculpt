@@ -118,6 +118,18 @@ impl Anatomy {
     }
 }
 
+impl Anatomy {
+    /// `plan` in its default form, built: [`apply_form`](super::apply_form) with [`Form::default`],
+    /// then [`build_anatomy`].
+    ///
+    /// # Errors
+    ///
+    /// When the default form doesn't apply ([`AnatomyError::Form`]) or the plan can't be built.
+    pub fn from_plan(plan: &BodyPlan, lod_rules: &PartLodRules, assets: &PartAssets) -> Result<Self, AnatomyError> {
+        build_anatomy(&super::apply_form(plan, &super::Form::default())?, lod_rules, assets)
+    }
+}
+
 /// Expanded, form-applied plan (see [`apply_form`](super::apply_form)) → `Anatomy`.
 ///
 /// Pure function of its inputs: no RNG, no seed. Randomness (skin noise, coat variation) belongs

@@ -5,7 +5,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
-use ornisculpt::anatomy::{Anatomy, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, apply_form, build_anatomy};
+use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules};
 use ornisculpt::mob::{MobTier, QualityProfile};
 
 pub mod crowd;
@@ -164,6 +164,5 @@ pub fn tier_counts(tiers: &Query<&MobTier>) -> [usize; 3] {
 
 /// The anatomy of `plan` in its default form.
 pub fn build_plan(plan: &BodyPlan, rules: PartLodRules, assets: &PartAssets) -> Result<Anatomy, String> {
-    let live = apply_form(plan, &Form::default()).map_err(|e| e.to_string())?;
-    build_anatomy(&live, &rules, assets).map_err(|e| e.to_string())
+    Anatomy::from_plan(plan, &rules, assets).map_err(|e| e.to_string())
 }
