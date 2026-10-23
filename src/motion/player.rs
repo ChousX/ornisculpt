@@ -175,6 +175,10 @@ pub struct RootMotionDelta {
 }
 
 /// A foot touched down (hero tier).
+///
+/// Triggered once the mob's whole pose for the frame is done, before it is written to the
+/// joints: observers run after every pose stage (leg IK, look-at, ...), not straight after the
+/// feet plant.
 #[derive(EntityEvent, Clone, Debug)]
 pub struct Footstep {
     pub entity: Entity,
