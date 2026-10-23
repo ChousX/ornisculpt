@@ -2,7 +2,7 @@ use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 use smallvec::SmallVec;
 
-use crate::num::{Clamp, Idx};
+use crate::num::{Clamp, Idx, min_axis_scale};
 
 use super::{
     Anatomy, AnatomyError, AttachSlot, BoneDef, BoneId, BuiltPart, ClothFollow, HardParams,
@@ -449,7 +449,7 @@ impl AnatomyBuilder {
         let mut raised = 0.0;
         for prim in &self.anatomy.primitives {
             let model = self.bone_model(prim.bone).compute_affine() * prim.local.compute_affine();
-            let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let scale = min_axis_scale(&model);
             let local = model.inverse().transform_point3a(at);
             match prim.op {
                 PrimOp::Union => {

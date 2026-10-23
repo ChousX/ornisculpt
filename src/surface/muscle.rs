@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use super::body::primitive_parts;
 use super::{BodyMeshData, MaterialSlot, MuscleFlex};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, PrimOp, PrimShape, Skeleton};
-use crate::num::{Idx, smoothstep};
+use crate::num::{Idx, min_axis_scale, smoothstep};
 
 /// Outward push per unit of contraction, as a multiple of the muscle's rest height (plus a share of
 /// its thickness, so that flat limb muscles still read when they flex).
@@ -145,7 +145,7 @@ fn bellies(anatomy: &Anatomy, level: LodLevel) -> Vec<Belly> {
                 return None;
             }
             let model = *rest.get(p.bone.index())? * p.local.compute_affine();
-            let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let scale = min_axis_scale(&model);
             let centre = Vec3::from(model.translation);
             let normal = Vec3::from(model.matrix3.z_axis).normalize_or_zero();
             // The joint spanned: the child bone whose head is nearest the belly.

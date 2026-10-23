@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
-use crate::num::{Idx, Saturate, ToF32};
+use crate::num::{Idx, Saturate, ToF32, min_axis_scale};
 use crate::anatomy::{Anatomy, BoneId, BuiltPart, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 
@@ -290,7 +290,7 @@ impl BodyField {
             }
             let Some(bone) = model.get(p.bone.index()) else { continue };
             let m = *bone * p.local.compute_affine();
-            let min_scale = (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+            let min_scale = min_axis_scale(&m);
             let aabb = transform_aabb(&m, local_bounds(&p.shape)).grow(Vec3A::splat(p.blend + fold_pad));
             let shape = p.shape.clone();
             prims.push(PreparedPrim {

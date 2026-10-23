@@ -45,7 +45,7 @@ use super::mesh_data::vertex_normals;
 use super::body::{local_bounds, transform_aabb};
 use super::hard::{horn_dims, plate_radii};
 use crate::anatomy::{Anatomy, CrossSection, HardKind, HardPart, PrimOp, PrimShape};
-use crate::num::{Clamp, Idx, ToF32};
+use crate::num::{Clamp, Idx, ToF32, min_axis_scale};
 
 /// Words per primitive.
 pub const PRIM_WORDS: usize = 8;
@@ -209,7 +209,7 @@ fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     };
     Some(Packed {
         to_local: m.inverse(),
-        min_scale: (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min),
+        min_scale: min_axis_scale(&m),
         kind,
         params,
         more: [0.0; 4],

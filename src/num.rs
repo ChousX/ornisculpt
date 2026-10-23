@@ -132,6 +132,12 @@ pub fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     t * t * 2.0f32.mul_add(-t, 3.0)
 }
 
+/// The smallest of `m`'s axis scales: what a local distance shrinks by at most once `m` places it.
+#[must_use]
+pub fn min_axis_scale(m: &bevy::math::Affine3A) -> f32 {
+    (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

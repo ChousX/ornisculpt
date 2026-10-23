@@ -22,7 +22,7 @@ use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 
 use crate::anatomy::{Anatomy, BoneId, CROWD_SLOT, LodLevel, PrimLayer, PrimOp, PrimShape, WATER};
-use crate::num::{Idx, ToF32, smoothstep};
+use crate::num::{Idx, ToF32, min_axis_scale, smoothstep};
 use crate::surface::{BodyMeshData, SoftVertex, primitive_parts};
 
 /// Most regions on a hero body (the heaviest are kept).
@@ -141,7 +141,7 @@ impl SoftTissue {
                 let lod = p.lod.min(anatomy.parts.get(part.idx())?.lod);
                 let bone_model = *rest.get(p.bone.index())?;
                 let model = bone_model * p.local.compute_affine() * Affine3A::from_translation(centre);
-                let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
+                let scale = min_axis_scale(&model);
                 let (r, h) = (*radii * scale, height * scale);
                 let size = (r.x * r.y).sqrt().max(1e-3);
                 let to_bone = bone_model.inverse();
