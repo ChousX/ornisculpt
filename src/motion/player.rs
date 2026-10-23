@@ -83,20 +83,6 @@ impl MotionParams {
         self
     }
 
-    /// Builder form of [`set`](Self::set).
-    #[must_use]
-    pub fn with(mut self, name: &str, value: f32) -> Self {
-        self.set(name, value);
-        self
-    }
-
-    /// Builder form of [`set_bool`](Self::set_bool).
-    #[must_use]
-    pub fn with_bool(mut self, name: &str, value: bool) -> Self {
-        self.set_bool(name, value);
-        self
-    }
-
     #[must_use]
     pub fn float(&self, name: &str) -> Option<f32> {
         self.floats.get(name).copied()
@@ -177,12 +163,6 @@ impl PlayCycle {
     #[must_use]
     pub const fn speed(mut self, speed: f32) -> Self {
         self.speed = speed;
-        self
-    }
-
-    #[must_use]
-    pub const fn without_root_motion(mut self) -> Self {
-        self.root_motion = false;
         self
     }
 }
