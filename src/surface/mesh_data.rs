@@ -246,7 +246,7 @@ impl BodyMeshData {
     }
 
     fn split_meshes(&self, crowd: bool) -> Vec<(MaterialSlot, Mesh)> {
-        use VertexChannel::{Cloth, Coverage, Flow, Muscle, Soft, Uvs};
+        use VertexChannel::{Cloth, Cor, Coverage, Flow, Muscle, Soft, Uvs};
         let mut slots: Vec<MaterialSlot> = self.submeshes.iter().map(|s| s.slot).collect();
         slots.sort();
         slots.dedup();
@@ -267,7 +267,7 @@ impl BodyMeshData {
                             if *r == u32::MAX {
                                 *r = part.positions.len().clamp_u32();
                                 part.push_vertex(v);
-                                part.push_from(self, i, &[Uvs, Coverage, Flow, Cloth, Muscle, Soft]);
+                                part.push_from(self, i, &[Uvs, Coverage, Flow, Cloth, Cor, Muscle, Soft]);
                             }
                             part.indices.push(*r);
                         }

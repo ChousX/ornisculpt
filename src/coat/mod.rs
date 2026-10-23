@@ -329,7 +329,11 @@ mod tests {
                 for k in 0..3 {
                     assert!(lod.coverage.iter().any(|c| c[k] > 0.5), "{name} {level:?}: covering {k} missing from the skin");
                 }
-                let _ = if level == LodLevel::Hero { lod.to_bevy_meshes() } else { lod.to_crowd_meshes() };
+                // Every slot mesh keeps its centres of rotation (else it skins with dual quaternions).
+                let split = if level == LodLevel::Hero { lod.to_bevy_meshes() } else { lod.to_crowd_meshes() };
+                for (slot, mesh) in &split {
+                    assert!(mesh.attribute(crate::surface::ATTRIBUTE_COR).is_some(), "{name} {level:?} {slot:?}: no centres of rotation");
+                }
             }
             let hero = build_coat_meshes(&coat, &anatomy, LodLevel::Hero.pick(&lods), LodLevel::Hero);
             let shells = hero.shells.as_ref().unwrap_or_else(|| panic!("{name}: no fur shells"));
