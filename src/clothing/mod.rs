@@ -117,14 +117,16 @@ impl Outfit {
     /// Palette for the shaders: garment colours (linear) with roughness in w; 8 at most.
     #[must_use]
     pub fn palette(&self) -> [Vec4; MAX_GARMENTS] {
-        let mut out = [Vec4::new(0.5, 0.5, 0.5, 0.85); MAX_GARMENTS];
+        let mut out = DEFAULT_PALETTE;
         for (o, g) in out.iter_mut().zip(&self.garments) {
-            let l = Color::srgb(g.color[0], g.color[1], g.color[2]).to_linear();
-            *o = Vec4::new(l.red, l.green, l.blue, g.roughness);
+            *o = crate::coat::linear(g.color, g.roughness);
         }
         out
     }
 }
+
+/// The palette of an outfit with no garments (and of every non-skin coat uniform).
+pub const DEFAULT_PALETTE: [Vec4; MAX_GARMENTS] = [Vec4::new(0.5, 0.5, 0.5, 0.85); MAX_GARMENTS];
 
 /// Garments per outfit that get their own palette entry (later ones reuse the last colour).
 pub const MAX_GARMENTS: usize = 8;
