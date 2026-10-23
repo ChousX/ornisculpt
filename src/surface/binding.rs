@@ -460,14 +460,14 @@ fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f
 mod tests {
     use crate::anatomy::{LimbRole, LodLevel, build_src};
     use crate::num::Idx;
-    use crate::surface::{ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{SurfaceSettings, mesh_lod};
 
     /// On the human mesh: no hand vertex leans on a leg, no finger on its neighbour, weights sum to 1.
     #[test]
     fn hands_and_fingers_keep_to_themselves() {
         let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let settings = SurfaceSettings::default();
-        let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+        let m = mesh_lod(&crate::surface::AdaptiveContour, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let bones = &a.skeleton.bones;
         let legs: Vec<u16> = a.legs.iter().flat_map(|l| l.chain.iter().map(|b| u16::from(b.0))).collect();
         let arm_parts: Vec<usize> = a.parts.iter().enumerate().filter(|(_, p)| p.role == Some(LimbRole::Manipulator)).map(|(i, _)| i).collect();

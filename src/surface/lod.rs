@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::mesh_data::vertex_normals;
 use super::{
-    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, HardPartGen, MaterialSlot, MeshSettings, Mesher, MobVertexData,
+    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, MaterialSlot, MeshSettings, Mesher, MobVertexData,
     Submesh, SurfaceError, merge,
     remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
 };
@@ -81,9 +81,8 @@ pub const REFERENCE_EXTENT: f32 = 1.8;
 /// # Errors
 ///
 /// When no part is present at `level`, or the mesher fails.
-pub fn mesh_lod<M: Mesher, H: HardPartGen>(
+pub fn mesh_lod<M: Mesher>(
     mesher: &M,
-    hard: &H,
     anatomy: &Anatomy,
     level: LodLevel,
     spec: &LodSpec,
@@ -116,7 +115,7 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
             if anatomy.parts.get(owner.idx()).is_none_or(|p| p.lod < level) {
                 continue;
             }
-            if let Some(m) = hard.generate(part, anatomy, level) {
+            if let Some(m) = super::hard::hard_part_mesh(part, anatomy, level) {
                 merge(&mut data, &m);
             }
         }
@@ -140,16 +139,15 @@ fn hard_part_owners(anatomy: &Anatomy) -> Vec<u16> {
 /// # Errors
 ///
 /// When any level fails (see [`mesh_lod`]).
-pub fn mesh_all_lods<M: Mesher, H: HardPartGen>(
+pub fn mesh_all_lods<M: Mesher>(
     mesher: &M,
-    hard: &H,
     anatomy: &Anatomy,
     settings: &SurfaceSettings,
     seed: u64,
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
     // Near and far on their own threads while hero (most of the work) runs on this one (one after
     // another on the web).
-    let level = |l: LodLevel| mesh_lod(mesher, hard, anatomy, l, settings.get(l), seed);
+    let level = |l: LodLevel| mesh_lod(mesher, anatomy, l, settings.get(l), seed);
     let (hero, near, far) = super::scope(|scope| {
         let near = scope.spawn(|| level(LodLevel::Near));
         let far = scope.spawn(|| level(LodLevel::Far));
@@ -204,7 +202,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 mod stage_probe {
     use super::*;
     use crate::anatomy::build_src;
-    use crate::surface::{AdaptiveContour, ProceduralHardParts};
+    use crate::surface::{AdaptiveContour};
 
     /// Where `mesh_lod`'s time goes, per level and stage.
     #[test]
@@ -247,7 +245,7 @@ mod stage_probe {
                 }
                 lap("simplify", &mut t);
                 let full = std::time::Instant::now();
-                let _ = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, level, spec, 1).unwrap();
+                let _ = mesh_lod(&AdaptiveContour, &anatomy, level, spec, 1).unwrap();
                 println!("| whole mesh_lod {:.0}", full.elapsed().as_secs_f32() * 1000.0);
             }
         }

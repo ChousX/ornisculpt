@@ -262,7 +262,7 @@ mod tests {
     use super::*;
     use crate::anatomy::{LimbRole, LodLevel, RegionKind, build_src};
     use crate::num::Idx;
-    use crate::surface::{AdaptiveContour, BodyMeshData, ProceduralHardParts, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
+    use crate::surface::{AdaptiveContour, BodyMeshData, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
 
     fn kinds(kinds: &[RegionKind]) -> RegionSelector {
         RegionSelector::Or(kinds.iter().map(|k| RegionSelector::Kind(*k)).collect())
@@ -317,7 +317,7 @@ mod tests {
             let u = coat.uniform(&anatomy);
             assert!(u.scales.x > 0.0 && u.fur.x > 0.0 && u.feathers.x > 0.0, "{name}: uniform lost a covering");
 
-            let mut lods = mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &SurfaceSettings::default(), 0).unwrap();
+            let mut lods = mesh_all_lods(&AdaptiveContour, &anatomy, &SurfaceSettings::default(), 0).unwrap();
             for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
                 annotate(lod, &coat, &anatomy, level);
                 lod.cor = centres_of_rotation(lod);

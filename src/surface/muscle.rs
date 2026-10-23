@@ -187,7 +187,7 @@ fn mesh_joint(skeleton: &Skeleton, level: LodLevel, bone: BoneId, joint: BoneId)
 mod tests {
     use super::*;
     use crate::anatomy::build_src;
-    use crate::surface::{AdaptiveContour, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{AdaptiveContour, SurfaceSettings, mesh_lod};
 
     fn quadruped() -> Anatomy {
         build_src(include_str!("../../assets/mobs/quadruped.body.ron"))
@@ -210,7 +210,7 @@ mod tests {
     fn crowd_levels_flex_about_crowd_joints() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Near);
         assert_eq!(flex.len(), mesh.positions.len());
         let crowd = &a.skeleton.crowd.bones;
@@ -223,7 +223,7 @@ mod tests {
         let skin = mesh.skin_vertex_mask();
         assert!(flex.iter().zip(&skin).all(|(f, s)| *s || f.amplitude == 0.0));
         // Far keeps no muscle stamps: its mesh gets no flex at all.
-        let far = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
+        let far = mesh_lod(&AdaptiveContour, &a, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
         assert!(muscle_flex(&far, &a, LodLevel::Far).iter().all(|f| f.amplitude == 0.0));
     }
 
@@ -231,7 +231,7 @@ mod tests {
     fn amplitudes_have_no_spikes() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Hero);
         let peak = flex.iter().map(|f| f.amplitude).fold(0.0, f32::max);
         assert!(peak > 0.0);
@@ -248,7 +248,7 @@ mod tests {
     fn bending_shortens_a_muscle_on_the_inside() {
         let a = quadruped();
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &a, LodLevel::Near, settings.get(LodLevel::Near), 0).unwrap();
         let flex = muscle_flex(&mesh, &a, LodLevel::Hero);
         let flexed = flex.iter().filter(|f| f.amplitude > 0.0).count();
         assert!(flexed > mesh.positions.len() / 50, "{flexed} of {} vertices flex", mesh.positions.len());

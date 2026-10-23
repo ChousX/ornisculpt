@@ -3,7 +3,7 @@
 //! Data flow per LOD level:
 //! `Anatomy` → [`BodyField`] (SDF, parts culled for the level) → [`Mesher`] → [`RawMesh`]
 //! → [`weld`] / [`smooth`] → [`skin_and_attrs`] → [`simplify`] → [`BodyMeshData`] → Bevy `Mesh`.
-//! Hard parts (claws, horns, eyes) are generated separately by a [`HardPartGen`] and merged.
+//! Hard parts (claws, horns, eyes) are generated separately and merged.
 
 mod binding;
 mod body;
@@ -28,7 +28,6 @@ pub(crate) use body::primitive_parts;
 pub use body::{BodyField, BodyFieldOptions, ChunkView};
 pub use combinators::{Displace, Intersect, RegionClip};
 pub use field::{Field, Influences, SurfaceInfo};
-pub use hard::{HardPartGen, ProceduralHardParts};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
@@ -171,7 +170,7 @@ mod tests {
         let settings = SurfaceSettings::default();
         let mesh = |threads: usize| {
             set_worker_threads(threads);
-            let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+            let m = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
             let cor = centres_of_rotation(&m);
             set_worker_threads(0);
             (m, cor)
@@ -186,7 +185,7 @@ mod tests {
     fn quadruped_meshes_at_far_level() {
         let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
-        let data = mesh_lod(&SurfaceNets, &ProceduralHardParts, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 1)
+        let data = mesh_lod(&SurfaceNets, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 1)
             .expect("mesh");
         assert!(data.triangle_count() > 100, "{} triangles", data.triangle_count());
         assert_eq!(data.positions.len(), data.weights.len());

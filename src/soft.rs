@@ -449,7 +449,7 @@ mod tests {
     use super::*;
     use crate::anatomy::build_src;
     use crate::motion::{BAKE_FRAMES, Gait, bake_motion};
-    use crate::surface::{AdaptiveContour, MaterialSlot, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{AdaptiveContour, MaterialSlot, SurfaceSettings, mesh_lod};
 
     fn quadruped() -> Anatomy {
         build_src(include_str!("../assets/mobs/quadruped.body.ron"))
@@ -590,7 +590,7 @@ mod tests {
         let t = SoftTissue::of(&a);
         let settings = SurfaceSettings::default();
         for level in [LodLevel::Hero, LodLevel::Near] {
-            let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, level, settings.get(level), 0).unwrap();
+            let mesh = mesh_lod(&AdaptiveContour, &a, level, settings.get(level), 0).unwrap();
             let w = soft_weights(&mesh, &a, &t, level);
             let first = if level == LodLevel::Hero { a.skeleton.len() } else { a.skeleton.crowd.bones.len() };
             let regions = t.at(level).len();
@@ -616,7 +616,7 @@ mod tests {
         let t = SoftTissue::of(&a);
         let settings = SurfaceSettings::default();
         for level in [LodLevel::Hero, LodLevel::Near] {
-            let mut mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, level, settings.get(level), 0).unwrap();
+            let mut mesh = mesh_lod(&AdaptiveContour, &a, level, settings.get(level), 0).unwrap();
             mesh.soft = soft_weights(&mesh, &a, &t, level);
             let split = if level == LodLevel::Hero { mesh.to_bevy_meshes() } else { mesh.to_crowd_meshes() };
             let skin = split.iter().find(|(slot, _)| *slot == MaterialSlot::Skin).map(|(_, m)| m).unwrap();

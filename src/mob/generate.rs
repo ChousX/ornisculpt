@@ -17,7 +17,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{MobOutfit, Outfit, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, ProceduralHardParts, SurfaceSettings, merge, mesh_all_lods, muscle_flex};
+use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -377,7 +377,7 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
     let (anatomy, cloth) =
         if outfit.garments.is_empty() { (anatomy, None) } else { times.stage("fit_outfit", || fit_outfit(anatomy, &outfit, &assets)) };
     let mut lods = times
-        .stage("mesh", || mesh_all_lods(&AdaptiveContour, &ProceduralHardParts, &anatomy, &settings, seed))
+        .stage("mesh", || mesh_all_lods(&AdaptiveContour, &anatomy, &settings, seed))
         .map_err(|e| e.to_string())?;
     if let Some(cloth) = &cloth {
         times.stage("garments", || {

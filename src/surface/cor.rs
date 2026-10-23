@@ -242,7 +242,7 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
 mod tests {
     use super::*;
     use crate::anatomy::{LodLevel, build_src};
-    use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, SurfaceSettings, mesh_lod};
 
     /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
     /// vertex (on the near-tier quadruped: small enough to brute-force).
@@ -250,7 +250,7 @@ mod tests {
     fn grouped_centres_match_brute_force() {
         let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let settings = SurfaceSettings::default();
-        let mesh = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
+        let mesh = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Near, settings.get(LodLevel::Near), 1).unwrap();
         let fast = centres_of_rotation(&mesh);
         let weights: Vec<Weights> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| sparse(*j, *w)).collect();
         let tris: Vec<(Vec3, f32, Weights)> = mesh
@@ -293,7 +293,7 @@ mod tests {
     fn centres_lie_inside_the_body() {
         let a = build_src(include_str!("../../assets/mobs/biped.body.ron"));
         let settings = SurfaceSettings::default();
-        let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+        let m = mesh_lod(&AdaptiveContour, &a, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
         let t = std::time::Instant::now();
         let cor = centres_of_rotation(&m);
         let took = t.elapsed().as_secs_f32();
