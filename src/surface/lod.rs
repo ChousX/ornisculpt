@@ -221,29 +221,6 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 }
 
 #[cfg(test)]
-mod hero_timing {
-    use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-    use crate::surface::ProceduralHardParts;
-
-    #[test]
-    #[ignore = "timing probe"]
-    fn hero_mesh_cost_by_voxel() {
-        let plan: BodyPlan = ron::from_str(include_str!("../../assets/mobs/biped.body.ron")).unwrap();
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        let a = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
-        {
-            let v = 0.008;
-            let mut spec = SurfaceSettings::default().levels[0];
-            spec.mesh.voxel_size = v;
-            let t = std::time::Instant::now();
-            let m = mesh_lod(&crate::surface::AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
-            println!("voxel {v}: {:.2}s, {} tris", t.elapsed().as_secs_f32(), m.indices.len() / 3);
-        }
-    }
-}
-
-#[cfg(test)]
 mod stage_probe {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};

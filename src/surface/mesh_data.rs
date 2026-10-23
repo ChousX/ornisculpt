@@ -163,11 +163,6 @@ pub struct BodyMeshData {
 
 impl BodyMeshData {
     #[must_use]
-    pub const fn vertex_count(&self) -> usize {
-        self.positions.len()
-    }
-
-    #[must_use]
     pub const fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }

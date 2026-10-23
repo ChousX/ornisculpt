@@ -124,7 +124,6 @@ impl Grid {
 
 /// One thread's octree builder: shares corner samples between neighbouring cells.
 struct Builder<'a> {
-    field: &'a BodyField,
     grid: &'a Grid,
     corners: HashMap<IVec3, f32>,
 }
@@ -279,7 +278,7 @@ impl Mesher for AdaptiveContour {
                     for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
                         // A fresh corner cache per job: corners on a job's border are sampled through its
                         // own view, so the mesh doesn't depend on which jobs share a thread.
-                        let mut builder = Builder { field, grid, corners: HashMap::new() };
+                        let mut builder = Builder { grid, corners: HashMap::new() };
                         let view = field.view(grid.region(*cell, job_level, grid.fine));
                         out.push((i, builder.build(&view, *cell, job_level)));
                     }

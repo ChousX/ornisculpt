@@ -35,13 +35,7 @@ pub fn ellipsoid(p: Vec3A, radii: Vec3A) -> f32 {
     if k1 == 0.0 { -radii.min_element() } else { k0 * (k0 - 1.0) / k1 }
 }
 
-/// Tapered capsule along +Y: radius `r0` at the origin, `r1` at `len`.
-#[must_use]
-pub fn capsule(p: Vec3A, r0: f32, r1: f32, len: f32) -> f32 {
-    round_cone(p, r0, r1, len)
-}
-
-/// Round cone along +Y (exact).
+/// Round cone (or tapered capsule) along +Y, exact: radius `r0` at the origin, `r1` at `len`.
 #[must_use]
 pub fn round_cone(p: Vec3A, r0: f32, r1: f32, len: f32) -> f32 {
     let q = Vec2::new(Vec2::new(p.x, p.z).length(), p.y);
@@ -109,8 +103,7 @@ pub fn shape(p: Vec3A, s: &PrimShape) -> f32 {
     match s {
         PrimShape::Sphere { r } => sphere(p, *r),
         PrimShape::Ellipsoid { radii } => ellipsoid(p, (*radii).into()),
-        PrimShape::Capsule { r0, r1, len } => capsule(p, *r0, *r1, *len),
-        PrimShape::RoundCone { r0, r1, len } => round_cone(p, *r0, *r1, *len),
+        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => round_cone(p, *r0, *r1, *len),
         PrimShape::RoundBox { half, round } => round_box(p, (*half).into(), *round),
         PrimShape::Grid { grid, mirror_x } => {
             let q = if *mirror_x { Vec3A::new(-p.x, p.y, p.z) } else { p };
