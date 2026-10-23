@@ -66,7 +66,7 @@ fn covered_triangles(body: &BodyMeshData, mask: RegionMask) -> impl Iterator<Ite
 
 /// `shells` offset copies of the covered skin; `uvs.x` is the shell height (0..1].
 #[must_use]
-pub fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<BodyMeshData> {
+fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<BodyMeshData> {
     let tris: Vec<[u32; 3]> = covered_triangles(body, mask).collect();
     if tris.is_empty() {
         return None;
@@ -128,7 +128,7 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
         return;
     }
     let masks = coat.coverage(anatomy);
-    let model = anatomy.skeleton.model_rest();
+    let model = anatomy.skeleton.rest_model();
     let mut skin = vec![false; n];
     for &v in body.slot_triangles(MaterialSlot::Skin).flatten() {
         if let Some(s) = skin.get_mut(v.idx()) {
@@ -245,7 +245,7 @@ const fn flows_backward(kind: RegionKind) -> bool {
 
 /// Feather cards scattered over the covered skin (`density` per m²), deterministic per body.
 #[must_use]
-pub fn feather_cards(
+fn feather_cards(
     body: &BodyMeshData,
     anatomy: &Anatomy,
     level: LodLevel,
@@ -253,7 +253,7 @@ pub fn feather_cards(
     feathers: &Feathers,
     density: f32,
 ) -> Option<BodyMeshData> {
-    let model = anatomy.skeleton.model_rest();
+    let model = anatomy.skeleton.rest_model();
     let mut rng = fork(0, "feathers");
     let lift = feathers.lift_deg.to_radians();
     let mut out = BodyMeshData::default();

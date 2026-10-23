@@ -138,12 +138,6 @@ impl CrowdSkin {
         self.free.push(slot);
     }
 
-    /// Slots ever allocated.
-    #[must_use]
-    pub const fn high_water(&self) -> u32 {
-        self.next
-    }
-
     #[must_use]
     pub fn layout(&self, body: AssetId<GeneratedBody>) -> Option<ClipLayout> {
         self.atlas.get(&body).copied()

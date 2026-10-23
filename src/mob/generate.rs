@@ -168,7 +168,6 @@ pub struct GeneratedBody {
     /// Indexed by `LodLevel as usize`. `Hero` uses the full skeleton, coarser levels the crowd one.
     pub lods: [LodMeshes; 3],
     pub full_bindposes: Handle<SkinnedMeshInverseBindposes>,
-    pub crowd_bindposes: Handle<SkinnedMeshInverseBindposes>,
     /// Bounding radius around the mob origin, for tiering.
     pub radius: f32,
     /// Baked crowd-tier motion for the default gait of this body's leg count.
@@ -569,9 +568,6 @@ pub(super) fn finish_generation(
         #[cfg(feature = "soft-tissue")]
         full_bind.extend(out.soft.hero.iter().map(|r| skeleton.inverse_bind.get(r.bone.index()).copied().unwrap_or(Mat4::IDENTITY)));
         let full = bindposes.add(SkinnedMeshInverseBindposes::from(full_bind));
-        let crowd = bindposes.add(SkinnedMeshInverseBindposes::from(
-            skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect::<Vec<_>>(),
-        ));
         let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
         let lods = ready.lods.map(|split| LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect()));
         let coat_meshes = ready.coats.map(|[shells, feathers]| CoatMeshHandles { shells: shells.map(|m| meshes.add(m)), feathers: feathers.map(|m| meshes.add(m)) });
@@ -581,7 +577,6 @@ pub(super) fn finish_generation(
             anatomy: Arc::new(out.anatomy),
             lods,
             full_bindposes: full,
-            crowd_bindposes: crowd,
             radius,
             motion: Arc::new(out.motion),
             coat_meshes,

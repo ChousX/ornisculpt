@@ -8,9 +8,9 @@ use bevy::shader::ShaderRef;
 use super::CoatUniform;
 use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT, ATTRIBUTE_SOFT};
 
-pub const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
-pub const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
-pub const COAT_PREPASS: &str = "embedded://ornisculpt/coat/coat_prepass.wesl";
+const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
+const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
+const COAT_PREPASS: &str = "embedded://ornisculpt/coat/coat_prepass.wesl";
 
 /// Every mob surface: `StandardMaterial` lighting with coat shading on top.
 pub type MobMaterial = ExtendedMaterial<StandardMaterial, CoatExt>;

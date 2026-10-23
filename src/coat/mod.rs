@@ -13,8 +13,8 @@ pub mod dqs;
 mod geometry;
 mod material;
 
-pub use geometry::{CoatMeshes, annotate, build_coat_meshes, feather_cards, fur_shells};
-pub use material::{COAT_FRAGMENT, COAT_VERTEX, CoatExt, CoatKey, CoatLayer, MobMaterial};
+pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
+pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
