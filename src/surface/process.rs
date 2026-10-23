@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use bevy::math::Vec3A;
 use bevy::prelude::*;
 
-use super::{BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, SoftVertex, RawMesh, Submesh};
+use super::{BodyField, BodyMeshData, Field, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, Sheet, SoftVertex, RawMesh, Submesh};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 
@@ -13,15 +13,19 @@ use crate::num::{Clamp, Idx, Saturate, ToF32};
 /// triangles that became degenerate.
 pub fn weld(mesh: &mut RawMesh, epsilon: f32) {
     let inv = 1.0 / epsilon.max(1e-7);
-    let mut map: HashMap<[i64; 3], u32> = HashMap::with_capacity(mesh.positions.len());
+    // Vertices of different sheets stay apart, however close.
+    let mut map: HashMap<([i64; 3], u16), u32> = HashMap::with_capacity(mesh.positions.len());
     let mut remap = Vec::with_capacity(mesh.positions.len());
     let mut positions = Vec::with_capacity(mesh.positions.len());
     let mut normals = Vec::with_capacity(mesh.positions.len());
+    let mut sheets = Vec::with_capacity(mesh.sheets.len());
     for (i, p) in mesh.positions.iter().enumerate() {
-        let key = (*p * inv).round().to_array().map(Saturate::sat_i64);
+        let sheet = mesh.sheets.get(i).copied();
+        let key = ((*p * inv).round().to_array().map(Saturate::sat_i64), sheet.unwrap_or(Sheet::WHOLE_ID));
         let idx = *map.entry(key).or_insert_with(|| {
             positions.push(*p);
             normals.push(mesh.normals.get(i).copied().unwrap_or(Vec3::Y));
+            sheets.extend(sheet);
             positions.len().saturating_sub(1).clamp_u32()
         });
         remap.push(idx);
@@ -33,7 +37,7 @@ pub fn weld(mesh: &mut RawMesh, epsilon: f32) {
             indices.extend([a, b, c]);
         }
     }
-    *mesh = RawMesh { positions, normals, indices };
+    *mesh = RawMesh { positions, normals, indices, sheets };
 }
 
 /// Vertex neighbour lists from triangle edges.
@@ -73,7 +77,11 @@ pub fn smooth(mesh: &mut RawMesh, iterations: u32) {
 
 /// Skin weights, normals and per-vertex data from the field (one `surface_info` per vertex).
 /// Cavity is a one-sample occlusion probe along the normal.
-pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> BodyMeshData {
+///
+/// A vertex on a sheet of its own (see [`RawMesh::sheets`]) is weighted by that sheet alone, so a
+/// limb's surface hidden in the body binds to the limb, and the body's beneath it to the body.
+#[must_use]
+pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> BodyMeshData {
     const PROBE: f32 = 0.03;
     let n = mesh.positions.len();
     let mut out = BodyMeshData {
@@ -93,11 +101,18 @@ pub fn skin_and_attrs<F: Field>(mesh: RawMesh, field: &F, anatomy: &Anatomy) -> 
         submeshes: Vec::new(),
     };
     // Each vertex queries the field on its own: in parallel.
-    let attrs = super::par_map(&out.positions, |p| {
-        let pa = Vec3A::from(*p);
-        let normal = field.gradient(pa).normalize_or(Vec3A::Y);
-        let info = field.surface_info(pa);
-        let occluded = ((PROBE - field.distance(pa + normal * PROBE)) / PROBE).clamp(0.0, 1.0);
+    let probe = |f: &dyn Field, pa: Vec3A| {
+        let normal = f.gradient(pa).normalize_or(Vec3A::Y);
+        let occluded = ((PROBE - f.distance(pa + normal * PROBE)) / PROBE).clamp(0.0, 1.0);
+        (normal, f.surface_info(pa), occluded)
+    };
+    let at: Vec<(Vec3, u16)> = out.positions.iter().enumerate().map(|(i, p)| (*p, mesh.sheets.get(i).copied().unwrap_or(Sheet::WHOLE_ID))).collect();
+    let attrs = super::par_map(&at, |&(p, sheet)| {
+        let pa = Vec3A::from(p);
+        let (normal, info, occluded) = match Sheet::from_id(sheet) {
+            Sheet::Whole => probe(field, pa),
+            sheet => probe(&field.sheet(sheet), pa),
+        };
         let bone = info.influences.primary();
         // The bones of the part this bone belongs to (just this bone if that is unknown).
         let range = anatomy

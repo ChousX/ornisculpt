@@ -2,8 +2,9 @@
 // fragment shader (`sdf_preview.wesl`) and the volume bake (`sdf_bake.wesl`). `SDF_GROUP` is the
 // bind group the packed words are in (the material's, or the bake's own).
 //
-// The field mirrors `BodyField::eval`: primitives in field order, smooth union (limbs blend into
-// the body and only meet each other), smooth subtraction, ellipsoid displacement. Each grid cell
+// The field mirrors `BodyField::eval`: primitives in field order, smooth union (each limb blends
+// into the body where it attaches and only meets it elsewhere, and limbs only meet each other),
+// smooth subtraction, ellipsoid displacement. Each grid cell
 // lists the primitives that reach it, so within a cell its list gives the field (as a meshing
 // chunk does).
 
@@ -123,6 +124,42 @@ fn grid(p_in: vec3<f32>, at: u32, mirror: bool) -> f32 {
     return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z) + outside;
 }
 
+// How much limb `limb` (a part index) attaches to the body at `p`, as `Attachment::weight`: 1
+// within its margin of the balls where it attaches, fading to 0 over the next margin; 0 for a part
+// that attaches nowhere. The parts' limb words (header word 4.w) give each part's first ball word,
+// ball count and margin; each ball is a centre (xyz) and radius.
+fn attach_weight(limb: u32, p: vec3<f32>) -> f32 {
+    let b = word_u(4u);
+    if limb >= b.z {
+        return 0.0;
+    }
+    let a = words[b.w + limb];
+    let first = bitcast<u32>(a.x);
+    let count = bitcast<u32>(a.y);
+    let margin = a.z;
+    var e = FAR;
+    for (var i = 0u; i < count; i++) {
+        let ball = words[first + i];
+        e = min(e, length(p - ball.xyz) - ball.w);
+    }
+    if e <= margin {
+        return 1.0;
+    }
+    let t = min((e - margin) / margin, 1.0);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+// Limb `limb`'s (a part index) margin, within which it blends into the body where it attaches (0
+// for a part that attaches nowhere; `Attachment::margin`), and 1 if it is a wing or tail, which
+// blends into another limb where both attach (`Attachment::pairs`).
+fn attach_margin(limb: u32) -> vec2<f32> {
+    let b = word_u(4u);
+    if limb >= b.z {
+        return vec2<f32>(0.0);
+    }
+    return words[b.w + limb].zw;
+}
+
 struct Sample {
     d: f32,
     // index of the nearest union primitive, or NO_LIMB
@@ -143,12 +180,16 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
     let header = word_u(0u);
     let item_start = header.w;
     let grid_start = word_u(2u).w;
-    // The body (primitives on no limb) and, per limb, its smooth union with the body: limbs blend
-    // into the body, never into each other (as `BodyField::eval`; past the last slot they share it).
+    // The body (primitives on no limb) and, per limb (as `BodyField::eval`; past the last slot they
+    // share it), the smooth union of its own primitives and its primitives blended into the body
+    // as they come: where it attaches the limb is the second, elsewhere it only meets the body
+    // (`attach_weight` fades between them). Limbs blend into each other only where both attach (and
+// one is a wing or tail).
     var body = FAR;
     var have = false;
     var limb_id: array<u32, LIMB_SLOTS>;
-    var limb_d: array<f32, LIMB_SLOTS>;
+    var limb_own: array<f32, LIMB_SLOTS>;
+    var limb_with: array<f32, LIMB_SLOTS>;
     var limb_r: array<f32, LIMB_SLOTS>;
     var used = 0u;
     var raised = 0.0;
@@ -186,9 +227,10 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
             blend *= clamp(1.0 - length(q - anchor.xyz) * min_scale / anchor.w, 0.0, 1.0);
         }
         dl *= min_scale;
-        // This primitive's limb slot, opened if new (past the last slot, limbs share it).
+        // This primitive's limb slot, opened if new (past the last slot, limbs share it). A
+        // subtraction cuts every limb and opens none.
         var slot = LIMB_SLOTS;
-        if info.z != NO_LIMB {
+        if info.z != NO_LIMB && info.y != 1u {
             for (var i = 0u; i < used; i++) {
                 if limb_id[i] == info.z {
                     slot = i;
@@ -198,7 +240,8 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
                 slot = min(used, LIMB_SLOTS - 1u);
                 if used < LIMB_SLOTS {
                     limb_id[slot] = info.z;
-                    limb_d[slot] = FAR;
+                    limb_own[slot] = FAR;
+                    limb_with[slot] = FAR;
                     limb_r[slot] = 0.0;
                     used += 1u;
                 }
@@ -207,13 +250,17 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
         switch info.y {
             case 0u: {
                 if slot < LIMB_SLOTS {
-                    // A new limb starts from the body so far.
-                    if limb_d[slot] < FAR {
-                        limb_d[slot] = smin(limb_d[slot], dl, blend);
-                    } else if have {
-                        limb_d[slot] = smin(body, dl, blend);
+                    if limb_own[slot] < FAR {
+                        limb_own[slot] = smin(limb_own[slot], dl, blend);
+                        limb_with[slot] = smin(limb_with[slot], dl, blend);
                     } else {
-                        limb_d[slot] = dl;
+                        limb_own[slot] = dl;
+                        // A new limb joins the body so far.
+                        if have {
+                            limb_with[slot] = smin(body, dl, blend);
+                        } else {
+                            limb_with[slot] = dl;
+                        }
                     }
                 } else {
                     if have {
@@ -224,8 +271,8 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
                     }
                     // (A limb with only raised stamps so far has no union yet: it takes the body.)
                     for (var i = 0u; i < used; i++) {
-                        if limb_d[i] < FAR {
-                            limb_d[i] = smin(limb_d[i], dl, blend);
+                        if limb_own[i] < FAR {
+                            limb_with[i] = smin(limb_with[i], dl, blend);
                         }
                     }
                 }
@@ -244,8 +291,9 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
                     body = -smin(-body, dl, blend);
                 }
                 for (var i = 0u; i < used; i++) {
-                    if limb_d[i] < FAR {
-                        limb_d[i] = -smin(-limb_d[i], dl, blend);
+                    if limb_own[i] < FAR {
+                        limb_own[i] = -smin(-limb_own[i], dl, blend);
+                        limb_with[i] = -smin(-limb_with[i], dl, blend);
                     }
                 }
             }
@@ -266,14 +314,65 @@ fn field(p: vec3<f32>, first: u32, count: u32, listed: bool) -> Sample {
             default: {}
         }
     }
-    // Each limb with its own stamps raised; a limb with no union (only raised stamps here) raises
-    // the body.
+    // Each limb joined to the body (as `BodyField::joined`), with its own stamps raised: blended
+    // in where it attaches, a hard union clear of that. A limb with no union (only raised stamps
+    // here) raises the body.
     var d = body;
+    var limb_joined: array<f32, LIMB_SLOTS>;
     for (var i = 0u; i < used; i++) {
-        if limb_d[i] < FAR {
-            d = min(d, limb_d[i] - limb_r[i]);
+        if limb_own[i] < FAR {
+            let own = limb_own[i] - limb_r[i];
+            if have {
+                let hard = min(body, own);
+                let blended = limb_with[i] - limb_r[i];
+                var joined = hard;
+                // Where the blends change nothing, skip the zone test.
+                if abs(blended - hard) >= 1e-6 {
+                    joined = mix(hard, blended, attach_weight(limb_id[i], p));
+                }
+                limb_joined[i] = joined;
+            } else {
+                limb_joined[i] = own;
+            }
+            d = min(d, limb_joined[i]);
         } else if have {
             d = min(d, body - limb_r[i]);
+        }
+    }
+    // Two limbs blended into each other where both attach, one a wing or tail (as
+    // `BodyField::paired`): their own surfaces, by the lesser margin, fading to
+    // their hard union as the lesser of their weights does.
+    for (var i = 0u; i < used; i++) {
+        if limb_own[i] >= FAR {
+            continue;
+        }
+        for (var j = i + 1u; j < used; j++) {
+            if limb_own[j] >= FAR {
+                continue;
+            }
+            let ja = limb_joined[i];
+            let jb = limb_joined[j];
+            let oa = limb_own[i] - limb_r[i];
+            let ob = limb_own[j] - limb_r[j];
+            let ma = attach_margin(limb_id[i]);
+            let mb = attach_margin(limb_id[j]);
+            // Legs and arms never blend into each other, only a wing or tail into another limb.
+            if ma.y < 0.5 && mb.y < 0.5 {
+                continue;
+            }
+            let k = min(ma.x, mb.x);
+            // Out of each other's blend the two only meet: skip the zone test.
+            if abs(oa - ob) >= k {
+                continue;
+            }
+            let w = min(attach_weight(limb_id[i], p), attach_weight(limb_id[j], p));
+            if w <= 0.0 {
+                continue;
+            }
+            // Their own surfaces blended into each other (each already joined to the body).
+            let hard = min(ja, jb);
+            let pair = min(smin(oa, ob, k), hard);
+            d = min(d, mix(hard, pair, w));
         }
     }
     d -= raised;

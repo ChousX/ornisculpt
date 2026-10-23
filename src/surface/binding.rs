@@ -16,13 +16,13 @@
 //! in line with each other (neighbouring fingers), are cut.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 
-use super::{BodyField, BodyMeshData};
+use super::{BodyField, BodyMeshData, Sheet};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 
@@ -68,6 +68,8 @@ pub struct VoxelBinding {
     /// Per bone: the arm it moves (part index; `None` for every other bone, clavicles included)
     /// and that arm's shoulder joint (position, radius) in the field's pose.
     limb: Vec<Option<(u16, Vec3A, f32)>>,
+    /// Per bone, the limb (part index) it is on, if any.
+    bone_limb: Vec<Option<u16>>,
     falloff: f32,
 }
 
@@ -96,6 +98,11 @@ struct Cell {
     bone: u8,
     /// Nearest primitive's limb (`u16::MAX` = none).
     limb: u16,
+    /// That limb is clear of where it attaches here (see [`BodyField::detached`]).
+    detached: bool,
+    /// Up to two other limbs that attach here too, blending into this one (`u16::MAX` = none; see
+    /// [`BodyField::shares_attachment`]).
+    shares: [u16; 2],
 }
 
 /// The 3×3×3 block of cells around `c`, `c` included.
@@ -165,27 +172,69 @@ impl VoxelBinding {
             parent: anatomy.skeleton.bones.iter().map(|b| b.parent.map(|p| p.0)).collect(),
             part: anatomy.skeleton.bones.iter().map(|b| b.part).collect(),
             limb: arm_roots(anatomy, field.bone_model()),
+            bone_limb: anatomy.skeleton.bones.iter().map(|b| limb_of(anatomy, b.part)).collect(),
             falloff: settings.falloff,
         }
     }
 
     /// Replaces each vertex's joints and weights with the geodesic binding (positions in the pose
-    /// the field was built in).
-    pub fn apply(&self, data: &mut BodyMeshData) {
+    /// the field was built in). Which surface a vertex is on, the body's or a limb's, comes from
+    /// its sheet (`sheets`, as [`RawMesh::sheets`](super::RawMesh::sheets)), or from the field on
+    /// the whole surface. Where a limb meets the body away from where it attaches ([`touching`]),
+    /// the two pull on each other's vertices only as much as the limb attaches there, so a limb's
+    /// surface pressed into the body moves with the limb and the body's beneath it stays; a
+    /// vertex on a limb's sheet never binds to another limb.
+    pub fn apply(&self, data: &mut BodyMeshData, sheets: &[u16], field: &BodyField) {
         // The bone the vertex's own surface belongs to (its nearest primitive's). Vertices bind
         // independently: in parallel.
-        let homes: Vec<(Vec3, u8)> = data.positions.iter().zip(&data.joints).map(|(p, j)| (*p, j[0].clamp_u8())).collect();
-        let bound = super::par_map(&homes, |&(p, home)| self.bind(Vec3A::from(p), home));
-        for (b, (joints, weights)) in bound.into_iter().zip(data.joints.iter_mut().zip(data.weights.iter_mut())) {
+        let homes: Vec<(Vec3, u8, u16)> = (0..data.positions.len())
+            .map(|i| {
+                let p = data.positions.get(i).copied().unwrap_or_default();
+                let home = data.joints.get(i).map_or(0, |j| j[0].clamp_u8());
+                (p, home, sheets.get(i).copied().unwrap_or(Sheet::WHOLE_ID))
+            })
+            .collect();
+        let limb_of = |b: u8| self.bone_limb.get(b.idx()).copied().flatten();
+        let touching = touching(data, sheets, field);
+        let bound = super::par_map(&homes, |&(p, home, sheet)| {
+            let p = Vec3A::from(p);
+            // The limb the vertex's surface is (none for the body's), by its sheet.
+            let own = match Sheet::from_id(sheet) {
+                Sheet::Whole => field.surface_limb(p),
+                Sheet::Body => None,
+                Sheet::Limb(l) => Some(l),
+            };
+            // A limb that meets the body away from where it attaches, and the body, pull on each
+            // other's skin only as much as the limb attaches there, so the two surfaces part as
+            // they move, smoothly (neighbours on either side bind alike). Other limbs pull as
+            // distance gives them. One limb never pulls on another's sheet.
+            let pull = |l: u16| if touching.contains(&l) { field.attach_weight(l, p) } else { 1.0 };
+            self.bind(p, home, |b| match (limb_of(b), own) {
+                (None, None) => 1.0,
+                (Some(l), Some(o)) if l == o => 1.0,
+                (Some(_), Some(_)) if matches!(Sheet::from_id(sheet), Sheet::Limb(_)) => 0.0,
+                (Some(l), _) | (None, Some(l)) => pull(l),
+            })
+        });
+        for ((b, (joints, weights)), &(_, _, sheet)) in bound.into_iter().zip(data.joints.iter_mut().zip(data.weights.iter_mut())).zip(&homes) {
             if let Some((j, w)) = b {
                 *joints = j;
                 *weights = w;
+            } else if sheet != Sheet::WHOLE_ID {
+                // As `bind` leaves them: no slivers of weight.
+                let kept: f32 = weights.iter().filter(|w| **w >= 0.01).sum();
+                if kept > 0.0 {
+                    for w in weights.iter_mut() {
+                        *w = if *w >= 0.01 { *w / kept } else { 0.0 };
+                    }
+                }
             }
         }
     }
 
-    /// Joints and weights of a vertex at `p` whose surface belongs to bone `home`.
-    fn bind(&self, p: Vec3A, home: u8) -> Option<([u16; 4], [f32; 4])> {
+    /// Joints and weights of a vertex at `p` whose surface belongs to bone `home`, each bone's
+    /// weight scaled by `scale` (0 leaves it out).
+    fn bind(&self, p: Vec3A, home: u8, scale: impl Fn(u8) -> f32) -> Option<([u16; 4], [f32; 4])> {
         let centre = self.grid.cell_of(p);
         let mut best: [(u8, f32); 8] = [(NO_BONE, f32::INFINITY); 8];
         for q in neighbourhood(centre) {
@@ -201,7 +250,7 @@ impl VoxelBinding {
             // Nor, at cells too coarse to part them, distances that leaked across from the next
             // finger: a bone of this vertex's own part that isn't in line with it is a sibling.
             let sibling = |bone: u8| self.part.get(bone.idx()) == self.part.get(home.idx()) && !self.in_line(home, bone);
-            for &(bone, d) in near.iter().filter(|(bone, _)| *bone != NO_BONE && !sibling(*bone)) {
+            for &(bone, d) in near.iter().filter(|(bone, _)| *bone != NO_BONE && !sibling(*bone) && scale(*bone) > 0.0) {
                 let d = d + offset;
                 match best.iter_mut().find(|s| s.0 == bone) {
                     Some(s) => s.1 = s.1.min(d),
@@ -225,7 +274,7 @@ impl VoxelBinding {
                 continue;
             }
             *joint = u16::from(bone);
-            *weight = (d + eps).powf(-self.falloff);
+            *weight = (d + eps).powf(-self.falloff) * scale(bone);
             // A limb's pull on the torso fades within a short radius of its root joint (as a
             // rigger paints it): distance through the body alone lets a raised arm drag the
             // whole side of the chest.
@@ -273,7 +322,7 @@ impl VoxelBinding {
 
 /// Step 1: classifies cells, block by block (each block evaluates only the primitives near it).
 fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
-    let mut cells = vec![Cell { kind: EXTERIOR, bone: NO_BONE, limb: u16::MAX }; grid.len()];
+    let mut cells = vec![Cell { kind: EXTERIOR, bone: NO_BONE, limb: u16::MAX, detached: false, shares: [u16::MAX; 2] }; grid.len()];
     let shell = grid.size * 0.87;
     let dims = grid.dims;
     for bz in (0..dims.z).step_by(BLOCK.idx()) {
@@ -302,6 +351,8 @@ fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
                             if let Some((bone, limb)) = nearest {
                                 cell.bone = bone.0;
                                 cell.limb = limb.unwrap_or(u16::MAX);
+                                cell.detached = limb.is_some_and(|l| field.detached(l, grid.centre(c)));
+                                cell.shares = limb.map_or([u16::MAX; 2], |l| field.shares_attachment(l, grid.centre(c)));
                             }
                         }
                     }
@@ -315,9 +366,15 @@ fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
 /// Step 2: per bone, a bounded Dijkstra from the cells along its segment. Returns each cell's four
 /// nearest bones.
 fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: Grid, cells: &[Cell]) -> Vec<[(u8, f32); 4]> {
-    // Cells joined unless they belong to different limbs or bones out of line.
+    // Cells joined unless they belong to different limbs (but for two that both attach there,
+    // blended into each other), or to a limb clear of where it attaches and the body (distance
+    // reaches a limb's surface pressed into the body, or the body's beneath it, only through where
+    // it attaches, as the mesher keeps them apart), or to bones out of line.
     let joined = |a: &Cell, b: &Cell| -> bool {
-        if a.limb != u16::MAX && b.limb != u16::MAX && a.limb != b.limb {
+        if a.limb != u16::MAX && b.limb != u16::MAX && a.limb != b.limb && !(a.shares.contains(&b.limb) && b.shares.contains(&a.limb)) {
+            return false;
+        }
+        if (a.limb == u16::MAX) != (b.limb == u16::MAX) && (a.detached || b.detached) {
             return false;
         }
         a.bone == NO_BONE || b.bone == NO_BONE || a.bone == b.bone || field.in_line(BoneId(a.bone), BoneId(b.bone))
@@ -440,16 +497,45 @@ fn nearest_four(per_bone: impl Iterator<Item = Reached>, cells: usize) -> Vec<[(
     near
 }
 
+/// Fewer contact vertices than this (a few stray ones where a limb all but grazes the body)
+/// don't count as a limb meeting the body.
+const MIN_CONTACT: usize = 50;
+
+/// The limbs that meet the body, or another limb, away from where they attach: those with enough
+/// vertices of their own sheet, or of the body's clear of where they attach and no further
+/// outside their own surface than they are thick there (see
+/// [`RawMesh::sheets`](super::RawMesh::sheets)).
+fn touching(data: &BodyMeshData, sheets: &[u16], field: &BodyField) -> Vec<u16> {
+    let mut count: HashMap<u16, usize> = HashMap::new();
+    for (p, &s) in data.positions.iter().zip(sheets) {
+        match Sheet::from_id(s) {
+            Sheet::Limb(l) => *count.entry(l).or_default() += 1,
+            Sheet::Body => {
+                for l in field.sample_at(Vec3A::from(*p)).limbs.iter().filter(|l| l.detached && l.own < field.attach_radius(l.limb)) {
+                    *count.entry(l.limb).or_default() += 1;
+                }
+            }
+            Sheet::Whole => {}
+        }
+    }
+    count.into_iter().filter(|(_, n)| *n >= MIN_CONTACT).map(|(l, _)| l).collect()
+}
+
+/// The limb a part is on (as `BodyField` assigns primitives): itself if it is meshed apart (a
+/// leg, arm, wing or tail, see [`BuiltPart::apart`](crate::anatomy::BuiltPart::apart)), its
+/// parent if it grows straight from one (hands, feet, a tail's club).
+pub(super) fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
+    let p = anatomy.parts.get(part.idx())?;
+    if p.apart {
+        return Some(part);
+    }
+    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.apart))
+}
+
 /// Per bone: the arm it moves and that arm's shoulder joint, for fading limb weight out over the
 /// torso (see [`VoxelBinding::limb`]).
 fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f32)>> {
-    let limb_of = |part: u16| -> Option<u16> {
-        let p = anatomy.parts.get(part.idx())?;
-        if p.role.is_some() {
-            return Some(part);
-        }
-        p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
-    };
+    let limb_of = |part: u16| limb_of(anatomy, part);
     let clavicle = |bone: u8| anatomy.clavicles.iter().any(|c| c.bone.0 == bone);
     let bones = &anatomy.skeleton.bones;
     bones

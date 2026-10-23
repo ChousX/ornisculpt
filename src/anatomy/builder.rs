@@ -292,6 +292,7 @@ impl AnatomyBuilder {
             path: path.clone(),
             parent: parent.map(|f| f.index),
             role: node.kind.role(),
+            apart: node.kind.apart(),
             detail: node.detail,
             lod: LodLevel::Hero,
             tone,
@@ -823,5 +824,13 @@ impl PartKind {
             Self::Limb(p) => Some(p.role),
             _ => None,
         }
+    }
+
+    /// Whether the part moves far from where it rests against the body (limbs, wings, tails):
+    /// meshed as a surface of its own, it joins its parent only at its root and only touches
+    /// whatever else it lies against, so the two part cleanly when it moves.
+    #[must_use]
+    pub const fn apart(&self) -> bool {
+        matches!(self, Self::Limb(_) | Self::Wing(_) | Self::Chain(super::ChainPart { role: super::ChainRole::Tail, .. }))
     }
 }
