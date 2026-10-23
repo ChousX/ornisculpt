@@ -13,6 +13,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::render_resource::BufferUsages;
+use bevy::shader::ShaderDefVal;
 use bevy::render::storage::{ShaderBuffer, ShaderBufferData};
 use bytemuck::{Pod, Zeroable};
 
@@ -25,6 +26,11 @@ use crate::num::{Clamp, Saturate, ToF32, usize_to_u64};
 pub const BONE_BYTES: u64 = 64;
 /// Bytes per crowd slot in the bone buffer.
 pub const SLOT_BYTES: u64 = BONE_BYTES * usize_to_u64(CROWD_SLOT);
+
+/// Shader defines for the crowd bone buffer's slot stride (`CROWD_SLOT`), wider with soft tissue.
+pub fn crowd_slot_defs() -> Vec<ShaderDefVal> {
+    if cfg!(feature = "soft-tissue") { vec!["SOFT_TISSUE".into()] } else { vec![] }
+}
 
 /// Which slot of the crowd bone buffer a mob uses (also its meshes' `MeshTag`).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

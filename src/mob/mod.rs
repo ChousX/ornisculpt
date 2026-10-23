@@ -15,6 +15,7 @@ mod levers;
 mod spawn;
 mod tier;
 
+pub(crate) use crowd::crowd_slot_defs;
 pub use crowd::{BONE_BYTES, ClipLayout, CrowdInstance, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, SLOT_BYTES};
 pub use generate::{
     BodyKey, CoatMeshHandles, GenBudget, GenCache, GenInput, GenOutput, GenRequest, GeneratedBody, LodMeshes, PartAssetCache, SlotMaterials,
