@@ -101,10 +101,11 @@ pub fn mesh_lod<M: Mesher, H: HardPartGen>(
     let mut raw = mesher.mesh(&field, &mesh_settings)?;
     weld(&mut raw, mesh_settings.voxel_size * 1e-3);
     smooth(&mut raw, 2);
+    let sheets = raw.sheets.clone();
     let mut data = skin_and_attrs(raw, &field, anatomy);
     // Weights by distance through the body (in the meshing pose, before the unbind uses them).
     let bind = BindSettings { voxel: (mesh_settings.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
-    VoxelBinding::new(&field, anatomy, &bind).apply(&mut data);
+    VoxelBinding::new(&field, anatomy, &bind).apply(&mut data, &sheets, &field);
     field.unbind(&mut data);
     if spec.simplify_ratio < 1.0 {
         data = simplify(&data, spec.simplify_ratio, spec.max_error);
@@ -277,12 +278,13 @@ mod stage_probe {
                 weld(&mut raw, ms.voxel_size * 1e-3);
                 smooth(&mut raw, 2);
                 lap("weld+smooth", &mut t);
+                let sheets = raw.sheets.clone();
                 let mut data = skin_and_attrs(raw, &field, &anatomy);
                 lap("skin_attrs", &mut t);
                 let bind = BindSettings { voxel: (ms.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
                 let binding = VoxelBinding::new(&field, &anatomy, &bind);
                 lap("bind_grid", &mut t);
-                binding.apply(&mut data);
+                binding.apply(&mut data, &sheets, &field);
                 lap("bind_apply", &mut t);
                 field.unbind(&mut data);
                 lap("unbind", &mut t);
@@ -293,6 +295,288 @@ mod stage_probe {
                 let full = std::time::Instant::now();
                 let _ = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &anatomy, level, spec, 1).unwrap();
                 println!("| whole mesh_lod {:.0}", full.elapsed().as_secs_f32() * 1000.0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod limb_seams {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{AdaptiveContour, ProceduralHardParts};
+
+    /// Hero-mesh triangles whose vertices are bound mostly to two different limbs, per body.
+    #[test]
+    #[ignore = "probe"]
+    fn cross_limb_triangles() {
+        for body in ["biped", "curvy", "thick", "quadruped", "horse", "hexapod", "bat", "dragon", "wyvern", "dragonfly", "beetle"] {
+            let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let plan: BodyPlan = ron::from_str(&text).unwrap();
+            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let limb_of = |part: u16| -> Option<u16> {
+                let p = a.parts.get(part.idx())?;
+                if p.role.is_some() {
+                    return Some(part);
+                }
+                p.parent.filter(|q| a.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
+            };
+            let spec = SurfaceSettings::default().levels[0];
+            let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 1, geometric_folds: spec.geometric_folds, spread: true });
+            let t = std::time::Instant::now();
+            let mut ms = spec.mesh;
+            ms.voxel_size *= (Vec3::from(field.bounds().max - field.bounds().min).max_element() / REFERENCE_EXTENT).max(1.0);
+            let raw = AdaptiveContour.mesh(&field, &ms).unwrap();
+            let took = t.elapsed().as_secs_f32();
+            let mut by_sheet: HashMap<u16, usize> = HashMap::new();
+            for s in &raw.sheets {
+                if *s != crate::surface::Sheet::WHOLE_ID {
+                    *by_sheet.entry(*s).or_default() += 1;
+                }
+            }
+            println!("{body}: mesher {took:.2}s, {} verts, on sheets {by_sheet:?}", raw.positions.len());
+            let m = mesh_lod(&AdaptiveContour, &ProceduralHardParts, &a, LodLevel::Hero, &spec, 1).unwrap();
+            let limb: Vec<Option<u16>> = m.joints.iter().map(|j| a.skeleton.bones.get(usize::from(j[0])).and_then(|b| limb_of(b.part))).collect();
+            let mut pairs: HashMap<(u16, u16), usize> = HashMap::new();
+            for t in m.indices.chunks(3) {
+                let ls: Vec<u16> = t.iter().filter_map(|&i| limb[i.idx()]).collect();
+                for x in &ls {
+                    for y in &ls {
+                        if x < y {
+                            *pairs.entry((*x, *y)).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            let mut pairs: Vec<_> = pairs.into_iter().map(|((x, y), n)| (format!("{}-{}", a.parts[x.idx()].path.0, a.parts[y.idx()].path.0), n)).collect();
+            pairs.sort();
+            println!("{body}: {} tris; cross-limb {:?}", m.indices.len() / 3, pairs);
+        }
+    }
+}
+
+#[cfg(test)]
+mod rest_contact_probe {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{AdaptiveContour, Sheet};
+
+    /// Meshed at rest (arms hanging against the hips): sheet vertices, and mesh edges joining a
+    /// vertex on a detached limb's surface to one on another limb or the body.
+    #[test]
+    #[ignore = "probe"]
+    fn rest_pose_contacts() {
+        for body in ["biped", "curvy", "thick", "horse"] {
+            let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let plan: BodyPlan = ron::from_str(&text).unwrap();
+            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let spec = SurfaceSettings::default().levels[0];
+            let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 1, geometric_folds: false, spread: false });
+            let mut ms = spec.mesh;
+            ms.voxel_size *= (Vec3::from(field.bounds().max - field.bounds().min).max_element() / REFERENCE_EXTENT).max(1.0);
+            let t = std::time::Instant::now();
+            let mut raw = AdaptiveContour.mesh(&field, &ms).unwrap();
+            let took = t.elapsed().as_secs_f32();
+            weld(&mut raw, ms.voxel_size * 1e-3);
+            let mut by_sheet: HashMap<u16, usize> = HashMap::new();
+            for s in &raw.sheets {
+                *by_sheet.entry(*s).or_default() += 1;
+            }
+            // Which limb's own surface each vertex is on, by the nearest primitive, where that limb is detached.
+            // (On the limb's own surface rather than the body's: the nearer of the two.)
+            let limb_at = |p: Vec3| {
+                let p = bevy::math::Vec3A::from(p);
+                field.part_at(p).and_then(|part| {
+                    let limb = a.parts.get(usize::from(part)).and_then(|q| if q.role.is_some() { Some(part) } else { q.parent.filter(|r| a.parts.get(usize::from(*r)).is_some_and(|r| r.role.is_some())) })?;
+                    (field.detached(limb, p) && field.sheet(Sheet::Limb(limb)).distance(p).abs() < field.sheet(Sheet::Body).distance(p).abs()).then_some(limb)
+                })
+            };
+            let owner: Vec<Option<u16>> = raw.positions.iter().zip(&raw.sheets).map(|(p, s)| match Sheet::from_id(*s) { Sheet::Limb(l) => Some(l), Sheet::Body => None, Sheet::Whole => limb_at(*p) }).collect();
+            let mut kinds: HashMap<&str, usize> = HashMap::new();
+            let mut wheres: HashMap<String, usize> = HashMap::new();
+            let mut dumped = 0;
+            let mut joins = 0;
+            let mut seen = std::collections::HashSet::new();
+            for t in raw.indices.chunks(3) {
+                for k in 0..3 {
+                    let (x, y) = (t[k] as usize, t[(k + 1) % 3] as usize);
+                    if !seen.insert((x.min(y), x.max(y))) { continue; }
+                    let (ox, oy) = (owner[x], owner[y]);
+                    // A detached limb's vertex joined to another limb's or to a body-sheet vertex.
+                    let sx = Sheet::from_id(raw.sheets[x]);
+                    let sy = Sheet::from_id(raw.sheets[y]);
+                    if ox.is_some() && oy.is_some() && ox != oy || (ox.is_some() && sy == Sheet::Body) || (oy.is_some() && sx == Sheet::Body) {
+                        joins += 1;
+                        let kind = |s: Sheet| match s { Sheet::Whole => "whole", Sheet::Body => "body", Sheet::Limb(_) => "limb" };
+                        let (ka, kb) = (kind(sx).min(kind(sy)), kind(sx).max(kind(sy)));
+                        let key: &str = Box::leak(format!("{ka}-{kb}{}", if ox.is_some() && oy.is_some() { " 2 limbs" } else { "" }).into_boxed_str());
+                        *kinds.entry(key).or_default() += 1;
+                        // Where: the limb, and how far past where it attaches (0 = at the zone's edge).
+                        let (v, limb) = if ox.is_some() { (x, ox) } else { (y, oy) };
+                        if let Some(limb) = limb {
+                            let p = bevy::math::Vec3A::from(raw.positions[v]);
+                            let past = (0..40).map(|k| k as f32 * 0.005).find(|&r| {
+                                [bevy::math::Vec3A::X, bevy::math::Vec3A::NEG_X, bevy::math::Vec3A::Y, bevy::math::Vec3A::NEG_Y, bevy::math::Vec3A::Z, bevy::math::Vec3A::NEG_Z].iter().any(|d| !field.detached(limb, p + *d * r))
+                            });
+                            let key = format!("{} past {:?}", a.parts[usize::from(limb)].path.0, past.map(|r| (r * 100.0).round() / 100.0));
+                            if past.is_some_and(|r| r > 0.05) && dumped < 6 {
+                                dumped += 1;
+                                let o = if v == x { y } else { x };
+                                let q = bevy::math::Vec3A::from(raw.positions[o]);
+                                let ev = |p: bevy::math::Vec3A| (field.distance(p), field.sheet(Sheet::Body).distance(p), field.sheet(Sheet::Limb(limb)).distance(p));
+                                println!("    whole {:?} (whole/body/limb {:?}) — body-sheet {:?} ({:?})", raw.positions[v], ev(p), raw.positions[o], ev(q));
+                            }
+                            *wheres.entry(key).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            println!("{body} at rest: mesher {took:.2}s, {} verts, sheets {by_sheet:?}, detached-limb joins {joins} {kinds:?}", raw.positions.len());
+            let mut w: Vec<_> = wheres.into_iter().collect();
+            w.sort();
+            println!("  {w:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod flip_probe {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::AdaptiveContour;
+
+    /// Hero mesh triangles facing against their vertices' normals, by the sheets of their corners.
+    #[test]
+    #[ignore = "probe"]
+    fn flipped_triangles() {
+        for body in ["horse", "curvy", "dragon", "biped"] {
+            let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let plan: BodyPlan = ron::from_str(&text).unwrap();
+            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let spec = SurfaceSettings::default().levels[0];
+            let field = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 1, geometric_folds: spec.geometric_folds, spread: true });
+            let mut ms = spec.mesh;
+            ms.voxel_size *= (Vec3::from(field.bounds().max - field.bounds().min).max_element() / REFERENCE_EXTENT).max(1.0);
+            let mut raw = AdaptiveContour.mesh(&field, &ms).unwrap();
+            weld(&mut raw, ms.voxel_size * 1e-3);
+            let mut kinds: HashMap<String, usize> = HashMap::new();
+            let mut shown = 0;
+            for t in raw.indices.chunks(3) {
+                let [i, j, k] = [t[0] as usize, t[1] as usize, t[2] as usize];
+                let (p0, p1, p2) = (raw.positions[i], raw.positions[j], raw.positions[k]);
+                let n = (p1 - p0).cross(p2 - p0);
+                let vn = raw.normals[i] + raw.normals[j] + raw.normals[k];
+                if n.dot(vn) < 0.0 {
+                    let mut ss = [raw.sheets[i], raw.sheets[j], raw.sheets[k]];
+                    ss.sort();
+                    *kinds.entry(format!("{ss:?}")).or_default() += 1;
+                    if shown < 8 && ss.iter().any(|s| *s != crate::surface::Sheet::WHOLE_ID) {
+                        shown += 1;
+                        println!("   flip at {p0:?} sheets {ss:?}");
+                    }
+                }
+            }
+            let mut k: Vec<_> = kinds.into_iter().collect();
+            k.sort();
+            println!("{body}: {} tris, flipped {k:?}", raw.indices.len() / 3);
+        }
+    }
+}
+
+#[cfg(test)]
+mod pose_probe {
+    use std::collections::HashMap;
+
+    use bevy::math::{Affine3A, Vec3A};
+
+    use super::*;
+    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::surface::{AdaptiveContour, Sheet};
+
+    /// The hero mesh skinned into a pose with the legs swung at the hip (front and hind opposite
+    /// ways), against the field built in that pose: triangles standing out of the posed surface
+    /// or stretched, by the sheets of their corners.
+    #[test]
+    #[ignore = "probe"]
+    fn posed_defects() {
+        for body in ["horse", "curvy", "thick", "biped", "dragon"] {
+            let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let plan: BodyPlan = ron::from_str(&text).unwrap();
+            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+            let spec = SurfaceSettings::default().levels[0];
+            let opts = BodyFieldOptions { level: LodLevel::Hero, seed: 1, geometric_folds: false, spread: true };
+            let field = BodyField::new(&a, &opts);
+            let mut ms = spec.mesh;
+            ms.voxel_size *= (Vec3::from(field.bounds().max - field.bounds().min).max_element() / REFERENCE_EXTENT).max(1.0);
+            let mut raw = AdaptiveContour.mesh(&field, &ms).unwrap();
+            weld(&mut raw, ms.voxel_size * 1e-3);
+            smooth(&mut raw, 2);
+            let sheets = raw.sheets.clone();
+            let mut data = skin_and_attrs(raw, &field, &a);
+            let bind = BindSettings { voxel: (ms.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
+            VoxelBinding::new(&field, &a, &bind).apply(&mut data, &sheets, &field);
+            field.unbind(&mut data);
+            for swing in [30.0f32] {
+                let mut local: Vec<Transform> = a.skeleton.bones.iter().map(|b| b.rest).collect();
+                for (i, leg) in a.legs.iter().enumerate() {
+                    let hip = leg.chain[0].index();
+                    let s = if i % 2 == 0 { swing } else { -swing };
+                    local[hip].rotation = (Quat::from_rotation_x(s.to_radians()) * local[hip].rotation).normalize();
+                }
+                let rest = a.skeleton.model_rest();
+                let posed = a.skeleton.model_from(&local);
+                let skin: Vec<Affine3A> = posed.iter().zip(&rest).map(|(p, r)| *p * r.inverse()).collect();
+                let pos: Vec<Vec3A> = data.positions.iter().zip(&data.joints).zip(&data.weights).map(|((p, j), w)| {
+                    let mut m = bevy::math::Mat3A::ZERO;
+                    let mut t = Vec3A::ZERO;
+                    for (&j, &w) in j.iter().zip(w) {
+                        m += skin[j as usize].matrix3 * w;
+                        t += skin[j as usize].translation * w;
+                    }
+                    Affine3A { matrix3: m, translation: t }.transform_point3a(Vec3A::from(*p))
+                }).collect();
+                let pf = BodyField::with_pose(&a, &opts, &local);
+                let mut out: HashMap<String, usize> = HashMap::new();
+                let mut stretched: HashMap<String, usize> = HashMap::new();
+                let mut shown = 0;
+                for t in data.indices.chunks(3) {
+                    let [i, j, k] = [t[0] as usize, t[1] as usize, t[2] as usize];
+                    let kind = |v: usize| match Sheet::from_id(sheets.get(v).copied().unwrap_or(Sheet::WHOLE_ID)) { Sheet::Whole => "w", Sheet::Body => "b", Sheet::Limb(_) => "l" };
+                    let mut ks = [kind(i), kind(j), kind(k)];
+                    ks.sort();
+                    let key = ks.concat();
+                    let c = (pos[i] + pos[j] + pos[k]) / 3.0;
+                    let d = pf.distance(c);
+                    if d > 0.006 {
+                        *out.entry(key.clone()).or_default() += 1;
+                        if shown < 6 && key != "www" {
+                            shown += 1;
+                            let bone = |v: usize| format!("{}:{:.2}", a.skeleton.bones[data.joints[v][0] as usize].name, data.weights[v][0]);
+                            println!("    out {d:.3} at {c:?} ({key}) bones {} {} {}", bone(i), bone(j), bone(k));
+                        }
+                    }
+                    let len = |x: &[Vec3A]| (x[0].distance(x[1])).max(x[1].distance(x[2])).max(x[2].distance(x[0]));
+                    let before = len(&[Vec3A::from(data.positions[i]), Vec3A::from(data.positions[j]), Vec3A::from(data.positions[k])]);
+                    let after = len(&[pos[i], pos[j], pos[k]]);
+                    if after > 0.015 && after > 3.0 * before {
+                        if key != "www" && *stretched.get(&key).unwrap_or(&0) < 3 {
+                            let bone = |v: usize| format!("{}:{:.2}/{}:{:.2}", a.skeleton.bones[data.joints[v][0] as usize].name, data.weights[v][0], a.skeleton.bones[data.joints[v][1] as usize].name, data.weights[v][1]);
+                            println!("    stretched {before:.4} -> {after:.4} at {c:?} ({key}) {} | {} | {}", bone(i), bone(j), bone(k));
+                        }
+                        *stretched.entry(key).or_default() += 1;
+                    }
+                }
+                let mut o: Vec<_> = out.into_iter().collect();
+                o.sort();
+                let mut st: Vec<_> = stretched.into_iter().collect();
+                st.sort();
+                println!("{body} swing {swing}: {} tris; out of the surface {o:?}; stretched {st:?}", data.indices.len() / 3);
             }
         }
     }

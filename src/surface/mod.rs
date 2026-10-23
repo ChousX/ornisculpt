@@ -28,7 +28,7 @@ pub use binding::{BindSettings, VoxelBinding};
 pub use cor::centres_of_rotation;
 #[cfg(feature = "soft-tissue")]
 pub(crate) use body::primitive_parts;
-pub use body::{BodyField, BodyFieldOptions, ChunkView};
+pub use body::{BodyField, BodyFieldOptions, ChunkView, Sheet, SheetField};
 pub use combinators::{Displace, Intersect, Offset, RegionClip, Subtract};
 pub use field::{Field, Influences, SurfaceInfo};
 pub use hard::{HardPartGen, ProceduralHardParts};

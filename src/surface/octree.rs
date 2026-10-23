@@ -18,7 +18,8 @@ use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 use smallvec::SmallVec;
 
-use super::{BodyField, ChunkView, Field, MeshSettings, Mesher, RawMesh, SurfaceError};
+use super::body::Sample;
+use super::{BodyField, ChunkView, Field, MeshSettings, Mesher, RawMesh, Sheet, SurfaceError};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 
 /// Octree dual contouring; see the module docs.
@@ -70,8 +71,40 @@ struct Leaf {
     verts: SmallVec<[(Vec3, Vec3); 1]>,
     /// Per cell edge, its sheet's vertex (`u8::MAX`: the edge doesn't cross).
     sheet: [u8; 12],
+    /// Where limbs part from the body or each other: which sheet each vertex is on, and each
+    /// edge's crossings (see [`Builder::parted`]).
+    parted: Option<Box<Parted>>,
     /// Mesh index of the first vertex.
     index: u32,
+}
+
+/// A leaf whose surface parts into sheets.
+struct Parted {
+    /// Per vertex, its [`Sheet`] id.
+    sheets: SmallVec<[u16; 2]>,
+    /// Per cell edge, the sheets crossing it.
+    edges: [SmallVec<[Crossing; 1]>; 12],
+}
+
+#[derive(Clone, Copy)]
+struct Crossing {
+    sheet: u16,
+    /// The edge's first corner is inside this sheet.
+    flip: bool,
+    vert: u8,
+}
+
+impl Leaf {
+    /// Mesh index of the vertex on `sheet` (`Sheet::WHOLE_ID`: any) by `edge`: the cell's vertex of
+    /// that sheet (a cell has one per sheet, so a coarser neighbour, whose own copy of the edge may
+    /// cross other sheets, still joins the right one), else the edge's first sheet.
+    fn vertex(&self, edge: usize, sheet: u16) -> u32 {
+        let vert = match &self.parted {
+            Some(parted) => parted.sheets.iter().position(|s| *s == sheet).map(Clamp::clamp_u8).or_else(|| parted.edges.get(edge).and_then(|cs| cs.first()).map(|c| c.vert)).unwrap_or(0),
+            None => self.sheet.get(edge).copied().filter(|s| *s != u8::MAX).unwrap_or(0),
+        };
+        self.index + u32::from(vert)
+    }
 }
 
 impl Node {
@@ -118,7 +151,16 @@ impl Grid {
     fn near_surface(&self, view: &ChunkView, cell: IVec3, level: u8) -> bool {
         let size = self.size(level);
         let centre = self.point(cell) + Vec3A::splat(size * 0.5);
-        view.distance(centre).abs() <= size.mul_add(1.2, self.fine)
+        let reach = size.mul_add(1.2, self.fine);
+        if view.distance(centre).abs() <= reach {
+            return true;
+        }
+        // A sheet hidden inside another (a limb's surface running on through the body it rests
+        // against) is far from the whole surface.
+        view.may_part() && {
+            let s = view.sample(centre);
+            s.body.abs() <= reach || s.limbs.iter().any(|l| l.own.abs() <= reach)
+        }
     }
 }
 
@@ -127,6 +169,8 @@ struct Builder<'a> {
     field: &'a BodyField,
     grid: &'a Grid,
     corners: HashMap<IVec3, f32>,
+    /// Corner [`Sample`]s, for leaves where the surface may part.
+    samples: HashMap<IVec3, Sample>,
 }
 
 impl Builder<'_> {
@@ -214,6 +258,11 @@ impl Builder<'_> {
     }
 
     fn leaf(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Leaf> {
+        if view.may_part()
+            && let Some(leaf) = self.parted(view, cell, level)
+        {
+            return Some(leaf);
+        }
         let g = self.grid;
         let span = 1i32 << level;
         let d: [f32; 8] = std::array::from_fn(|i| self.corner(view, cell + child(i) * span));
@@ -249,7 +298,101 @@ impl Builder<'_> {
                 (p.into(), view.gradient(p).normalize_or(Vec3A::Y).into())
             })
             .collect();
-        Some(Leaf { corners, level, verts, sheet, index: 0 })
+        Some(Leaf { corners, level, verts, sheet, parted: None, index: 0 })
+    }
+}
+
+impl Builder<'_> {
+    fn sample(&mut self, view: &ChunkView, c: IVec3) -> Sample {
+        if let Some(s) = self.samples.get(&c) {
+            return s.clone();
+        }
+        let s = view.sample(self.grid.point(c));
+        self.samples.insert(c, s.clone());
+        s
+    }
+
+    /// A leaf where the surface parts into sheets: on some edge a limb clear of where it attaches
+    /// meets the body or another limb. There the body (with the limbs attached at that point) and
+    /// each such limb are meshed as surfaces of their own, running on through each other, with a
+    /// vertex each; elsewhere in the cell the whole surface's crossings join the vertex of the
+    /// sheet they lie on. `None` if no edge parts.
+    fn parted(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Leaf> {
+        let g = self.grid;
+        let span = 1i32 << level;
+        let at = |i: usize| g.point(cell + child(i) * span);
+        let samples: [Sample; 8] = std::array::from_fn(|i| self.sample(view, cell + child(i) * span));
+        let size = g.size(level);
+        if !parts(&samples, size) {
+            return None;
+        }
+        // Every edge: the body with the limbs attached on it as one surface, and each limb clear
+        // of where it attaches (at both ends) on its own.
+        let mut crossings: [SmallVec<[(u16, bool, Vec3A); 1]>; 12] = Default::default();
+        for ((a, b), list) in EDGEVMAP.iter().map(|&[a, b]| (a, b)).zip(&mut crossings) {
+            let (Some(sa), Some(sb)) = (samples.get(a), samples.get(b)) else { continue };
+            let lerp = |da: f32, db: f32| at(a).lerp(at(b), da / (da - db));
+            let detached = |limb: u16| [sa, sb].iter().all(|s| s.limbs.iter().any(|l| l.limb == limb && l.detached));
+            let own = |s: &Sample, limb: u16| s.limbs.iter().find(|l| l.limb == limb).map_or(f32::MAX, |l| l.own);
+            let group = |s: &Sample| s.limbs.iter().filter(|l| !detached(l.limb)).fold(s.body, |d, l| d.min(l.joined));
+            let (ga, gb) = (group(sa), group(sb));
+            if (ga < 0.0) != (gb < 0.0) {
+                // On the sheet that makes it at the inside end: an attached limb's surface stays its
+                // own sheet's where the limb comes clear of where it attaches.
+                let inside = if ga < 0.0 { sa } else { sb };
+                let sheet = inside
+                    .limbs
+                    .iter()
+                    .filter(|l| !detached(l.limb) && l.own < inside.body)
+                    .min_by(|x, y| x.joined.total_cmp(&y.joined))
+                    .map_or(Sheet::BODY_ID, |l| l.limb);
+                list.push((sheet, ga < 0.0, lerp(ga, gb)));
+            }
+            for l in sa.limbs.iter().filter(|l| detached(l.limb)) {
+                let (oa, ob) = (l.own, own(sb, l.limb));
+                if (oa < 0.0) != (ob < 0.0) {
+                    list.push((l.limb, oa < 0.0, lerp(oa, ob)));
+                }
+            }
+        }
+        // A vertex per sheet: the mean of its crossings, pulled onto it.
+        let mut sheets: SmallVec<[u16; 2]> = SmallVec::new();
+        let mut sums: SmallVec<[(Vec3A, f32); 2]> = SmallVec::new();
+        let mut edges: [SmallVec<[Crossing; 1]>; 12] = Default::default();
+        for (list, out) in crossings.iter().zip(&mut edges) {
+            for &(sheet, flip, p) in list {
+                let vert = sheets.iter().position(|s| *s == sheet).unwrap_or_else(|| {
+                    sheets.push(sheet);
+                    sums.push((Vec3A::ZERO, 0.0));
+                    sheets.len() - 1
+                });
+                if let Some(sum) = sums.get_mut(vert) {
+                    sum.0 += p;
+                    sum.1 += 1.0;
+                }
+                out.push(Crossing { sheet, flip, vert: vert.clamp_u8() });
+            }
+        }
+        let (lo, hi) = (at(0) - Vec3A::splat(size * 0.25), at(7) + Vec3A::splat(size * 0.25));
+        let verts = sheets
+            .iter()
+            .zip(&sums)
+            .map(|(&id, &(sum, n))| {
+                let sheet = Sheet::from_id(id);
+                let mut p = sum / n.max(1.0);
+                for _ in 0..2 {
+                    let grad = view.sheet_gradient(sheet, p) / 2e-3;
+                    let len2 = grad.length_squared();
+                    if len2 > 1e-12 {
+                        p = (p - grad * (view.sheet_distance(sheet, p) / len2)).clamp(lo, hi);
+                    }
+                }
+                (p.into(), view.sheet_gradient(sheet, p).normalize_or(Vec3A::Y).into())
+            })
+            .collect();
+        let corners = samples.iter().enumerate().fold(0u8, |m, (i, s)| if s.whole < 0.0 { m | 1 << i } else { m });
+        let sheet = std::array::from_fn(|e| edges.get(e).and_then(|cs| cs.first()).map_or(u8::MAX, |c| c.vert));
+        Some(Leaf { corners, level, verts, sheet, parted: Some(Box::new(Parted { sheets, edges })), index: 0 })
     }
 }
 
@@ -279,7 +422,7 @@ impl Mesher for AdaptiveContour {
                     for (i, cell) in jobs.iter().enumerate().skip(t).step_by(threads) {
                         // A fresh corner cache per job: corners on a job's border are sampled through its
                         // own view, so the mesh doesn't depend on which jobs share a thread.
-                        let mut builder = Builder { field, grid, corners: HashMap::new() };
+                        let mut builder = Builder { field, grid, corners: HashMap::new(), samples: HashMap::new() };
                         let view = field.view(grid.region(*cell, job_level, grid.fine));
                         out.push((i, builder.build(&view, *cell, job_level)));
                     }
@@ -359,9 +502,10 @@ fn number(node: &mut Node, mesh: &mut RawMesh) {
         Node::Internal(children) => children.iter_mut().flatten().for_each(|c| number(c, mesh)),
         Node::Leaf(l) => {
             l.index = mesh.positions.len().clamp_u32();
-            for &(pos, normal) in &l.verts {
+            for (i, &(pos, normal)) in l.verts.iter().enumerate() {
                 mesh.positions.push(pos);
                 mesh.normals.push(normal);
+                mesh.sheets.push(l.parted.as_ref().and_then(|p| p.sheets.get(i).copied()).unwrap_or(Sheet::WHOLE_ID));
             }
         }
         Node::Pending(_) => {}
@@ -420,34 +564,34 @@ fn edge_proc(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
     }
 }
 
-/// Four leaves around one edge: a quad if the smallest leaf's copy of the edge changes sign.
+/// Four leaves around one edge: a quad for each sheet crossing the smallest leaf's copy of it.
 fn process_edge(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
     let Some(edges) = PROCESS_EDGE_MASK.get(dir) else { return };
-    let mut min_level = u8::MAX;
-    let mut sign_change = false;
-    let mut flip = false;
-    let mut idx = [0u32; 4];
-    for ((n, &edge), slot) in nodes.iter().zip(edges).zip(&mut idx) {
+    let mut leaves: [Option<(&Leaf, usize)>; 4] = [None; 4];
+    for ((n, &edge), slot) in nodes.iter().zip(edges).zip(&mut leaves) {
         let Node::Leaf(l) = n else { return };
-        let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
-        let (m1, m2) = (l.corners >> c1 & 1 == 1, l.corners >> c2 & 1 == 1);
-        if l.level < min_level {
-            min_level = l.level;
-            flip = m1;
-            sign_change = m1 != m2;
+        *slot = Some((l, edge));
+    }
+    let Some((small, edge)) = leaves.iter().flatten().min_by_key(|(l, _)| l.level).copied() else { return };
+    // The sheets crossing the smallest leaf's copy of the edge, and which way.
+    let crossings: SmallVec<[(u16, bool); 2]> = match &small.parted {
+        Some(parted) => parted.edges.get(edge).map(|cs| cs.iter().map(|c| (c.sheet, c.flip)).collect()).unwrap_or_default(),
+        None => {
+            let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
+            let (m1, m2) = (small.corners >> c1 & 1 == 1, small.corners >> c2 & 1 == 1);
+            if m1 == m2 { SmallVec::new() } else { SmallVec::from_elem((Sheet::WHOLE_ID, m1), 1) }
         }
-        // The vertex of the sheet crossing this edge (a coarser cell whose own copy of the edge
-        // doesn't cross has one sheet).
-        *slot = l.index + u32::from(l.sheet.get(edge).copied().filter(|s| *s != u8::MAX).unwrap_or(0));
-    }
-    if !sign_change {
-        return;
-    }
-    let [i0, i1, i2, i3] = idx;
-    let tris = if flip { [[i0, i3, i1], [i0, i2, i3]] } else { [[i0, i1, i3], [i0, i3, i2]] };
-    for [a, b, c] in tris {
-        if a != b && b != c && a != c {
-            out.extend([a, b, c]);
+    };
+    for (sheet, flip) in crossings {
+        // Each leaf's vertex of that sheet (a coarser cell whose own copy of the edge doesn't
+        // cross has one sheet).
+        let idx = leaves.map(|l| l.map_or(0, |(l, edge)| l.vertex(edge, sheet)));
+        let [i0, i1, i2, i3] = idx;
+        let tris = if flip { [[i0, i3, i1], [i0, i2, i3]] } else { [[i0, i1, i3], [i0, i3, i2]] };
+        for [a, b, c] in tris {
+            if a != b && b != c && a != c {
+                out.extend([a, b, c]);
+            }
         }
     }
 }
@@ -540,6 +684,24 @@ fn edge_sheets(mask: u8) -> ([u8; 12], u8) {
         *sheet = labels.get(corner).copied().filter(|l| *l != u8::MAX).unwrap_or(0).min(count - 1);
     }
     (sheets, count)
+}
+
+/// Whether a cell (`size` across) with these corner samples parts into sheets: a limb clear of
+/// where it attaches and the body, or another limb, both pass through it or near (not necessarily
+/// at the same corners, nor on one edge: two surfaces through one cell, even apart, would join
+/// through its single vertex).
+fn parts(samples: &[Sample], size: f32) -> bool {
+    // A surface through the cell is within its diagonal of every corner (with the field's ~20%
+    // overstatement, as `Grid::near_surface` allows).
+    let size = size * 1.2 * 3.0f32.sqrt();
+    let near = |limb: Option<u16>, detached_only: bool| {
+        samples.iter().any(|s| match limb {
+            None => s.body < size,
+            Some(id) => s.limbs.iter().any(|l| l.limb == id && l.own < size && (l.detached || !detached_only)),
+        })
+    };
+    let limbs: SmallVec<[u16; 4]> = samples.first().map(|s| s.limbs.iter().map(|l| l.limb).collect()).unwrap_or_default();
+    limbs.iter().any(|&l| near(Some(l), true) && (near(None, false) || limbs.iter().any(|&m| m != l && near(Some(m), false))))
 }
 
 #[cfg(test)]

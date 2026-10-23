@@ -46,6 +46,11 @@ pub struct RawMesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub indices: Vec<u32>,
+    /// Per vertex, the [`Sheet`](super::Sheet) id of the surface it lies on: where a limb meets
+    /// the body away from where it attaches, or meets another limb, each has its own surface
+    /// running on through the other. Empty, or [`Sheet::WHOLE_ID`](super::Sheet::WHOLE_ID), for
+    /// the whole body's surface.
+    pub sheets: Vec<u16>,
 }
 
 impl RawMesh {
