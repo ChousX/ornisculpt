@@ -110,19 +110,6 @@ impl Skeleton {
         }
         out
     }
-
-    /// Bones from `root` down to `tip`, inclusive. `None` if `tip` is not under `root`.
-    #[must_use]
-    pub fn chain(&self, root: BoneId, tip: BoneId) -> Option<Vec<BoneId>> {
-        let mut chain = vec![tip];
-        let mut cur = tip;
-        while cur != root {
-            cur = self.get(cur)?.parent?;
-            chain.push(cur);
-        }
-        chain.reverse();
-        Some(chain)
-    }
 }
 
 /// How far a joint may turn, in degrees: what the motion stages (with the `joint-limits`

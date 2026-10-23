@@ -24,12 +24,6 @@ impl PartPath {
         Self(format!("{}{}{name}", self.0, Self::SEPARATOR))
     }
 
-    /// Copy suffix for symmetry: `limb.front` → `limb.front.l`.
-    #[must_use]
-    pub fn with_suffix(&self, suffix: &str) -> Self {
-        Self(format!("{}.{suffix}", self.0))
-    }
-
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
         self.0.rsplit_once(Self::SEPARATOR).map(|(p, _)| Self(p.to_owned()))
@@ -37,16 +31,6 @@ impl PartPath {
 
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         self.0.split(Self::SEPARATOR)
-    }
-
-    #[must_use]
-    pub fn depth(&self) -> usize {
-        self.segments().count()
-    }
-
-    #[must_use]
-    pub fn is_ancestor_of(&self, other: &Self) -> bool {
-        other.0.strip_prefix(self.0.as_str()).is_some_and(|rest| rest.starts_with(Self::SEPARATOR))
     }
 }
 
@@ -63,11 +47,8 @@ mod tests {
     #[test]
     fn paths() {
         let torso = PartPath::root("torso");
-        let leg = torso.child("limb.front").with_suffix("l");
+        let leg = torso.child("limb.front.l");
         assert_eq!(leg.0, "torso/limb.front.l");
-        assert_eq!(leg.parent(), Some(torso.clone()));
-        assert_eq!(leg.depth(), 2);
-        assert!(torso.is_ancestor_of(&leg));
-        assert!(!PartPath::root("tor").is_ancestor_of(&leg));
+        assert_eq!(leg.parent(), Some(torso));
     }
 }
