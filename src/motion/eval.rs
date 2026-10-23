@@ -36,7 +36,6 @@ pub struct MotionRig {
     model_rot: Vec<Quat>,
     /// Rest model-space direction (+Y) per bone.
     model_dir: Vec<Vec3>,
-    leg_length: f32,
     fore_pair: u8,
     hind_pair: u8,
 }
@@ -123,7 +122,6 @@ impl MotionRig {
         let model_dir = model_rot.iter().map(|q| *q * Vec3::Y).collect();
         let pairs = a.legs.iter().map(|l| l.pair).max().unwrap_or(0);
         Self {
-            leg_length: traits.leg_length,
             traits,
             spine: a.spine.clone(),
             neck: by_prefix("neck."),
@@ -146,7 +144,7 @@ impl MotionRig {
 
     #[must_use]
     pub const fn leg_length(&self) -> f32 {
-        self.leg_length
+        self.traits.leg_length
     }
 
     /// Bones a target moves (for masks and fit reporting).
@@ -463,7 +461,7 @@ fn apply_track(track: &Track, input: &EvalInput, out: &mut LayerPose) {
     match track.target {
         Target::Root => {
             let v = value_at(input.t);
-            let l = rig.leg_length;
+            let l = rig.traits.leg_length;
             match ch {
                 Channel::Bob => out.root_offset.y = f32::mul_add(v, l, out.root_offset.y),
                 Channel::Sway => out.root_offset.x = f32::mul_add(v, l, out.root_offset.x),
@@ -586,7 +584,7 @@ fn apply_legs(track: &Track, input: &EvalInput, out: &mut LayerPose, sel: LegSel
         }
         let t = if track.per_leg { leg_phase(i) } else { input.t };
         let v = value_at(t);
-        let l = rig.leg_length;
+        let l = rig.traits.leg_length;
         match ch {
             Channel::FootLift => {
                 if let Some(foot) = out.feet.get_mut(i) {
