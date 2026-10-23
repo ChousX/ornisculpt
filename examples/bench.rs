@@ -48,16 +48,19 @@ use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::time::TimeUpdateStrategy;
 use bevy::window::{PresentMode, WindowResolution};
 use ornisculpt::OrnisculptPlugin;
-use ornisculpt::anatomy::{BodyPlan, Form, FormPatch, HardKind, Lever, LodLevel, PartAssets, PartLodRules, PartPath, apply_form};
+use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartAssets, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
 use ornisculpt::mob::{
-    BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSeed, MobSkeleton, MobTier, StageTimes,
-    TierCamera, generate_body,
+    BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, StageTimes, TierCamera,
+    generate_body,
 };
-use ornisculpt::motion::MobIntent;
-use ornisculpt::num::{Saturate, ToF32, usize_to_u64};
+use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::surface::{BodyMeshData, SurfaceSettings};
 use serde::{Deserialize, Serialize};
+
+mod common;
+use common::crowd::{self, Wander};
+use common::spawn_stage;
 
 /// Bump whenever a workload parameter below changes.
 const BENCH_VERSION: u32 = 3;
@@ -93,11 +96,6 @@ const PREROLL: u32 = 60;
 const HERO_FOV_DEG: f32 = 30.0;
 /// Render resolution (an offscreen target, so the window manager can't change it).
 const RESOLUTION: UVec2 = UVec2::new(1920, 1080);
-
-// Crowd workload, as in `examples/crowd.rs` with `ORNISCULPT_COATS=1`.
-const CROWD_BODIES: [&str; 4] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
-const CROWD_ROOTS: [&str; 4] = ["torso", "torso", "torso", "thorax"];
-const CROWD_COATS: [Option<&str>; 4] = [None, Some("coats/lizard.coat.ron"), Some("coats/furry.coat.ron"), Some("coats/bird.coat.ron")];
 
 const SCENARIOS: [&str; 4] = ["gen", "hero", "motion", "crowd"];
 
@@ -243,7 +241,7 @@ fn input_hashes(paths: &[&str]) -> BTreeMap<String, String> {
 
 fn scenario_inputs(scenario: &str) -> Vec<&'static str> {
     let mut v: Vec<&str> = match scenario {
-        "crowd" => CROWD_BODIES.iter().copied().chain(CROWD_COATS.iter().flatten().copied()).collect(),
+        "crowd" => crowd::BODIES.iter().copied().chain(crowd::COATS.iter().flatten().copied()).collect(),
         "motion" => MOTION_MOBS.iter().filter_map(|&i| MOBS.get(i)).flat_map(|(_, p, c)| std::iter::once(*p).chain(*c)).collect(),
         _ => MOBS.iter().flat_map(|(_, p, c)| std::iter::once(*p).chain(*c)).collect(),
     };
@@ -551,7 +549,7 @@ fn run_app(scenario: &str, out: PathBuf) {
         .add_observer(|_: On<BodyReady>, mut bench: ResMut<Bench>| bench.ready += 1)
         .add_systems(Startup, setup)
         .add_systems(First, record_frame)
-        .add_systems(Update, (drive, toggle_display, wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
+        .add_systems(Update, (drive, toggle_display, crowd::wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
         .run();
 }
 
@@ -562,15 +560,6 @@ struct BenchCamera;
 /// name, so a second camera's passes would overwrite the scene camera's (and add their cost).
 #[derive(Component)]
 struct DisplayCamera;
-
-/// Walks a circle (motion and crowd mobs).
-#[derive(Component)]
-struct Wander {
-    centre: Vec3,
-    radius: f32,
-    speed: f32,
-    offset: f32,
-}
 
 /// The image every case renders into: a fixed resolution whatever size the window manager gives
 /// the window (which only shows a copy).
@@ -616,14 +605,7 @@ fn setup(
         screen,
     ));
     commands.insert_resource(Target(target));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(400.0, 400.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 400.0, Vec3::new(3.0, 6.0, 2.0));
 }
 
 /// Blocks the render thread until the GPU has finished the frame just submitted.
@@ -680,32 +662,19 @@ fn spawn_mob(commands: &mut Commands, assets: &AssetServer, mob: usize, extra: i
     Some(e.id())
 }
 
+/// The crowd of `examples/crowd.rs` with `ORNISCULPT_COATS=1`.
 fn spawn_crowd(commands: &mut Commands, assets: &AssetServer) -> Vec<Entity> {
     let side = CROWD_COUNT.to_f32().sqrt().ceil().sat_usize();
-    let spacing = 2.2;
-    CROWD_BODIES
+    crowd::BODIES
         .iter()
-        .zip(CROWD_ROOTS)
+        .zip(crowd::ROOTS)
         .cycle()
         .take(CROWD_COUNT)
         .enumerate()
         .map(|(i, (path, root))| {
-            let build = (i / CROWD_BODIES.len()) % 3;
-            let form = Form {
-                overall_scale: 0.15f32.mul_add(build.to_f32(), 0.85),
-                patches: vec![FormPatch { part: PartPath(root.into()), lever: Lever::Girth, value: 0.15f32.mul_add(build.to_f32(), 0.9) }],
-            };
-            let (x, z) = ((i % side).to_f32(), (i / side).to_f32());
-            let centre = Vec3::new(side.to_f32().mul_add(-0.5, x) * spacing, 0.0, side.to_f32().mul_add(-0.5, z) * spacing);
-            let mut mob = commands.spawn((
-                Mob::new(assets.load(*path)),
-                form,
-                MobSeed(usize_to_u64(i)),
-                Wander { centre, radius: 0.6, speed: (i % 7).to_f32().mul_add(0.12, 0.5), offset: i.to_f32() * 1.7 },
-                Transform::from_translation(centre),
-            ));
-            if let Some(Some(coat)) = CROWD_COATS.get((i / 7) % CROWD_COATS.len()) {
-                mob.insert(MobCoat(assets.load(*coat)));
+            let mut mob = crowd::spawn(commands, assets, i, side, (*path, root));
+            if let Some(coat) = crowd::coat(i) {
+                mob.insert(MobCoat(assets.load(coat)));
             }
             mob.id()
         })
@@ -741,7 +710,59 @@ fn finish_measure(bench: &mut Bench, name: String, prefix: &str) {
     bench.results.push(CaseResult { name, metrics, images });
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// The crowd's cold start, from spawn to every body attached.
+fn cold_metrics(bench: &mut Bench, start: Instant, cache: &GenCache) -> BTreeMap<String, f32> {
+    let samples = std::mem::take(&mut bench.samples);
+    let mut m = BTreeMap::new();
+    frame_stats(&mut m, "cold.", &samples);
+    memory_stats(&mut m, "cold.", std::mem::replace(&mut bench.min_avail_kb, u64::MAX));
+    m.insert("cold.total_s".into(), start.elapsed().as_secs_f32());
+    m.insert("cold.frames_over_33ms".into(), samples.iter().filter(|s| **s > 33.3).count().to_f32());
+    m.insert("cold.frames_over_100ms".into(), samples.iter().filter(|s| **s > 100.0).count().to_f32());
+    m.insert("cold.bodies".into(), cache.bodies.len().to_f32());
+    m
+}
+
+/// Measured frame `n` of `case`: shots on their frames, and the result once the case has run.
+fn measure(
+    commands: &mut Commands,
+    bench: &mut Bench,
+    target: &Handle<Image>,
+    case: &CaseKind,
+    n: u32,
+    mobs: &Query<(Has<MobBody>, Option<&MobTier>), With<Mob>>,
+) {
+    let name = bench.case_name();
+    match case {
+        CaseKind::Still { .. } if n >= STILL_FRAMES => {
+            // Before the result closes, so the shot is filed with it.
+            shoot(commands, bench, target, &name);
+            finish_measure(bench, name, "");
+            let last = bench.framing + 1 >= Framing::ALL.len();
+            bench.phase = Phase::Settle(SHOT_SETTLE, if last { Next::Case } else { Next::Framing });
+        }
+        CaseKind::Motion { .. } if MOTION_SHOTS.contains(&n) => {
+            shoot(commands, bench, target, &format!("{name}.{n}"));
+            bench.phase = Phase::Measure(n);
+        }
+        CaseKind::Motion { .. } if n >= MOTION_FRAMES => {
+            finish_measure(bench, name, "");
+            bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
+        }
+        CaseKind::Crowd if n >= CROWD_FRAMES => {
+            let counts = LodLevel::ALL.map(|l| mobs.iter().filter(|(_, t)| t.is_some_and(|t| t.0 == l)).count());
+            for (level, c) in LodLevel::ALL.iter().zip(counts) {
+                bench.metrics.insert(format!("steady.tier.{}", format!("{level:?}").to_lowercase()), c.to_f32());
+            }
+            shoot(commands, bench, target, &name);
+            finish_measure(bench, name, "steady.");
+            bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
+        }
+        _ => bench.phase = Phase::Measure(n),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn drive(
     mut commands: Commands,
     mut bench: ResMut<Bench>,
@@ -803,15 +824,7 @@ fn drive(
                 return;
             }
             if let (CaseKind::Crowd, Some(start)) = (&case, bench.cold_start.take()) {
-                let samples = std::mem::take(&mut bench.samples);
-                let mut m = BTreeMap::new();
-                frame_stats(&mut m, "cold.", &samples);
-                memory_stats(&mut m, "cold.", std::mem::replace(&mut bench.min_avail_kb, u64::MAX));
-                m.insert("cold.total_s".into(), start.elapsed().as_secs_f32());
-                m.insert("cold.frames_over_33ms".into(), samples.iter().filter(|s| **s > 33.3).count().to_f32());
-                m.insert("cold.frames_over_100ms".into(), samples.iter().filter(|s| **s > 100.0).count().to_f32());
-                m.insert("cold.bodies".into(), cache.bodies.len().to_f32());
-                bench.metrics = m;
+                bench.metrics = cold_metrics(&mut bench, start, &cache);
             }
             time.unpause();
             let warm = match case {
@@ -824,45 +837,7 @@ fn drive(
         Phase::Warm(n) => {
             bench.phase = if n > 1 { Phase::Warm(n - 1) } else { Phase::Measure(0) };
         }
-        Phase::Measure(n) => {
-            let n = n + 1;
-            let name = bench.case_name();
-            match case {
-                CaseKind::Still { .. } if n >= STILL_FRAMES => {
-                    finish_measure(&mut bench, name.clone(), "");
-                    // The shot belongs to the result just pushed.
-                    shoot(&mut commands, &mut bench, &target.0, &name);
-                    let file = bench.images.pop();
-                    if let (Some(r), Some(f)) = (bench.results.last_mut(), file) {
-                        r.images.push(f);
-                    }
-                    let last = bench.framing + 1 >= Framing::ALL.len();
-                    bench.phase = Phase::Settle(SHOT_SETTLE, if last { Next::Case } else { Next::Framing });
-                }
-                CaseKind::Motion { .. } if MOTION_SHOTS.contains(&n) => {
-                    shoot(&mut commands, &mut bench, &target.0, &format!("{name}.{n}"));
-                    bench.phase = Phase::Measure(n);
-                }
-                CaseKind::Motion { .. } if n >= MOTION_FRAMES => {
-                    finish_measure(&mut bench, name, "");
-                    bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
-                }
-                CaseKind::Crowd if n >= CROWD_FRAMES => {
-                    let counts = LodLevel::ALL.map(|l| mobs.iter().filter(|(_, t)| t.is_some_and(|t| t.0 == l)).count());
-                    for (level, c) in LodLevel::ALL.iter().zip(counts) {
-                        bench.metrics.insert(format!("steady.tier.{}", format!("{level:?}").to_lowercase()), c.to_f32());
-                    }
-                    finish_measure(&mut bench, name.clone(), "steady.");
-                    shoot(&mut commands, &mut bench, &target.0, &name);
-                    let file = bench.images.pop();
-                    if let (Some(r), Some(f)) = (bench.results.last_mut(), file) {
-                        r.images.push(f);
-                    }
-                    bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
-                }
-                _ => bench.phase = Phase::Measure(n),
-            }
-        }
+        Phase::Measure(n) => measure(&mut commands, &mut bench, &target.0, &case, n + 1, &mobs),
         Phase::Settle(n, next) if n > 1 => bench.phase = Phase::Settle(n - 1, next),
         Phase::Settle(_, next) => match next {
             Next::Framing => {
@@ -880,16 +855,6 @@ fn drive(
         },
         Phase::Done => {}
     }
-}
-
-fn wander(time: Res<Time>, mut mobs: Query<(&Wander, &Transform, &mut MobIntent)>) {
-    let t = time.elapsed_secs();
-    mobs.par_iter_mut().for_each(|(w, tf, mut intent)| {
-        let a = f32::mul_add(t * w.speed / w.radius.max(0.1), 0.5, w.offset);
-        let target = w.centre + Vec3::new(a.cos(), 0.0, a.sin()) * w.radius;
-        let pause = f32::from(u8::from(f32::mul_add(t, 0.15, w.offset).sin() > 0.8));
-        intent.velocity = ((target - tf.translation) * 1.5).clamp_length_max(w.speed) * (1.0 - pause);
-    });
 }
 
 /// Scripted camera: fixed per case and framing, following the mob (or its eye) as it moves.
@@ -975,7 +940,7 @@ const fn is_time(metric: &str) -> bool {
 /// Times that gate: medians, means and totals. Tails (p95, p99, max) swing too much run to run, and
 /// per-pass GPU times are unreliable on some drivers; both are reported but don't fail a run.
 fn is_gated(metric: &str) -> bool {
-    is_time(metric) && !metric.contains("gpu.") && ![".p95_ms", ".p99_ms", ".max_ms", "p95_ms", "p99_ms", "max_ms"].iter().any(|t| metric.ends_with(t))
+    is_time(metric) && !metric.contains("gpu.") && !["p95_ms", "p99_ms", "max_ms"].iter().any(|t| metric.ends_with(t))
 }
 
 /// (changed pixel share, PSNR dB) between two same-sized PNGs.
