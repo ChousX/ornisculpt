@@ -9,7 +9,7 @@
 //! 1          grid minimum (xyz), cell size
 //! 2          cells per axis (xyz, bit-cast)
 //! 3          teardrop keel (CrossSection::KEEL)
-//! 4          voxels along a brick's edge, first part word, part count
+//! 4          voxels along a brick's edge, first part word, part count, first limb word
 //! 5..        primitives, PRIM_WORDS each: model → local rows (3), kind / op / limb / flags,
 //!            shape parameters, more parameters (a sweep's largest radius), blend / min scale /
 //!            displace height / part, blend anchor
@@ -18,6 +18,10 @@
 //! cells      one word per cell: first item, item count, brick + 1 (0: no surface in the cell)
 //! items      primitive indices, one per word (x), each cell's in field order
 //! parts      one word per part of the anatomy: 1 (x) where it is selected
+//! limbs      one word per part of the anatomy: where it attaches to the body if it is a limb
+//!            (first ball word, ball count, margin, 1 if a wing or tail that blends into another
+//!            limb where both attach; no balls if it is not), then the balls
+//! balls      one word per ball where a limb attaches: centre (xyz), radius
 //! ```
 //!
 //! Each cell lists the primitives whose padded bounds come near it, in field order, so evaluating
@@ -304,15 +308,51 @@ impl BodyField {
         };
         let hard = |list: &[u32]| list.iter().any(|i| i.idx() >= self.prims.len());
         let lit: Vec<bool> = (0..anatomy.parts.len()).map(|i| highlight(u16::try_from(i).unwrap_or(u16::MAX))).collect();
-        let mut field = assemble(&packed, segments, grids, &lit, fallback, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
+        // Where each limb attaches, grounded as the primitives are.
+        let attach: Vec<Attach> = (0u16..)
+            .take(anatomy.parts.len())
+            .map(|part| {
+                self.attachment(part).map_or_else(Attach::default, |(balls, margin, pairs)| Attach {
+                    balls: balls.iter().map(|(c, r)| (Vec3::from(*c + up), *r)).collect(),
+                    margin,
+                    pairs,
+                })
+            })
+            .collect();
+        let mut field =
+            assemble(&packed, segments, grids, &lit, &attach, fallback, |list, at| hard(list) || skin(list, Vec3A::from(at.truncate())) < at.w);
         field.offset = (-up).into();
         field.sheets = PreviewSheets::new(anatomy, self.bone_model(), &highlight);
         field
     }
 }
 
+/// Where a limb attaches to the body (see `Attachment` in `body.rs`): balls (centre, radius) and
+/// the margin it blends in within. No balls: not a limb, it attaches nowhere.
+#[derive(Clone, Debug, Default)]
+struct Attach {
+    balls: Vec<(Vec3, f32)>,
+    margin: f32,
+    /// A wing or tail: blends into another limb where both attach (see `BodyField::paired`).
+    pairs: bool,
+}
+
+impl Attach {
+    /// Its key, folded into the keys of its limb's primitives: where it attaches changes the field
+    /// wherever the limb is.
+    fn key(&self) -> u64 {
+        let mut h = Xxh3::new();
+        hash_values(&mut h, &[self.margin, f32::from(u8::from(self.pairs))]);
+        for (c, r) in &self.balls {
+            hash_values(&mut h, &[c.x, c.y, c.z, *r]);
+        }
+        h.digest()
+    }
+}
+
 /// Lays out the words: header, primitives, sweep points, grids, then the cell grid over the
-/// primitives' bounds (`fallback` when there are none) and its lists.
+/// primitives' bounds (`fallback` when there are none) and its lists, the parts and where limbs
+/// attach (`attach`, one per part).
 ///
 /// `may_hold_surface(list, centre and margin)` says whether a cell can hold surface: the shader
 /// steps straight through the others (the empty-space skipping that keeps the march cheap).
@@ -321,6 +361,7 @@ fn assemble(
     segments: Vec<[f32; 4]>,
     grids: Vec<[f32; 4]>,
     lit: &[bool],
+    attach: &[Attach],
     fallback: Aabb3d,
     may_hold_surface: impl Fn(&[u32], Vec4) -> bool + Sync,
 ) -> PreviewField {
@@ -359,7 +400,9 @@ fn assemble(
     // The grid's corner in whole cells from the model origin: bricks are keyed by where they are
     // on the lattice, not by their index in this grid.
     let origin = (min / cell).round().as_ivec3();
-    let prim_keys: Vec<u64> = packed.iter().map(|p| prim_key(p, &segments, &grids)).collect();
+    let attach_keys: Vec<u64> = attach.iter().map(Attach::key).collect();
+    let prim_keys: Vec<u64> =
+        packed.iter().map(|p| prim_key(p, &segments, &grids, attach_keys.get(p.limb.idx()).copied().unwrap_or(0))).collect();
     let mut cells = Vec::with_capacity(cell_count);
     let mut items: Vec<u32> = Vec::new();
     let mut bricks: Vec<Brick> = Vec::new();
@@ -380,12 +423,16 @@ fn assemble(
     let cell_start = grid_start + grids.len();
     let item_start = cell_start + cells.len();
     let part_start = item_start + items.len();
-    let mut words = Vec::with_capacity(part_start + lit.len());
+    let limb_start = part_start + lit.len();
+    let ball_start = limb_start + attach.len();
+    let mut words = Vec::with_capacity(ball_start + attach.iter().map(|a| a.balls.len()).sum::<usize>());
     words.push(word_u32(packed.len().clamp_u32(), seg_start.clamp_u32(), cell_start.clamp_u32(), item_start.clamp_u32()));
     words.push(min.extend(cell).to_array());
     words.push(word_u32(dims.x, dims.y, dims.z, grid_start.clamp_u32()));
     words.push(CrossSection::KEEL.extend(0.0).to_array());
-    words.push(word_u32(BRICK_VOXELS, part_start.clamp_u32(), lit.len().clamp_u32(), 0));
+    // The limb words are as many as the parts.
+    debug_assert_eq!(attach.len(), lit.len());
+    words.push(word_u32(BRICK_VOXELS, part_start.clamp_u32(), lit.len().clamp_u32(), limb_start.clamp_u32()));
     for p in packed {
         let m = p.to_local;
         let row = |r: usize| {
@@ -409,6 +456,12 @@ fn assemble(
     // One per word: picking a vector component by a runtime index is slow on some GPUs.
     words.extend(items.iter().map(|&i| word_u32(i, 0, 0, 0)));
     words.extend(lit.iter().map(|&on| word_u32(u32::from(on), 0, 0, 0)));
+    let mut ball = ball_start;
+    for a in attach {
+        words.push([bits(ball.clamp_u32()), bits(a.balls.len().clamp_u32()), a.margin, f32::from(u8::from(a.pairs))]);
+        ball += a.balls.len();
+    }
+    words.extend(attach.iter().flat_map(|a| a.balls.iter().map(|(c, r)| c.extend(*r).to_array())));
     let hull = hull(&surface, dims, min, cell);
     PreviewField { words, min, max: min + dims.as_vec3() * cell, bricks, hull, sheets: PreviewSheets::default(), offset: Vec3::ZERO }
 }
@@ -454,9 +507,10 @@ fn hash_bits(h: &mut Xxh3, bits: &[u32]) {
 
 /// What a primitive contributes to the field and the bricks, hashed: its values (rounded) and
 /// integers (its part's index too), without the offsets of its sweep points and grid (those move when data before
-/// them changes), plus that data itself.
-fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]]) -> u64 {
+/// them changes), plus that data itself, and `attach`: the key of where its limb attaches.
+fn prim_key(p: &Packed, segments: &[[f32; 4]], grids: &[[f32; 4]], attach: u64) -> u64 {
     let mut h = Xxh3::new();
+    h.update(&attach.to_le_bytes());
     hash_values(&mut h, &p.to_local.matrix3.to_cols_array());
     hash_values(&mut h, &p.to_local.translation.to_array());
     hash_bits(&mut h, &[p.kind, p.op, p.limb, p.flags, u32::from(p.part)]);

@@ -101,6 +101,9 @@ struct Cell {
     limb: u16,
     /// That limb is clear of where it attaches here (see [`BodyField::detached`]).
     detached: bool,
+    /// Up to two other limbs that attach here too, blending into this one (`u16::MAX` = none; see
+    /// [`BodyField::shares_attachment`]).
+    shares: [u16; 2],
 }
 
 /// The 3×3×3 block of cells around `c`, `c` included.
@@ -176,11 +179,12 @@ impl VoxelBinding {
     }
 
     /// Replaces each vertex's joints and weights with the geodesic binding (positions in the pose
-    /// the field was built in). A vertex on a sheet of its own (`sheets`, as
-    /// [`RawMesh::sheets`](super::RawMesh::sheets)) binds only to that sheet's bones: a limb's
-    /// to the limb's, the body's to every bone but those of limbs clear of where they attach
-    /// there, so a limb's surface hidden in the body moves with the limb and the body's beneath
-    /// it stays.
+    /// the field was built in). Which surface a vertex is on, the body's or a limb's, comes from
+    /// its sheet (`sheets`, as [`RawMesh::sheets`](super::RawMesh::sheets)), or from the field on
+    /// the whole surface. Where a limb meets the body away from where it attaches ([`touching`]),
+    /// the two pull on each other's vertices only as much as the limb attaches there, so a limb's
+    /// surface pressed into the body moves with the limb and the body's beneath it stays; a
+    /// vertex on a limb's sheet never binds to another limb.
     pub fn apply(&self, data: &mut BodyMeshData, sheets: &[u16], field: &BodyField) {
         // The bone the vertex's own surface belongs to (its nearest primitive's). Vertices bind
         // independently: in parallel.
@@ -308,7 +312,7 @@ impl VoxelBinding {
 
 /// Step 1: classifies cells, block by block (each block evaluates only the primitives near it).
 fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
-    let mut cells = vec![Cell { kind: EXTERIOR, bone: NO_BONE, limb: u16::MAX, detached: false }; grid.len()];
+    let mut cells = vec![Cell { kind: EXTERIOR, bone: NO_BONE, limb: u16::MAX, detached: false, shares: [u16::MAX; 2] }; grid.len()];
     let shell = grid.size * 0.87;
     let dims = grid.dims;
     for bz in (0..dims.z).step_by(BLOCK.idx()) {
@@ -338,6 +342,7 @@ fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
                                 cell.bone = bone.0;
                                 cell.limb = limb.unwrap_or(u16::MAX);
                                 cell.detached = limb.is_some_and(|l| field.detached(l, grid.centre(c)));
+                                cell.shares = limb.map_or([u16::MAX; 2], |l| field.shares_attachment(l, grid.centre(c)));
                             }
                         }
                     }
@@ -351,12 +356,12 @@ fn classify(field: &BodyField, grid: Grid) -> Vec<Cell> {
 /// Step 2: per bone, a bounded Dijkstra from the cells along its segment. Returns each cell's four
 /// nearest bones.
 fn spread(field: &BodyField, anatomy: &Anatomy, settings: &BindSettings, grid: Grid, cells: &[Cell]) -> Vec<[(u8, f32); 4]> {
-    // Cells joined unless they belong to different limbs, or to a limb clear of where it
-    // attaches and the body (distance reaches a limb's surface pressed into the body, or the
-    // body's beneath it, only through where it attaches, as the mesher keeps them apart), or to
-    // bones out of line.
+    // Cells joined unless they belong to different limbs (but for two that both attach there,
+    // blended into each other), or to a limb clear of where it attaches and the body (distance
+    // reaches a limb's surface pressed into the body, or the body's beneath it, only through where
+    // it attaches, as the mesher keeps them apart), or to bones out of line.
     let joined = |a: &Cell, b: &Cell| -> bool {
-        if a.limb != u16::MAX && b.limb != u16::MAX && a.limb != b.limb {
+        if a.limb != u16::MAX && b.limb != u16::MAX && a.limb != b.limb && !(a.shares.contains(&b.limb) && b.shares.contains(&a.limb)) {
             return false;
         }
         if (a.limb == u16::MAX) != (b.limb == u16::MAX) && (a.detached || b.detached) {
@@ -469,7 +474,8 @@ fn nearest_four(per_bone: impl Iterator<Item = Reached>, cells: usize) -> Vec<[(
 const MIN_CONTACT: usize = 50;
 
 /// The limbs that meet the body, or another limb, away from where they attach: those with enough
-/// vertices of their own sheet, or of the body's within their thickness (see
+/// vertices of their own sheet, or of the body's clear of where they attach and no further
+/// outside their own surface than they are thick there (see
 /// [`RawMesh::sheets`](super::RawMesh::sheets)).
 fn touching(data: &BodyMeshData, sheets: &[u16], field: &BodyField) -> Vec<u16> {
     let mut count: HashMap<u16, usize> = HashMap::new();

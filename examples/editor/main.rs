@@ -1057,7 +1057,8 @@ fn drive_generation(mut commands: Commands, mut editor: ResMut<Editor>, time: Re
 
 /// Shows the mesh when it is of the latest plan, the preview otherwise.
 fn swap_views(editor: Res<Editor>, mut visibility: Query<&mut Visibility>) {
-    let mesh = editor.shown == Some(editor.version);
+    // `ORNISCULPT_SHOW_PREVIEW`: keep the preview up over the mesh (screenshots of the preview).
+    let mesh = editor.shown == Some(editor.version) && std::env::var_os("ORNISCULPT_SHOW_PREVIEW").is_none();
     let preview = !mesh && editor.body.is_some();
     for (entity, show) in [(editor.mob, mesh), (editor.preview, preview)] {
         if let Ok(mut v) = visibility.get_mut(entity) {

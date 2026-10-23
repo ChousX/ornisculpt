@@ -70,7 +70,7 @@ struct Leaf {
     /// Per cell edge, its sheet's vertex (`u8::MAX`: the edge doesn't cross).
     sheet: [u8; 12],
     /// Where limbs part from the body or each other: which sheet each vertex is on, and each
-    /// edge's crossings (see [`Builder::parted`]).
+    /// edge's crossings (see [`Builder::parted`]); `None` where the cell has one surface.
     parted: Option<Box<Parted>>,
     /// Mesh index of the first vertex.
     index: u32,
@@ -93,13 +93,17 @@ struct Crossing {
 }
 
 impl Leaf {
-    /// Mesh index of the vertex on `sheet` (`Sheet::WHOLE_ID`: any) by `edge`: the cell's vertex of
-    /// that sheet (a cell has one per sheet, so a coarser neighbour, whose own copy of the edge may
-    /// cross other sheets, still joins the right one), else the edge's first sheet.
+    /// Mesh index of the vertex a quad of `sheet` around `edge` joins. A parted leaf gives its
+    /// vertex on that sheet (it has one per sheet, so a coarser neighbour, whose own copy of the
+    /// edge may cross other sheets, still joins the right one), else that of the edge's first
+    /// crossing; any other leaf the vertex of the edge's own surface, whatever `sheet`.
     fn vertex(&self, edge: usize, sheet: u16) -> u32 {
         let vert = self.parted.as_ref().map_or_else(
             || self.sheet.get(edge).copied().filter(|s| *s != u8::MAX).unwrap_or(0),
-            |parted| parted.sheets.iter().position(|s| *s == sheet).map(Clamp::clamp_u8).or_else(|| parted.edges.get(edge).and_then(|cs| cs.first()).map(|c| c.vert)).unwrap_or(0),
+            |parted| {
+                let on_edge = || parted.edges.get(edge).and_then(|cs| cs.first()).map(|c| c.vert);
+                parted.sheets.iter().position(|s| *s == sheet).map(Clamp::clamp_u8).or_else(on_edge).unwrap_or(0)
+            },
         );
         self.index + u32::from(vert)
     }
@@ -311,11 +315,11 @@ impl Builder<'_> {
         s
     }
 
-    /// A leaf where the surface parts into sheets: on some edge a limb clear of where it attaches
-    /// meets the body or another limb. There the body (with the limbs attached at that point) and
-    /// each such limb are meshed as surfaces of their own, running on through each other, with a
-    /// vertex each; elsewhere in the cell the whole surface's crossings join the vertex of the
-    /// sheet they lie on. `None` if no edge parts.
+    /// A leaf where the surface parts into sheets: a limb clear of where it attaches and the body,
+    /// or another limb, both pass through the cell or near it (see [`parts`]). There the body
+    /// (with the limbs attached at each point) and each such limb are meshed as surfaces of their
+    /// own, running on through each other, with a vertex per sheet. `None` if the cell doesn't
+    /// part.
     fn parted(&mut self, view: &ChunkView, cell: IVec3, level: u8) -> Option<Leaf> {
         let g = self.grid;
         let span = 1i32 << level;
@@ -333,16 +337,18 @@ impl Builder<'_> {
             let lerp = |da: f32, db: f32| at(a).lerp(at(b), da / (da - db));
             let detached = |limb: u16| [sa, sb].iter().all(|s| s.limbs.iter().any(|l| l.limb == limb && l.detached));
             let own = |s: &Sample, limb: u16| s.limbs.iter().find(|l| l.limb == limb).map_or(f32::MAX, |l| l.own);
-            let group = |s: &Sample| s.limbs.iter().filter(|l| !detached(l.limb)).fold(s.body, |d, l| d.min(l.joined));
+            // (Two limbs blended into each other where both attach are attached there: in it.)
+            let group = |s: &Sample| s.limbs.iter().filter(|l| !detached(l.limb)).fold(s.body.min(s.paired), |d, l| d.min(l.joined));
             let (ga, gb) = (group(sa), group(sb));
             if (ga < 0.0) != (gb < 0.0) {
                 // On the sheet that makes it at the inside end: an attached limb's surface stays its
-                // own sheet's where the limb comes clear of where it attaches.
+                // own sheet's where the limb comes clear of where it attaches; where two limbs
+                // blend into each other it is the body's, which has both.
                 let inside = if ga < 0.0 { sa } else { sb };
                 let sheet = inside
                     .limbs
                     .iter()
-                    .filter(|l| !detached(l.limb) && l.own < inside.body)
+                    .filter(|l| !detached(l.limb) && l.own < inside.body && inside.paired >= f32::MAX)
                     .min_by(|x, y| x.joined.total_cmp(&y.joined))
                     .map_or(Sheet::BODY_ID, |l| l.limb);
                 list.push((sheet, ga < 0.0, lerp(ga, gb)));
@@ -549,7 +555,9 @@ fn process_edge(nodes: [&Node; 4], dir: usize, out: &mut Vec<u32>) {
     }
     let Some((small, edge)) = leaves.iter().flatten().min_by_key(|(l, _)| l.level).copied() else { return };
     // The sheets crossing the smallest leaf's copy of the edge, and which way.
-    let crossings: SmallVec<[(u16, bool); 2]> = if let Some(parted) = &small.parted { parted.edges.get(edge).map_or_default(|cs| cs.iter().map(|c| (c.sheet, c.flip)).collect()) } else {
+    let crossings: SmallVec<[(u16, bool); 2]> = if let Some(parted) = &small.parted {
+        parted.edges.get(edge).map_or_default(|cs| cs.iter().map(|c| (c.sheet, c.flip)).collect())
+    } else {
         let Some(&[c1, c2]) = EDGEVMAP.get(edge) else { return };
         let (m1, m2) = (small.corners >> c1 & 1 == 1, small.corners >> c2 & 1 == 1);
         if m1 == m2 { SmallVec::new() } else { SmallVec::from_elem((Sheet::WHOLE_ID, m1), 1) }

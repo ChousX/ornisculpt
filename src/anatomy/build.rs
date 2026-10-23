@@ -52,6 +52,9 @@ pub struct BuiltPart {
     pub path: PartPath,
     pub parent: Option<u16>,
     pub role: Option<LimbRole>,
+    /// Meshed as a surface of its own that joins its parent only at its root (a limb, wing or
+    /// tail; see [`PartKind::apart`](super::PartKind::apart)).
+    pub apart: bool,
     pub detail: PartDetail,
     /// Resolved: the coarsest level this part appears in.
     pub lod: LodLevel,

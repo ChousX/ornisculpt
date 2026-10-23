@@ -116,14 +116,18 @@ impl LimbField {
 }
 
 /// The body and each limb at one point, kept apart: what [`BodyField::joined`] and the sheets
-/// are made of.
+/// are made of. A limb blends into the body, and into another limb only where both attach (see
+/// [`BodyField::paired`]); elsewhere two only ever meet.
 struct Acc<'a> {
-    /// Primitives on no limb (`None` until the first).
+    /// The smooth union of the primitives on no limb (`None` until the first).
     body: Option<f32>,
     /// The body's raised stamps, which raise everything.
     raised: f32,
+    /// Per limb met so far, its share (limbs past the last slot share it).
     limbs: [LimbField; LIMB_SLOTS],
+    /// Slots of `limbs` in use.
     used: usize,
+    /// The nearest union primitive of all.
     nearest: Option<&'a PreparedPrim>,
     /// The nearest union primitive on no limb.
     body_nearest: (f32, Option<&'a PreparedPrim>),
@@ -132,7 +136,7 @@ struct Acc<'a> {
 }
 
 impl<'a> Acc<'a> {
-    /// Accumulates the primitives on `sheet` (all of them for [`Sheet::Whole`]).
+    /// Accumulates the primitives on `sheet` (all of them for [`Sheet::Whole`] and [`Sheet::Body`]).
     #[inline]
     fn gather(prims: impl Iterator<Item = &'a PreparedPrim>, sheet: Sheet, p: Vec3A) -> Self {
         let mut acc = Self {
@@ -210,6 +214,11 @@ impl<'a> Acc<'a> {
         Some((l, near))
     }
 
+    /// The slots in use.
+    fn attached_slots(&self) -> &[LimbField] {
+        self.limbs.get(..self.used).unwrap_or_default()
+    }
+
     fn limbs(&self) -> impl Iterator<Item = &LimbField> {
         self.limbs.iter().take(self.used)
     }
@@ -217,9 +226,10 @@ impl<'a> Acc<'a> {
 
 /// One sheet of a body's surface.
 ///
-/// Where a limb touches the body away from where it attaches, or touches another limb, the mesher
-/// builds each one's own surface through the other instead of one surface around both, so they
-/// part cleanly when they move (see [`RawMesh::sheets`](super::RawMesh::sheets)).
+/// A limb here is any part meshed apart ([`BuiltPart::apart`](crate::anatomy::BuiltPart::apart)):
+/// a leg, arm, wing or tail. Where a limb touches the body away from where it attaches, or
+/// touches another limb, the mesher builds each one's own surface through the other instead of
+/// one surface around both, so they part cleanly when they move (see [`RawMesh::sheets`](super::RawMesh::sheets)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
     /// The whole body: every primitive, limbs joined.
@@ -274,6 +284,9 @@ pub(super) struct Sample {
     /// The body alone (`f32::MAX` where no body primitive reaches).
     pub(super) body: f32,
     pub(super) limbs: SmallVec<[SheetSample; 4]>,
+    /// Limbs blended into each other where both attach (see [`BodyField::paired`]; `f32::MAX`
+    /// where no two do here): part of the body's sheet with them attached.
+    pub(super) paired: f32,
 }
 
 /// One limb in a [`Sample`].
@@ -288,12 +301,16 @@ pub(super) struct SheetSample {
     pub(super) detached: bool,
 }
 
-/// Where a limb attaches to the body: the stretch of its skeleton inside the body, as balls as
-/// thick as the limb there. The limb blends into the body within `margin` of them, fading out
-/// over the next `margin`; beyond, the two only touch.
+/// Where a limb attaches to the body: a ball at each of its root joints, as thick as the limb
+/// there (see [`BodyField::attachments`]). The limb blends into the body within `margin` of them,
+/// fading out over the next `margin`; beyond, the two only touch.
 struct Attachment {
     balls: SmallVec<[(Vec3A, f32); 8]>,
     margin: f32,
+    /// A wing or tail (not a leg or arm): it blends into another limb where both attach (see
+    /// [`BodyField::paired`]). Legs and arms never blend into each other: thighs touch, they don't
+    /// web, even where both hips' attachments overlap at the crotch.
+    pairs: bool,
 }
 
 impl Attachment {
@@ -308,6 +325,10 @@ impl Attachment {
         (t * t).mul_add(-2.0f32.mul_add(-t, 3.0), 1.0)
     }
 }
+
+/// Where a limb attaches, for the GPU preview: its balls (centre, radius), margin and whether it
+/// blends into other limbs where both attach (see [`BodyField::attachment`]).
+pub(super) type AttachmentView<'a> = (&'a [(Vec3A, f32)], f32, bool);
 
 /// A primitive moved into model space at rest pose, ready for evaluation.
 pub(super) struct PreparedPrim {
@@ -519,8 +540,9 @@ impl BodyField {
     /// Where each limb attaches: at each of its root joints (a bone whose parent is off the limb,
     /// or past it to the first joint inside the limb's own surface, the shoulder past the
     /// clavicle), a ball as thick as the limb there, reaching to the body if the joint stands
-    /// clear of it. However far the limb's bones run on inside the body (a horse's upper foreleg),
-    /// only there does it join it: elsewhere it is pressed against it.
+    /// clear of it, with the limb's first blend as its margin. However far the limb's bones run on
+    /// inside the body (a horse's upper foreleg), only there does it join it: elsewhere it is
+    /// pressed against it.
     fn attachments(&self, anatomy: &Anatomy) -> Vec<Option<Attachment>> {
         let body: Vec<usize> = (0..self.prims.len()).filter(|&i| self.prims.get(i).is_some_and(|p| p.limb.is_none())).collect();
         if body.is_empty() {
@@ -529,7 +551,7 @@ impl BodyField {
         (0u16..)
             .zip(&anatomy.parts)
             .map(|(pi, part)| {
-                part.role?;
+                part.apart.then_some(())?;
                 let own: Vec<usize> = (0..self.prims.len()).filter(|&i| self.prims.get(i).is_some_and(|p| p.limb == Some(pi))).collect();
                 let first = own.iter().filter_map(|&i| self.prims.get(i)).find(|p| p.op == PrimOp::Union)?;
                 let on_part = |b: BoneId| part.bones.contains(&b.0);
@@ -542,15 +564,90 @@ impl BodyField {
                         let Some(q) = joint(b) else { break };
                         let depth = -self.distance_of(&own, q);
                         if depth > 0.0 {
-                            balls.push((q, depth + self.distance_of(&body, q).max(0.0)));
+                            // A wing or tail joins the body all round it, however flat (a bird's
+                            // tail), and on out to where it comes out of the body if sunk into it.
+                            let wide = part.role.is_none();
+                            let axis = self.bone_model.get(b.index()).map_or(Vec3A::Y, |m| m.matrix3.y_axis);
+                            let girth = if wide { self.girth(&own, q, axis, depth) } else { depth };
+                            balls.push((q, girth + self.distance_of(&body, q).max(0.0)));
+                            if wide {
+                                self.sunk_root(&own, &body, part, b, &mut balls);
+                            }
                             break;
                         }
                         at = part.bones.clone().map(BoneId).find(|&c| self.bone_parent.get(c.index()).copied().flatten() == Some(b));
                     }
                 }
-                (!balls.is_empty()).then(|| Attachment { balls, margin: first.blend.max(ATTACH_MARGIN) })
+                (!balls.is_empty()).then(|| Attachment { balls, margin: first.blend.max(ATTACH_MARGIN), pairs: part.role.is_none() })
             })
             .collect()
+    }
+
+    /// Balls on down the chain of `part` from its root joint `root`, sunk into the body (`body`),
+    /// to where it comes out of it: each as thick as the part (`own`) there, the last where its
+    /// axis leaves the body. A limb's bones may run on inside the body and part from it (a horse's
+    /// upper foreleg); a tail's sunk into a rump, or a wing's into a shoulder, only roots it.
+    fn sunk_root(&self, own: &[usize], body: &[usize], part: &crate::anatomy::BuiltPart, root: BoneId, balls: &mut SmallVec<[(Vec3A, f32); 8]>) {
+        /// The most balls a sunk root adds.
+        const MAX_SUNK: usize = 12;
+        let joint = |b: BoneId| self.bone_model.get(b.index()).map(|m| m.translation);
+        let child = |b: BoneId| part.bones.clone().map(BoneId).find(|&c| self.bone_parent.get(c.index()).copied().flatten() == Some(b));
+        let mut chain: SmallVec<[Vec3A; 8]> = joint(root).into_iter().collect();
+        let mut at = child(root);
+        while let Some(b) = at {
+            chain.extend(joint(b));
+            at = child(b);
+        }
+        let mut added = 0;
+        let mut last = balls.last().map_or(0.0, |b| b.1);
+        for [a, b] in chain.array_windows::<2>() {
+            let len = a.distance(*b).max(1e-4);
+            let mut t = 0.0;
+            loop {
+                // Balls half their radius apart, on to the next joint.
+                t += (last * 0.5).max(ATTACH_MARGIN * 0.5);
+                let along = (t / len).min(1.0);
+                let p = a.lerp(*b, along);
+                let depth = -self.distance_of(own, p);
+                if depth <= 0.0 || added >= MAX_SUNK {
+                    return;
+                }
+                let girth = self.girth(own, p, *b - *a, depth);
+                balls.push((p, girth));
+                added += 1;
+                last = girth;
+                if self.distance_of(body, p) >= 0.0 {
+                    return;
+                }
+                if along >= 1.0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// How far the surface of `own` reaches from `p` (inside it, `depth` from its surface) across
+    /// `axis`: the most of eight directions round it.
+    fn girth(&self, own: &[usize], p: Vec3A, axis: Vec3A, depth: f32) -> f32 {
+        let axis = axis.normalize_or(Vec3A::Y);
+        let side = axis.any_orthonormal_vector();
+        let up = axis.cross(side);
+        (0u8..8)
+            .map(|k| {
+                let (sin, cos) = (f32::from(k) * std::f32::consts::FRAC_PI_4).sin_cos();
+                let dir = side * cos + up * sin;
+                // March out by the distance left (a smooth union's distance is conservative).
+                let mut t = depth;
+                for _ in 0..16 {
+                    let d = -self.distance_of(own, p + dir * t);
+                    if d <= 1e-4 {
+                        break;
+                    }
+                    t += d;
+                }
+                t
+            })
+            .fold(depth, f32::max)
     }
 
     /// Distance to the smooth union of a subset of primitives (no creases). Indices are
@@ -620,8 +717,14 @@ impl BodyField {
         p: Vec3A,
     ) -> (f32, Option<&'a PreparedPrim>) {
         let acc = Acc::gather(prims, Sheet::Whole, p);
-        let d = acc.body.map_or(f32::MAX, |b| b - acc.raised);
-        let d = acc.limbs().fold(d, |d, l| d.min(self.joined(l, acc.body, p) - acc.raised));
+        let mut joined = [f32::MAX; LIMB_SLOTS];
+        let mut d = acc.body.unwrap_or(f32::MAX);
+        for (l, j) in acc.limbs().zip(&mut joined) {
+            *j = self.joined(l, acc.body, p);
+            d = d.min(*j);
+        }
+        let d = d.min(self.paired(acc.attached_slots(), &joined, p));
+        let d = if d < f32::MAX { d - acc.raised } else { d };
         (self.creased(joints, p, d), acc.nearest)
     }
 
@@ -643,12 +746,14 @@ impl BodyField {
             _ => acc.body.unwrap_or(f32::MAX),
         };
         let mut near = acc.body_nearest;
-        for (l, &own_near) in acc.limbs().zip(&acc.limb_nearest) {
+        let mut joined = [f32::MAX; LIMB_SLOTS];
+        for ((l, &own_near), j) in acc.limbs().zip(&acc.limb_nearest).zip(&mut joined) {
             let detached = self.detached(l.id, p);
             match sheet {
-                // The body with the limbs attached here.
+                // The body with the limbs attached here (blended into each other where two do).
                 Sheet::Body if !detached => {
-                    d = d.min(self.joined(l, acc.body, p));
+                    *j = self.joined(l, acc.body, p);
+                    d = d.min(*j);
                     near = closer(near, own_near);
                 }
                 // Clear of where it attaches, the limb alone: its surface runs on through the body.
@@ -656,6 +761,9 @@ impl BodyField {
                 Sheet::Limb(id) if id == l.id => (d, near) = (self.joined(l, acc.body, p), closer(near, own_near)),
                 _ => {}
             }
+        }
+        if sheet == Sheet::Body {
+            d = d.min(self.paired(acc.attached_slots(), &joined, p));
         }
         (self.creased(joints, p, d - acc.raised), near.1)
     }
@@ -669,12 +777,16 @@ impl BodyField {
         let body = acc.body.map_or(f32::MAX, |b| c(b - acc.raised));
         let mut whole = acc.body.map_or(f32::MAX, |b| b - acc.raised);
         let mut limbs = SmallVec::new();
-        for l in acc.limbs() {
-            let joined = self.joined(l, acc.body, p) - acc.raised;
+        let mut all = [f32::MAX; LIMB_SLOTS];
+        for (l, j) in acc.limbs().zip(&mut all) {
+            *j = self.joined(l, acc.body, p);
+            let joined = *j - acc.raised;
             whole = whole.min(joined);
             limbs.push(SheetSample { limb: l.id, own: c(l.own() - acc.raised), joined: c(joined), detached: self.detached(l.id, p) });
         }
-        Sample { whole: c(whole), body, limbs }
+        let paired = self.paired(acc.attached_slots(), &all, p);
+        let paired = if paired < f32::MAX { c(paired - acc.raised) } else { paired };
+        Sample { whole: c(whole.min(paired)), body, limbs, paired }
     }
 
     /// A limb joined to the body (`body`, before the body's raised stamps): blended in as its
@@ -697,6 +809,60 @@ impl BodyField {
         (blended - hard).mul_add(w, hard)
     }
 
+    /// Limbs `limbs` (joined to the body as `joined`, in order) blended into each other where both
+    /// attach, if one of the two is a wing or tail: each two's own surfaces blended into each other
+    /// by the lesser of their margins (each joined to the body as it is), fading to the hard union
+    /// between them (`min` of the two) as the lesser of their [`Attachment::weight`]s does. `f32::MAX` where no two blend here. Elsewhere limbs only meet:
+    /// a hind leg and an insect's abdomen web together at the thorax, not down the leg.
+    #[inline]
+    fn paired(&self, limbs: &[LimbField], joined: &[f32], p: Vec3A) -> f32 {
+        let mut out = f32::MAX;
+        if limbs.len() < 2 {
+            return out;
+        }
+        // Each limb's attachment and its weight here, worked out when first wanted.
+        let mut weight: [Option<f32>; LIMB_SLOTS] = [None; LIMB_SLOTS];
+        let attach = |l: &LimbField| self.attach.get(usize::from(l.id)).and_then(Option::as_ref);
+        for (i, (a, &ja)) in limbs.iter().zip(joined).enumerate() {
+            let Some(at_a) = attach(a).filter(|_| a.own < f32::MAX) else { continue };
+            for (j, (b, &jb)) in limbs.iter().zip(joined).enumerate().skip(i + 1) {
+                let Some(at_b) = attach(b).filter(|at_b| b.own < f32::MAX && (at_a.pairs || at_b.pairs)) else { continue };
+                let (oa, ob) = (a.own(), b.own());
+                let k = at_a.margin.min(at_b.margin);
+                // Out of each other's blend the two only meet: skip the zone test.
+                if (oa - ob).abs() >= k {
+                    continue;
+                }
+                let mut w = |n: usize, at: &Attachment| weight.get_mut(n).map_or_else(|| at.weight(p), |w| *w.get_or_insert_with(|| at.weight(p)));
+                let w = w(i, at_a).min(w(j, at_b));
+                if w <= 0.0 {
+                    continue;
+                }
+                // Their own surfaces blended into each other (not the body again, which each is
+                // already joined to as it is).
+                let hard = ja.min(jb);
+                let pair = sdf::smin(oa, ob, k).0.min(hard);
+                out = out.min((pair - hard).mul_add(w, hard));
+            }
+        }
+        out
+    }
+
+    /// The other limbs (up to two; `u16::MAX` past them) that attach at `p` as `limb` does, their
+    /// zones overlapping, and blend into it there (one of the two a wing or tail).
+    pub(super) fn shares_attachment(&self, limb: u16, p: Vec3A) -> [u16; 2] {
+        let mut out = [u16::MAX; 2];
+        if self.attach_weight(limb, p) <= 0.0 {
+            return out;
+        }
+        let pairs = self.attach.get(usize::from(limb)).and_then(Option::as_ref).is_some_and(|a| a.pairs);
+        let others = (0u16..).zip(&self.attach).filter(|(m, a)| *m != limb && a.as_ref().is_some_and(|a| (pairs || a.pairs) && a.weight(p) > 0.0));
+        for (slot, (m, _)) in out.iter_mut().zip(others) {
+            *slot = m;
+        }
+        out
+    }
+
     /// The field and its sheets at `p`.
     pub(super) fn sample_at(&self, p: Vec3A) -> Sample {
         let joints = self.creases.as_ref().map_or(&[][..], |c| &c.joints);
@@ -714,6 +880,12 @@ impl BodyField {
         self.attach.get(usize::from(limb)).and_then(Option::as_ref).map_or(0.0, |a| a.weight(p))
     }
 
+    /// Where `limb` attaches: its balls (centre, radius), margin and whether it blends into other
+    /// limbs where both attach (`None` if it doesn't attach), for the GPU preview.
+    pub(super) fn attachment(&self, limb: u16) -> Option<AttachmentView<'_>> {
+        self.attach.get(usize::from(limb)).and_then(Option::as_ref).map(|a| (&a.balls[..], a.margin, a.pairs))
+    }
+
     /// How thick `limb` is where it attaches (0 if it doesn't).
     pub(super) fn attach_radius(&self, limb: u16) -> f32 {
         self.attach.get(usize::from(limb)).and_then(Option::as_ref).map_or(0.0, |a| a.balls.iter().map(|b| b.1).fold(0.0, f32::max))
@@ -723,6 +895,16 @@ impl BodyField {
     /// surfaces, however close.
     pub(super) fn detached(&self, limb: u16, p: Vec3A) -> bool {
         self.attach.get(usize::from(limb)).and_then(Option::as_ref).is_none_or(|a| a.weight(p) <= 0.0)
+    }
+
+    /// How far `p` is past where `limb` attaches, out to where it is [`detached`](Self::detached)
+    /// (0 inside that; infinite for a limb that doesn't attach).
+    #[cfg(test)]
+    pub(super) fn past_attachment(&self, limb: u16, p: Vec3A) -> f32 {
+        self.attach.get(usize::from(limb)).and_then(Option::as_ref).map_or(f32::INFINITY, |a| {
+            let e = a.balls.iter().fold(f32::INFINITY, |e, (c, r)| e.min(p.distance(*c) - r));
+            2.0f32.mul_add(-a.margin, e).max(0.0)
+        })
     }
 
     /// `d` displaced by the skin creases near the surface.
@@ -942,14 +1124,15 @@ pub(super) fn in_line(parent: &[Option<BoneId>], a: BoneId, b: BoneId) -> bool {
     up(a, b) || up(b, a)
 }
 
-/// The limb `part` belongs to: itself if it is a limb, else its parent if that is one (hands,
-/// toes, hooves).
+/// The limb `part` belongs to: itself if it is meshed apart (a leg, arm, wing or tail, see
+/// [`BuiltPart::apart`](crate::anatomy::BuiltPart::apart)), else its parent if that is one (hands,
+/// toes, hooves, a tail's club).
 pub(super) fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
     let p = anatomy.parts.get(part.idx())?;
-    if p.role.is_some() {
+    if p.apart {
         return Some(part);
     }
-    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
+    p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.apart))
 }
 
 impl BodyField {
@@ -1094,58 +1277,91 @@ mod limb_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::as_conversions, clippy::cast_precision_loss, clippy::many_single_char_names, reason = "throwaway diagnostic probe")]
-mod attach_probe {
+mod apart_tests {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
 
-    /// Per limb: each chain joint's body distance and the limb's own prims there.
+    fn field_of(body: &str) -> (Anatomy, BodyField) {
+        let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let plan: BodyPlan = ron::from_str(&text).unwrap();
+        let anatomy = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+        (anatomy, field)
+    }
+
+    /// Every mob's limbs (legs, arms, wings, tails) fit the slots `BodyField::eval` keeps them
+    /// apart in at one point (and `sdf_field.wesl` in the preview): a dragon has seven.
     #[test]
-    #[ignore = "probe"]
-    fn horse_zones() {
-        for name in ["horse", "biped"] {
-            let text = std::fs::read_to_string(format!("{}/assets/mobs/{name}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    fn every_mob_fits_its_limb_slots() {
+        let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
+        let mut bodies: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".body.ron").map(str::to_owned)).collect();
+        bodies.sort();
+        assert!(bodies.iter().any(|b| b == "dragon"), "{bodies:?}");
+        for body in bodies {
+            let text = std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap();
             let plan: BodyPlan = ron::from_str(&text).unwrap();
-            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
-            let f = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
-            let body: Vec<usize> = (0..f.prims.len()).filter(|&i| f.prims[i].limb.is_none()).collect();
-            for (pi, p) in a.parts.iter().enumerate() {
-                let Some(att) = f.attach.get(pi).and_then(Option::as_ref) else { continue };
-                let own: Vec<usize> = (0..f.prims.len()).filter(|&i| f.prims[i].limb == u16::try_from(pi).ok()).collect();
-                println!("{name} {}: {} balls, max r {:.3}, margin {:.3}", p.path.0, att.balls.len(), att.balls.iter().map(|b| b.1).fold(0.0, f32::max), att.margin);
-                // Along the limb's surface on the body side: from each joint, step towards the body centre.
-                for b in p.bones.clone() {
-                    let m = f.bone_model[usize::from(b)];
-                    let len = a.skeleton.bones[usize::from(b)].length;
-                    for k in 0..=4 {
-                        let q = m.translation + m.matrix3.y_axis.normalize() * len * (k as f32 / 4.0);
-                        let (db, dl) = (f.distance_of(&body, q), f.distance_of(&own, q));
-                        print!(" [{}:{k} body {db:+.3} own {dl:+.3} w {:.2}]", a.skeleton.bones[usize::from(b)].name, att.weight(q));
-                    }
-                    println!();
-                }
-            }
+            // Bodies with authored parts need their meshes loaded (`beast`): left out.
+            let Ok(anatomy) = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()) else {
+                println!("{body}: needs authored meshes, skipped");
+                continue;
+            };
+            let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+            let mut limbs: Vec<u16> = field.prims.iter().filter_map(|p| p.limb).collect();
+            limbs.sort_unstable();
+            limbs.dedup();
+            assert!(limbs.len() <= LIMB_SLOTS, "{body}: {} limbs, {LIMB_SLOTS} slots", limbs.len());
         }
     }
 
+    /// A hexapod's hind leg and its abdomen (a tail) both attach at the thorax: there they blend
+    /// into each other as each does into the body; wherever either is clear of where it attaches
+    /// they only meet, a hard union of the two.
+    #[test]
+    fn limbs_blend_only_where_both_attach() {
+        let (a, field) = field_of("hexapod");
+        let part = |name: &str| (0u16..).zip(&a.parts).find(|(_, p)| p.path.0.ends_with(name)).map(|(i, _)| i).unwrap();
+        let (leg, abdomen) = (part("leg.hind.l"), part("abdomen"));
+        let on = |limb: Option<u16>| -> Vec<usize> { (0..field.prims.len()).filter(|&i| field.prims[i].limb.is_none() || field.prims[i].limb == limb).collect() };
+        let (with_leg, with_abdomen) = (on(Some(leg)), on(Some(abdomen)));
+        let both: Vec<usize> = (0..field.prims.len()).filter(|&i| field.prims[i].limb.is_none_or(|l| l == leg || l == abdomen)).collect();
+        let hip = field.bone_model[usize::from(a.parts[leg.idx()].bones.start)].translation;
+        let (mut blended, mut worst_apart) = (0, 0.0f32);
+        let step = 0.012;
+        for z in -12i8..=12 {
+            for y in -12i8..=12 {
+                for x in -12i8..=12 {
+                    let p = hip + Vec3A::new(f32::from(x), f32::from(y), f32::from(z)) * step;
+                    let hard = field.distance_of(&with_leg, p).min(field.distance_of(&with_abdomen, p));
+                    let d = field.distance_of(&both, p);
+                    if field.attach_weight(leg, p).min(field.attach_weight(abdomen, p)) <= 0.0 {
+                        worst_apart = worst_apart.max((d - hard).abs());
+                    } else if d < hard - 1e-3 {
+                        blended += 1;
+                    }
+                }
+            }
+        }
+        println!("{blended} points blended, at most {worst_apart} m off the hard union clear of where both attach");
+        assert!(blended > 0, "the hind leg and abdomen never blend where both attach");
+        assert!(worst_apart < 1e-5, "they blend {worst_apart} m clear of where both attach");
+    }
+
+    /// Where each wing and tail attaches: its root joints' depth in the body, its balls and margin.
     #[test]
     #[ignore = "probe"]
-    fn limb_joints_vs_body() {
-        for name in ["horse", "biped", "thick", "quadruped", "beast", "bat", "dragon", "hexapod"] {
-            let text = std::fs::read_to_string(format!("{}/assets/mobs/{name}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
-            let plan: BodyPlan = ron::from_str(&text).unwrap();
-            let a = build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap();
-            let f = BodyField::new(&a, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: true });
-            let body: Vec<usize> = (0..f.prims.len()).filter(|&i| f.prims[i].limb.is_none()).collect();
-            println!("== {name}");
-            for (pi, p) in a.parts.iter().enumerate() {
-                if p.role.is_none() { continue; }
-                let own: Vec<usize> = (0..f.prims.len()).filter(|&i| f.prims[i].limb == u16::try_from(pi).ok()).collect();
-                let s: Vec<String> = p.bones.clone().map(|b| {
-                    let at = f.bone_model[usize::from(b)].translation;
-                    format!("{}:{:+.3}/{:+.3}", a.skeleton.bones[usize::from(b)].name, f.distance_of(&body, at), f.distance_of(&own, at))
-                }).collect();
-                println!("{} {:?} parent {:?}: {}", p.path.0, p.role, p.parent, s.join("  "));
+    fn wing_tail_roots() {
+        for body in ["bat", "dragon", "wyvern", "bird", "horse", "quadruped", "beetle", "hexapod", "dragonfly"] {
+            let (a, field) = field_of(body);
+            let body_prims: Vec<usize> = (0..field.prims.len()).filter(|&i| field.prims[i].limb.is_none()).collect();
+            for (pi, part) in (0u16..).zip(&a.parts).filter(|(_, p)| p.apart && p.role.is_none()) {
+                let root = field.bone_model[usize::from(part.bones.start)].translation;
+                let prims = field.prims.iter().filter(|p| p.limb == Some(pi)).count();
+                println!(
+                    "{body} {}: {prims} prims, root {:+.3} in body, attach {:?}",
+                    part.path.0,
+                    field.distance_of(&body_prims, root),
+                    field.attachment(pi).map(|(b, m, _)| (b.iter().map(|(_, r)| (r * 1000.0).round() / 1000.0).collect::<Vec<_>>(), m)),
+                );
             }
         }
     }
