@@ -108,39 +108,26 @@ pub(super) fn reload_changed_assets(
     mut parts: ResMut<PartAssetCache>,
     mobs: Query<(Entity, &Mob, Option<&LiveBody>)>,
 ) {
-    for ev in plan_events.read() {
-        if let AssetEvent::Modified { id } = ev {
-            for (entity, mob, _) in &mobs {
-                if mob.body.id() == *id {
-                    commands.entity(entity).remove::<LiveBody>().insert(GenRequest);
-                }
-            }
+    let plans = modified(&mut plan_events);
+    for (entity, mob, _) in &mobs {
+        if plans.contains(&mob.body.id()) {
+            commands.entity(entity).remove::<LiveBody>().insert(GenRequest);
         }
     }
-    for ev in coat_events.read() {
-        if let AssetEvent::Modified { id } = ev {
-            for (entity, coat) in &coated {
-                if coat.0.id() == *id {
-                    commands.entity(entity).insert(GenRequest);
-                }
-            }
+    let coats = modified(&mut coat_events);
+    for (entity, coat) in &coated {
+        if coats.contains(&coat.0.id()) {
+            commands.entity(entity).insert(GenRequest);
         }
     }
-    for ev in outfit_events.read() {
-        if let AssetEvent::Modified { id } = ev {
-            for (entity, outfit) in &dressed {
-                if outfit.0.id() == *id {
-                    commands.entity(entity).insert(GenRequest);
-                }
-            }
+    let outfit_ids = modified(&mut outfit_events);
+    for (entity, outfit) in &dressed {
+        if outfit_ids.contains(&outfit.0.id()) {
+            commands.entity(entity).insert(GenRequest);
         }
     }
-    let mut stale = Vec::new();
-    for ev in mesh_events.read() {
-        if let AssetEvent::Modified { id } = ev {
-            stale.extend(parts.handles.iter().filter(|(_, h)| h.id() == *id).map(|(p, _)| p.clone()));
-        }
-    }
+    let meshes = modified(&mut mesh_events);
+    let stale: Vec<String> = parts.handles.iter().filter(|(_, h)| meshes.contains(&h.id())).map(|(p, _)| p.clone()).collect();
     for path in stale {
         parts.assets.meshes.remove(&path);
         for (entity, _, live) in &mobs {
@@ -156,6 +143,11 @@ pub(super) fn reload_changed_assets(
     }
 }
 
+/// Every asset id reported modified since the last read, in order.
+fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> Vec<AssetId<A>> {
+    events.read().filter_map(|ev| if let AssetEvent::Modified { id } = ev { Some(*id) } else { None }).collect()
+}
+
 /// Meshes for one LOD level, one per material slot.
 #[derive(Clone, Debug, Default)]
 pub struct LodMeshes(pub Vec<(MaterialSlot, Handle<Mesh>)>);
@@ -168,7 +160,6 @@ pub struct GeneratedBody {
     /// Indexed by `LodLevel as usize`. `Hero` uses the full skeleton, coarser levels the crowd one.
     pub lods: [LodMeshes; 3],
     pub full_bindposes: Handle<SkinnedMeshInverseBindposes>,
-    pub crowd_bindposes: Handle<SkinnedMeshInverseBindposes>,
     /// Bounding radius around the mob origin, for tiering.
     pub radius: f32,
     /// Baked crowd-tier motion for the default gait of this body's leg count.
@@ -293,6 +284,27 @@ impl GenCache {
     pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
+
+    /// Whether `key` is generated or generating.
+    fn known(&self, key: &BodyKey) -> bool {
+        self.bodies.contains_key(key) || self.in_flight.contains_key(key)
+    }
+
+    /// A pending mob's body, once its key is ready (used by `attach_body`).
+    pub(super) fn ready(&self, pending: &GenPending) -> Option<Handle<GeneratedBody>> {
+        self.bodies.get(&pending.0).cloned()
+    }
+
+    /// Failed keys are neither cached nor in flight; mobs waiting on them give up. Returns the
+    /// failure's message (a generic one if it has been forgotten).
+    pub(super) fn lost_error(&self, pending: &GenPending) -> Option<String> {
+        (!self.known(&pending.0)).then(|| self.failed.get(&pending.0).cloned().unwrap_or_else(|| "generation failed".into()))
+    }
+}
+
+/// The asset `handle` points at once loaded, or the default asset without a handle.
+fn loaded_or_default<A: Asset + Clone + Default>(handle: Option<&Handle<A>>, assets: &Assets<A>) -> Option<A> {
+    handle.map_or_else(|| Some(A::default()), |h| assets.get(h).cloned())
 }
 
 /// Generation throughput limits.
@@ -469,7 +481,7 @@ pub(super) fn start_generation(
         // Waiting on the budget with its key known: only a slot opening (or its key starting for
         // another mob) changes anything, so skip re-resolving and re-hashing the whole body.
         if let Some(&WaitingKey(key)) = waiting {
-            if cache.bodies.contains_key(&key) || cache.in_flight.contains_key(&key) {
+            if cache.known(&key) {
                 commands.entity(entity).remove::<(GenRequest, WaitingKey)>().insert(GenPending(key));
                 continue;
             }
@@ -477,20 +489,8 @@ pub(super) fn start_generation(
                 continue;
             }
         }
-        let outfit = match mob_outfit {
-            Some(o) => match outfits.get(&o.0) {
-                Some(o) => o.clone(),
-                None => continue,
-            },
-            None => Outfit::default(),
-        };
-        let coat = match mob_coat {
-            Some(c) => match coats.get(&c.0) {
-                Some(c) => c.clone(),
-                None => continue,
-            },
-            None => Coat::default(),
-        };
+        let Some(outfit) = loaded_or_default(mob_outfit.map(|o| &o.0), &outfits) else { continue };
+        let Some(coat) = loaded_or_default(mob_coat.map(|c| &c.0), &coats) else { continue };
         let live = if let Some(l) = live { l.0.clone() } else {
             let Some(plan) = plans.get(&mob.body) else { continue };
             match apply_form(plan, form) {
@@ -510,7 +510,7 @@ pub(super) fn start_generation(
         paths.extend(outfit.referenced_meshes());
         let Some(assets) = part_assets.resolve(&paths, &server, &meshes) else { continue };
         let key = body_key(&live, &settings, seed.0, &assets, &coat, &outfit);
-        if !cache.bodies.contains_key(&key) && !cache.in_flight.contains_key(&key) {
+        if !cache.known(&key) {
             if cache.in_flight.len() >= budget.max_in_flight {
                 commands.entity(entity).insert(WaitingKey(key));
                 continue;
@@ -569,9 +569,6 @@ pub(super) fn finish_generation(
         #[cfg(feature = "soft-tissue")]
         full_bind.extend(out.soft.hero.iter().map(|r| skeleton.inverse_bind.get(r.bone.index()).copied().unwrap_or(Mat4::IDENTITY)));
         let full = bindposes.add(SkinnedMeshInverseBindposes::from(full_bind));
-        let crowd = bindposes.add(SkinnedMeshInverseBindposes::from(
-            skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect::<Vec<_>>(),
-        ));
         let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
         let lods = ready.lods.map(|split| LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect()));
         let coat_meshes = ready.coats.map(|[shells, feathers]| CoatMeshHandles { shells: shells.map(|m| meshes.add(m)), feathers: feathers.map(|m| meshes.add(m)) });
@@ -581,7 +578,6 @@ pub(super) fn finish_generation(
             anatomy: Arc::new(out.anatomy),
             lods,
             full_bindposes: full,
-            crowd_bindposes: crowd,
             radius,
             motion: Arc::new(out.motion),
             coat_meshes,
@@ -591,20 +587,6 @@ pub(super) fn finish_generation(
         });
         cache.bodies.insert(key, handle);
     }
-}
-
-/// Resolves a pending mob's body once its key is ready (used by `attach_body`).
-pub(super) fn ready_body(cache: &GenCache, pending: &GenPending) -> Option<Handle<GeneratedBody>> {
-    cache.bodies.get(&pending.0).cloned()
-}
-
-/// Failed keys are neither cached nor in flight; mobs waiting on them give up. Returns the
-/// failure's message (a generic one if it has been forgotten).
-pub(super) fn lost_error(cache: &GenCache, pending: &GenPending) -> Option<String> {
-    if cache.bodies.contains_key(&pending.0) || cache.in_flight.contains_key(&pending.0) {
-        return None;
-    }
-    Some(cache.failed.get(&pending.0).cloned().unwrap_or_else(|| "generation failed".into()))
 }
 
 /// Splits the cores not reserved for the main and render threads between the bodies generating

@@ -25,10 +25,8 @@ mod fit;
 
 pub use fit::{fit_outfit, garment_lods};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// Garments a mob wears, baked into its body.
 #[derive(Asset, Reflect, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -119,14 +117,16 @@ impl Outfit {
     /// Palette for the shaders: garment colours (linear) with roughness in w; 8 at most.
     #[must_use]
     pub fn palette(&self) -> [Vec4; MAX_GARMENTS] {
-        let mut out = [Vec4::new(0.5, 0.5, 0.5, 0.85); MAX_GARMENTS];
+        let mut out = DEFAULT_PALETTE;
         for (o, g) in out.iter_mut().zip(&self.garments) {
-            let l = Color::srgb(g.color[0], g.color[1], g.color[2]).to_linear();
-            *o = Vec4::new(l.red, l.green, l.blue, g.roughness);
+            *o = crate::coat::linear(g.color, g.roughness);
         }
         out
     }
 }
+
+/// The palette of an outfit with no garments (and of every non-skin coat uniform).
+pub const DEFAULT_PALETTE: [Vec4; MAX_GARMENTS] = [Vec4::new(0.5, 0.5, 0.5, 0.85); MAX_GARMENTS];
 
 /// Garments per outfit that get their own palette entry (later ones reuse the last colour).
 pub const MAX_GARMENTS: usize = 8;
@@ -135,33 +135,13 @@ pub const MAX_GARMENTS: usize = 8;
 #[derive(Component, Clone, Debug)]
 pub struct MobOutfit(pub Handle<Outfit>);
 
+impl crate::ron_loader::RonAsset for Outfit {
+    const EXTENSIONS: &'static [&'static str] = &["outfit.ron"];
+}
+
 /// Loads `*.outfit.ron`.
-#[derive(Default, TypePath)]
-pub struct OutfitLoader;
-
-#[derive(Debug, Error)]
-pub enum OutfitLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for OutfitLoader {
-    type Asset = Outfit;
-    type Settings = ();
-    type Error = OutfitLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Outfit, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["outfit.ron"]
-    }
-}
+pub type OutfitLoader = crate::ron_loader::RonLoader<Outfit>;
+pub type OutfitLoaderError = crate::ron_loader::RonLoaderError;
 
 pub struct ClothingPlugin;
 

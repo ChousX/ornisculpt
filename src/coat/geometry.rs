@@ -1,6 +1,7 @@
 //! Coat geometry built at generation time from a body LOD mesh: fur shells and feather cards.
 //! Both reuse the body's skinning (same joint space as the LOD they are built from).
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::{Coat, Feathers};
@@ -66,7 +67,7 @@ fn covered_triangles(body: &BodyMeshData, mask: RegionMask) -> impl Iterator<Ite
 
 /// `shells` offset copies of the covered skin; `uvs.x` is the shell height (0..1].
 #[must_use]
-pub fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<BodyMeshData> {
+fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<BodyMeshData> {
     let tris: Vec<[u32; 3]> = covered_triangles(body, mask).collect();
     if tris.is_empty() {
         return None;
@@ -128,7 +129,7 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
         return;
     }
     let masks = coat.coverage(anatomy);
-    let model = anatomy.skeleton.model_rest();
+    let model = anatomy.skeleton.rest_model();
     let mut skin = vec![false; n];
     for &v in body.slot_triangles(MaterialSlot::Skin).flatten() {
         if let Some(s) = skin.get_mut(v.idx()) {
@@ -142,12 +143,7 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
             f32::from(u8::from(masks.fur.contains(region))),
             f32::from(u8::from(masks.feathers.contains(region))),
         );
-        let bone = full_bone(anatomy, level, body.joints.get(i)?[0]);
-        let axis = bone
-            .and_then(|b| model.get(b.index()))
-            .map_or(Vec3::Z, |m| Vec3::from(m.matrix3.y_axis).normalize_or(Vec3::Z));
-        let kind = anatomy.regions.get(region).map_or(RegionKind::Mass, |r| r.kind);
-        Some((cover, if flows_backward(kind) { -axis } else { axis }))
+        Some((cover, flow_axis(anatomy, &model, level, region, body.joints.get(i)?[0])))
     };
     let (mut cover, mut flow): (Vec<Vec3>, Vec<Vec3>) = skin
         .iter()
@@ -226,6 +222,16 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
 /// Gauss-Seidel sweeps integrating the flow into the along-flow coordinate.
 const FLOW_ITERATIONS: usize = 150;
 
+/// The way the coat lies at a vertex of `region` whose first joint is `joint`: along its bone,
+/// backward or toward the tip as [`flows_backward`] says.
+fn flow_axis(anatomy: &Anatomy, model: &[Affine3A], level: LodLevel, region: RegionId, joint: u16) -> Vec3 {
+    let axis = full_bone(anatomy, level, joint)
+        .and_then(|b| model.get(b.index()))
+        .map_or(Vec3::Z, |m| Vec3::from(m.matrix3.y_axis).normalize_or(Vec3::Z));
+    let kind = anatomy.regions.get(region).map_or(RegionKind::Mass, |r| r.kind);
+    if flows_backward(kind) { -axis } else { axis }
+}
+
 /// Which way feathers lie on a region: backward over the body, toward the tip on limbs and tails.
 const fn flows_backward(kind: RegionKind) -> bool {
     matches!(
@@ -245,7 +251,7 @@ const fn flows_backward(kind: RegionKind) -> bool {
 
 /// Feather cards scattered over the covered skin (`density` per m²), deterministic per body.
 #[must_use]
-pub fn feather_cards(
+fn feather_cards(
     body: &BodyMeshData,
     anatomy: &Anatomy,
     level: LodLevel,
@@ -253,7 +259,7 @@ pub fn feather_cards(
     feathers: &Feathers,
     density: f32,
 ) -> Option<BodyMeshData> {
-    let model = anatomy.skeleton.model_rest();
+    let model = anatomy.skeleton.rest_model();
     let mut rng = fork(0, "feathers");
     let lift = feathers.lift_deg.to_radians();
     let mut out = BodyMeshData::default();
@@ -262,11 +268,7 @@ pub fn feather_cards(
             continue;
         };
         let (pa, pb, pc) = (va.position, vb.position, vc.position);
-        let kind = anatomy.regions.get(MobVertexData::unpack(va.mob_data).region).map_or(RegionKind::Mass, |r| r.kind);
-        let axis = full_bone(anatomy, level, va.joints[0])
-            .and_then(|bone| model.get(bone.index()))
-            .map_or(Vec3::Z, |m| Vec3::from(m.matrix3.y_axis).normalize_or(Vec3::Z));
-        let flow = if flows_backward(kind) { -axis } else { axis };
+        let flow = flow_axis(anatomy, &model, level, MobVertexData::unpack(va.mob_data).region, va.joints[0]);
         let area = (pb - pa).cross(pc - pa).length() * 0.5;
         let expected = area * density;
         let count = expected.floor().sat_u32() + u32::from(rng.random::<f32>() < expected.fract());

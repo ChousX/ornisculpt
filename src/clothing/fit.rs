@@ -129,7 +129,7 @@ pub fn fit_outfit(mut anatomy: Anatomy, outfit: &Outfit, assets: &PartAssets) ->
     let mut new_bones: Vec<BoneDef> = Vec::new();
     let mut springs: Vec<SpringChainDef> = Vec::new();
     let mut follows: Vec<ClothFollow> = Vec::new();
-    let model_rest = anatomy.skeleton.model_rest();
+    let model_rest = anatomy.skeleton.rest_model();
 
     for (gi, garment) in outfit.garments.iter().enumerate() {
         let Some(mesh) = assets.meshes.get(&garment.mesh) else {

@@ -13,14 +13,12 @@ pub mod dqs;
 mod geometry;
 mod material;
 
-pub use geometry::{CoatMeshes, annotate, build_coat_meshes, feather_cards, fur_shells};
-pub use material::{COAT_FRAGMENT, COAT_VERTEX, CoatExt, CoatKey, CoatLayer, MobMaterial};
+pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
+pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::anatomy::{Anatomy, RegionMask, RegionSelector};
 
@@ -123,9 +121,10 @@ impl Default for Feathers {
 #[derive(Component, Clone, Debug)]
 pub struct MobCoat(pub Handle<Coat>);
 
-fn linear(c: [f32; 3]) -> Vec4 {
+/// An sRGB colour as linear RGB, with `w` in the fourth lane.
+pub(crate) fn linear(c: [f32; 3], w: f32) -> Vec4 {
     let l = Color::srgb(c[0], c[1], c[2]).to_linear();
-    Vec4::new(l.red, l.green, l.blue, 1.0)
+    Vec4::new(l.red, l.green, l.blue, w)
 }
 
 /// A 64-bit mask as (low, high) words.
@@ -183,28 +182,24 @@ impl Coat {
         m
     }
 
+    /// The first covering `pick` accepts.
+    fn first<T>(&self, pick: impl Fn(&CoveringKind) -> Option<T>) -> Option<T> {
+        self.coverings.iter().find_map(|c| pick(&c.kind))
+    }
+
     #[must_use]
     pub fn scales(&self) -> Option<Scales> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Scales(s) => Some(s),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Scales(s) = k { Some(*s) } else { None })
     }
 
     #[must_use]
     pub fn fur(&self) -> Option<Fur> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Fur(f) => Some(f),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Fur(f) = k { Some(*f) } else { None })
     }
 
     #[must_use]
     pub fn feathers(&self) -> Option<Feathers> {
-        self.coverings.iter().find_map(|c| match c.kind {
-            CoveringKind::Feathers(f) => Some(f),
-            _ => None,
-        })
+        self.first(|k| if let CoveringKind::Feathers(f) = k { Some(*f) } else { None })
     }
 
     /// The shader uniform for this coat on `anatomy`.
@@ -215,9 +210,9 @@ impl Coat {
         let f = self.fur().unwrap_or_default();
         let fe = self.feathers().unwrap_or_default();
         CoatUniform {
-            base: linear(self.base),
-            secondary: linear(self.secondary),
-            accent: linear(self.accent),
+            base: linear(self.base, 1.0),
+            secondary: linear(self.secondary, 1.0),
+            accent: linear(self.accent, 1.0),
             scale_mask: split(masks.scales),
             fur_mask: split(masks.fur),
             feather_mask: split(masks.feathers),
@@ -225,7 +220,7 @@ impl Coat {
             scales: Vec4::new(s.size, s.relief, s.contrast, 0.0),
             fur: Vec4::new(f.length, f.density, f.thickness, f.tip),
             feathers: Vec4::new(fe.length, fe.width, fe.tip, 0.0),
-            cloth: [Vec4::new(0.5, 0.5, 0.5, 0.85); 8],
+            cloth: crate::clothing::DEFAULT_PALETTE,
         }
     }
 
@@ -236,33 +231,13 @@ impl Coat {
     }
 }
 
+impl crate::ron_loader::RonAsset for Coat {
+    const EXTENSIONS: &'static [&'static str] = &["coat.ron"];
+}
+
 /// Loads `*.coat.ron`.
-#[derive(Default, TypePath)]
-pub struct CoatLoader;
-
-#[derive(Debug, Error)]
-pub enum CoatLoaderError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ron(#[from] ron::error::SpannedError),
-}
-
-impl AssetLoader for CoatLoader {
-    type Asset = Coat;
-    type Settings = ();
-    type Error = CoatLoaderError;
-
-    async fn load(&self, reader: &mut dyn Reader, (): &(), _: &mut LoadContext<'_>) -> Result<Coat, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        Ok(ron::de::from_bytes(&bytes)?)
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["coat.ron"]
-    }
-}
+pub type CoatLoader = crate::ron_loader::RonLoader<Coat>;
+pub type CoatLoaderError = crate::ron_loader::RonLoaderError;
 
 pub struct CoatPlugin;
 
