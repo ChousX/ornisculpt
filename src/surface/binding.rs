@@ -22,6 +22,7 @@ use bevy::math::{Affine3A, Vec3A};
 use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 
+use super::body::{in_line, limb_of};
 use super::{BodyField, BodyMeshData};
 use crate::anatomy::{Anatomy, BoneId};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
@@ -62,7 +63,7 @@ pub struct VoxelBinding {
     near: Vec<[(u8, f32); 4]>,
     /// Each cell's nearest primitive's bone (`NO_BONE` outside).
     owner: Vec<u8>,
-    parent: Vec<Option<u8>>,
+    parent: Vec<Option<BoneId>>,
     /// Per bone, the part it belongs to.
     part: Vec<u16>,
     /// Per bone: the arm it moves (part index; `None` for every other bone, clavicles included)
@@ -162,7 +163,7 @@ impl VoxelBinding {
             kind: cells.iter().map(|c| c.kind).collect(),
             near,
             owner: cells.iter().map(|c| c.bone).collect(),
-            parent: anatomy.skeleton.bones.iter().map(|b| b.parent.map(|p| p.0)).collect(),
+            parent: anatomy.skeleton.bones.iter().map(|b| b.parent).collect(),
             part: anatomy.skeleton.bones.iter().map(|b| b.part).collect(),
             limb: arm_roots(anatomy, field.bone_model()),
             falloff: settings.falloff,
@@ -254,20 +255,9 @@ impl VoxelBinding {
         Some((joints, weights))
     }
 
-    /// Same bone, or one a near ancestor of the other (as `BodyField::in_line`).
+    /// Same bone, or one a near ancestor of the other (see [`in_line`]).
     fn in_line(&self, a: u8, b: u8) -> bool {
-        let up = |from: u8, to: u8| {
-            let mut cur = Some(from);
-            for _ in 0..=3 {
-                match cur {
-                    Some(c) if c == to => return true,
-                    Some(c) => cur = self.parent.get(c.idx()).copied().flatten(),
-                    None => return false,
-                }
-            }
-            false
-        };
-        up(a, b) || up(b, a)
+        in_line(&self.parent, BoneId(a), BoneId(b))
     }
 }
 
@@ -443,13 +433,6 @@ fn nearest_four(per_bone: impl Iterator<Item = Reached>, cells: usize) -> Vec<[(
 /// Per bone: the arm it moves and that arm's shoulder joint, for fading limb weight out over the
 /// torso (see [`VoxelBinding::limb`]).
 fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f32)>> {
-    let limb_of = |part: u16| -> Option<u16> {
-        let p = anatomy.parts.get(part.idx())?;
-        if p.role.is_some() {
-            return Some(part);
-        }
-        p.parent.filter(|q| anatomy.parts.get(q.idx()).is_some_and(|q| q.role.is_some()))
-    };
     let clavicle = |bone: u8| anatomy.clavicles.iter().any(|c| c.bone.0 == bone);
     let bones = &anatomy.skeleton.bones;
     bones
@@ -459,7 +442,7 @@ fn arm_roots(anatomy: &Anatomy, model: &[Affine3A]) -> Vec<Option<(u16, Vec3A, f
             if u8::try_from(bi).is_ok_and(clavicle) {
                 return None;
             }
-            let limb = limb_of(def.part)?;
+            let limb = limb_of(anatomy, def.part)?;
             // Arms only: they swing far past where they rest. Legs' weights over the hips are fine as
             // distance gives them, and big hips need them wide.
             let arm = anatomy.parts.get(limb.idx())?;
