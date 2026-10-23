@@ -155,20 +155,13 @@ mod tests {
     use std::f32::consts::PI;
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
-
-    fn body(src: &str, edit: impl FnOnce(&mut BodyPlan)) -> Anatomy {
-        let mut plan: BodyPlan = ron::from_str(src).unwrap();
-        edit(&mut plan);
-        let live = apply_form(&plan, &Form::default()).unwrap();
-        build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap()
-    }
+    use crate::motion::testing::{edited_body, sample_body};
 
     #[test]
     fn big_bodies_are_heavier_and_carry_weight_forward() {
-        let dog = Heft::of(&body(include_str!("../../assets/mobs/quadruped.body.ron"), |_| {}));
-        let horse = Heft::of(&body(include_str!("../../assets/mobs/horse.body.ron"), |_| {}));
-        let human = Heft::of(&body(include_str!("../../assets/mobs/biped.body.ron"), |_| {}));
+        let dog = Heft::of(&sample_body(include_str!("../../assets/mobs/quadruped.body.ron")));
+        let horse = Heft::of(&sample_body(include_str!("../../assets/mobs/horse.body.ron")));
+        let human = Heft::of(&sample_body(include_str!("../../assets/mobs/biped.body.ron")));
         println!("dog {dog:?}\nhorse {horse:?}\nhuman {human:?}");
         assert!((0.8..1.25).contains(&dog.heaviness) && (0.8..1.25).contains(&human.heaviness));
         assert!(horse.heaviness > 1.6, "a horse should feel heavy: {}", horse.heaviness);
@@ -179,8 +172,8 @@ mod tests {
     #[test]
     fn density_scales_a_part() {
         let src = include_str!("../../assets/mobs/quadruped.body.ron");
-        let plain = body(src, |_| {});
-        let dense = body(src, |p| p.root.density = 2.0);
+        let plain = sample_body(src);
+        let dense = edited_body(src, |p| p.root.density = 2.0);
         // Only the root part (the torso) doubles.
         assert!(dense.mass.total > plain.mass.total * 1.2 && dense.mass.total < plain.mass.total * 2.0);
     }

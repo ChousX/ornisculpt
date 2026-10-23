@@ -250,8 +250,7 @@ pub(super) fn soft_tissue(assets: MotionAssets, mut mobs: Query<(&Transform, &Mo
     let dt = assets.time.dt;
     mobs.par_iter_mut().for_each(|(tf, body, pose, feet, mut soft)| {
         let Some(b) = assets.bodies.get(&body.0) else { return };
-        let planted: smallvec::SmallVec<[bool; 8]> = feet.0.iter().map(|f| f.planted).collect();
-        crate::soft::step(&b.anatomy, &b.soft.hero, tf.compute_affine(), &pose.local, &planted, dt, &mut soft);
+        crate::soft::step(&b.anatomy, &b.soft.hero, tf.compute_affine(), &pose.local, &feet.planted(), dt, &mut soft);
     });
 }
 

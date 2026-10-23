@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use super::body::primitive_parts;
 use super::{BodyMeshData, MaterialSlot, MuscleFlex};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, PrimOp, PrimShape, Skeleton};
-use crate::num::Idx;
+use crate::num::{Idx, smoothstep};
 
 /// Outward push per unit of contraction, as a multiple of the muscle's rest height (plus a share of
 /// its thickness, so that flat limb muscles still read when they flex).
@@ -175,12 +175,6 @@ fn bellies(anatomy: &Anatomy, level: LodLevel) -> Vec<Belly> {
             })
         })
         .collect()
-}
-
-/// Hermite step from 0 at `lo` to 1 at `hi`.
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
-    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-    t * t * 2.0f32.mul_add(-t, 3.0)
 }
 
 /// The joint index a mesh at `level` uses for `joint` (the crowd skeleton below `Hero`), or `None`

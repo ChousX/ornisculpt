@@ -88,6 +88,14 @@ pub struct Foot {
 #[derive(Component, Clone, Debug, Default)]
 pub struct Feet(pub SmallVec<[Foot; 8]>);
 
+impl Feet {
+    /// Whether each foot is down.
+    #[must_use]
+    pub fn planted(&self) -> SmallVec<[bool; 8]> {
+        self.0.iter().map(|f| f.planted).collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SpringBone {
     pub angle: Vec2,

@@ -125,6 +125,13 @@ macro_rules! clamp_int {
 }
 clamp_int!(usize, u16, u32, u64, i32, i64);
 
+/// Hermite step from 0 at `lo` to 1 at `hi`.
+#[must_use]
+pub fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+    t * t * 2.0f32.mul_add(-t, 3.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
