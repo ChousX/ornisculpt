@@ -203,9 +203,9 @@ fn moved(t: Transform, local: Vec3) -> Transform {
 
 fn suffixed(base: &str, cx: &BuildCx) -> String {
     match cx.side {
-        super::Side::Left => format!("{base}.l"),
-        super::Side::Right => format!("{base}.r"),
-        super::Side::Center => base.to_owned(),
+        Side::Left => format!("{base}.l"),
+        Side::Right => format!("{base}.r"),
+        Side::Center => base.to_owned(),
     }
 }
 
@@ -223,6 +223,12 @@ fn chain_frames(start: Transform, lens: &[f32], bend: impl Fn(usize) -> Quat) ->
     }
     frames.push(f);
     frames
+}
+
+/// Per-joint bends of a chain curling `curl` degrees per metre: each joint bends by the curl over
+/// the segment before it.
+fn curl_bend(lens: &[f32], curl: f32) -> impl Fn(usize) -> Quat + '_ {
+    move |i| i.checked_sub(1).and_then(|j| lens.get(j)).map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((curl * len).to_radians()))
 }
 
 /// Emits one bone per segment, and its surface: one round cone, or a few where the profile's
@@ -381,11 +387,7 @@ impl PartBuild for ChainPart {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let c = &self.chain;
         let lens = c.segment_lengths();
-        // Curl is per metre: each joint bends by the curl over the segment before it.
-        let frames = chain_frames(with_offset(&at, cx), &lens, |i| {
-            let before = i.checked_sub(1).and_then(|j| lens.get(j));
-            before.map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((c.curl * len).to_radians()))
-        });
+        let frames = chain_frames(with_offset(&at, cx), &lens, curl_bend(&lens, c.curl));
 
         let (r0, r1) = match self.role {
             ChainRole::Neck => (b.region(RegionKind::Neck, cx.side)?, None),
@@ -1031,10 +1033,7 @@ impl PartBuild for DigitParams {
         let n = usize::from(self.count.max(1));
         let lens = self.chain.segment_lengths();
         let spacing = self.chain.radius.scale * 2.4;
-        let curl = |seg: usize| {
-            let before = seg.checked_sub(1).and_then(|j| lens.get(j));
-            before.map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((self.chain.curl * len).to_radians()))
-        };
+        let curl = curl_bend(&lens, self.chain.curl);
         let region = b.region(RegionKind::Digit, cx.side)?;
         let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
@@ -1060,7 +1059,7 @@ impl PartBuild for DigitParams {
                     .with_rotation(Quat::from_rotation_z((-self.spread_deg * k).to_radians()))
             };
             let (chain, seg_lens) = if is_thumb { (&thumb_chain, &thumb_lens) } else { (&self.chain, &lens) };
-            let frames = chain_frames(start, seg_lens, curl);
+            let frames = chain_frames(start, seg_lens, &curl);
             let name = suffixed(&format!("digit{i}"), cx);
             let (bones, _) = emit_chain(b, at.bone, &name, &frames, chain, |_| region)?;
             digits.push(bones.iter().copied().collect());
@@ -1105,10 +1104,7 @@ impl PartBuild for MassParams {
         };
         let layer = if self.shape == MassShape::Sac { PrimLayer::Fat } else { PrimLayer::Base };
         b.primitive(bone, shape, model, self.blend, PrimOp::Union, layer, region);
-        Ok(PartSlots {
-            fixed: std::iter::once(slot(AttachSlot::End, bone, moved(model, Vec3::Y * s.y))).collect(),
-            ..default()
-        })
+        Ok(PartSlots::end(bone, moved(model, Vec3::Y * s.y)))
     }
 }
 

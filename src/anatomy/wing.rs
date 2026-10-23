@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::num::{Clamp, Idx, ToF32};
 
 use super::{
-    AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, AxisSample, BoneId, BuildCx, HardKind, HardParams, LodLevel, PartBuild,
-    PartSlots, PrimLayer, PrimOp, PrimShape, RegionId, RegionKind, frame_y_z, sample_axis,
+    AnatomyBuilder, AnatomyError, AttachPoint, AxisSample, BoneId, BuildCx, HardKind, HardParams, LodLevel, PartBuild,
+    PartSlots, PrimShape, RegionId, RegionKind, frame_y_z, sample_axis,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -702,10 +702,6 @@ impl PartBuild for WingParams {
     }
 }
 
-fn end_slots(bone: BoneId, tip: Transform) -> PartSlots {
-    PartSlots { fixed: std::iter::once((AttachSlot::End, AttachPoint { bone: Some(bone), model: tip })).collect(), ..default() }
-}
-
 /// Membrane wing segment lengths, metres.
 struct MembraneLens {
     humerus: f32,
@@ -899,7 +895,7 @@ fn build_membrane(
         posed
     };
     b.wing_rig(wing.fold, &posed(&closed), Some(&posed(&half)));
-    Ok(end_slots(first_bones[1], first[2]))
+    Ok(PartSlots::end(first_bones[1], first[2]))
 }
 
 /// What the main membrane's fitted poses share: the spread frames, the body, the body line
@@ -1084,7 +1080,7 @@ fn build_feathered(
         b.sheet(coverts);
     }
     feathered_fold(b, wing.fold, ax, bones, tracts, (hum, uln, hand))?;
-    Ok(end_slots(bones[2], arm[3]))
+    Ok(PartSlots::end(bones[2], arm[3]))
 }
 
 /// Folds a bird wing (a Z): humerus back, forearm forward, hand back, the wing standing along
@@ -1194,7 +1190,7 @@ fn build_blade(
     let fold_dir = ax.mix(0.1, -1.0, 0.06);
     let [folded, _] = fixed(frames_along(ax.root, &[(fold_dir, span)], up))?;
     b.wing_rig(wing.fold, &[(hinge, folded)], None);
-    Ok(end_slots(hinge, frames[1]))
+    Ok(PartSlots::end(hinge, frames[1]))
 }
 
 /// Chord at `u` along the wing, as a fraction of the root chord.

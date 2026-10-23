@@ -143,6 +143,12 @@ impl PartSlots {
         }
     }
 
+    /// Only an `End` slot, at `model` on `bone`.
+    #[must_use]
+    pub fn end(bone: BoneId, model: Transform) -> Self {
+        Self { fixed: std::iter::once((AttachSlot::End, AttachPoint { bone: Some(bone), model })).collect(), ..default() }
+    }
+
     pub(crate) fn sample(&self, t: f32) -> Option<AxisSample> {
         sample_axis(&self.axis, t)
     }
@@ -199,13 +205,9 @@ pub fn mirror_point(p: Vec3) -> Vec3 {
     Vec3::new(-p.x, p.y, p.z)
 }
 
-pub(super) fn affine(t: &Transform) -> Affine3A {
-    t.compute_affine()
-}
-
 #[must_use]
 pub fn relative(parent: &Transform, child: &Transform) -> Transform {
-    Transform::from_matrix((affine(parent).inverse() * affine(child)).into())
+    Transform::from_matrix((parent.compute_affine().inverse() * child.compute_affine()).into())
 }
 
 struct PartFrame {
@@ -260,6 +262,11 @@ impl AnatomyBuilder {
 
     fn to_stored(&self, logical: Transform) -> Transform {
         if self.mirrored() { mirror_transform(logical) } else { logical }
+    }
+
+    /// `model` (logical) relative to `bone`'s stored rest transform.
+    fn local_of(&self, bone: BoneId, model: Transform) -> Transform {
+        relative(&self.bone_model(bone), &self.to_stored(model))
     }
 
     fn point_to_stored(&self, p: Vec3) -> Vec3 {
@@ -404,6 +411,11 @@ impl AnatomyBuilder {
         self.primitive_at(bone, shape, model, blend, op, layer, region, LodLevel::Far);
     }
 
+    /// A part's own base shape: a [`primitive`](Self::primitive) unioned on the base layer.
+    pub fn base(&mut self, bone: BoneId, shape: PrimShape, model: Transform, blend: f32, region: RegionId) {
+        self.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
+    }
+
     /// [`primitive`](Self::primitive) that only exists down to `lod` (used by tone stamps).
     #[allow(clippy::too_many_arguments)]
     pub fn primitive_at(
@@ -411,11 +423,6 @@ impl AnatomyBuilder {
         bone: BoneId,
         mut shape: PrimShape,
         model: Transform,
-    /// A part's own base shape: a [`primitive`](Self::primitive) unioned on the base layer.
-    pub fn base(&mut self, bone: BoneId, shape: PrimShape, model: Transform, blend: f32, region: RegionId) {
-        self.primitive(bone, shape, model, blend, PrimOp::Union, PrimLayer::Base, region);
-    }
-
         blend: f32,
         op: PrimOp,
         layer: PrimLayer,
@@ -429,7 +436,7 @@ impl AnatomyBuilder {
                 _ => {}
             }
         }
-        let local = relative(&self.bone_model(bone), &self.to_stored(model));
+        let local = self.local_of(bone, model);
         self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod, weigh: Weigh::Whole, soft: None });
     }
 
@@ -443,7 +450,7 @@ impl AnatomyBuilder {
         let mut dist: Option<f32> = None;
         let mut raised = 0.0;
         for prim in &self.anatomy.primitives {
-            let model = affine(&self.bone_model(prim.bone)) * affine(&prim.local);
+            let model = self.bone_model(prim.bone).compute_affine() * prim.local.compute_affine();
             let scale = (0..3).map(|c| model.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
             let local = model.inverse().transform_point3a(at);
             match prim.op {
@@ -499,12 +506,12 @@ impl AnatomyBuilder {
             super::HardKind::Mesh { path, .. } => self.assets.mesh(path),
             _ => None,
         };
-        let local = relative(&self.bone_model(bone), &self.to_stored(model));
+        let local = self.local_of(bone, model);
         self.anatomy.hard_parts.push(HardPart { bone, local, params, region, mesh, mirror });
     }
 
     pub fn socket(&mut self, name: &str, kind: SocketKind, side: Side, bone: BoneId, model: Transform, radius: f32) {
-        let local = relative(&self.bone_model(bone), &self.to_stored(model));
+        let local = self.local_of(bone, model);
         self.anatomy.sockets.push(SocketDef { name: name.to_owned(), kind, side, bone, local, size: radius });
     }
 
@@ -658,14 +665,7 @@ impl AnatomyBuilder {
 
     /// Shifts root bones so the lowest point of the body rests on y = 0.
     fn ground(&mut self) {
-        let model = self.anatomy.skeleton.model_rest();
-        let min_y = self
-            .anatomy
-            .primitives
-            .iter()
-            .filter(|p| p.op == PrimOp::Union)
-            .filter_map(|p| Some(lowest_point(&p.shape, &(*model.get(p.bone.index())? * affine(&p.local)))))
-            .fold(f32::INFINITY, f32::min);
+        let min_y = lowest_union(&self.anatomy, &self.anatomy.skeleton.model_rest(), |_| true);
         if !min_y.is_finite() {
             return;
         }
@@ -735,9 +735,17 @@ impl AnatomyBuilder {
     }
 }
 
-/// Lowest model-space Y of a primitive placed by `m`.
+/// Lowest model-space height of the union primitives on bones `keep` accepts, posed by `model`.
+pub(super) fn lowest_union(a: &Anatomy, model: &[Affine3A], keep: impl Fn(BoneId) -> bool) -> f32 {
+    a.primitives
+        .iter()
+        .filter(|p| p.op == PrimOp::Union && keep(p.bone))
+        .filter_map(|p| Some(lowest_point(&p.shape, &(*model.get(p.bone.index())? * p.local.compute_affine()))))
+        .fold(f32::INFINITY, f32::min)
+}
+
 /// Lowest model-space height of `shape` placed by `m`.
-pub(super) fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
+fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
     let col = |i: usize| Vec3::from(m.matrix3.col(i));
     let s = (0..3).map(|i| col(i).length()).fold(f32::INFINITY, f32::min);
     let at = |y: f32| m.transform_point3(Vec3::Y * y).y;
