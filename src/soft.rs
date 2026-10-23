@@ -23,7 +23,7 @@ use bevy::prelude::*;
 
 use crate::anatomy::{Anatomy, BoneId, CROWD_SLOT, LodLevel, PrimLayer, PrimOp, PrimShape, WATER};
 use crate::num::{Idx, ToF32};
-use crate::surface::{BodyMeshData, MaterialSlot, SoftVertex, primitive_parts};
+use crate::surface::{BodyMeshData, SoftVertex, primitive_parts};
 
 /// Most regions on a hero body (the heaviest are kept).
 pub const MAX_HERO_REGIONS: usize = 32;
@@ -249,12 +249,7 @@ pub fn soft_weights(mesh: &BodyMeshData, anatomy: &Anatomy, tissue: &SoftTissue,
             Some((u16::try_from(first + k).ok()?, u16::from(bone)))
         })
         .collect();
-    let mut skin = vec![false; mesh.positions.len()];
-    for &i in mesh.slot_triangles(MaterialSlot::Skin).flatten() {
-        if let Some(s) = skin.get_mut(i.idx()) {
-            *s = true;
-        }
-    }
+    let skin = mesh.skin_vertex_mask();
     for ((v, p), _) in out.iter_mut().zip(&mesh.positions).zip(&skin).filter(|(_, s)| **s) {
         // The three strongest; the third is taken off the other two so that a region dropping out
         // of the top two fades rather than pops.
@@ -460,7 +455,7 @@ mod tests {
     use super::*;
     use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
     use crate::motion::{BAKE_FRAMES, Gait, bake_motion};
-    use crate::surface::{AdaptiveContour, ProceduralHardParts, SurfaceSettings, mesh_lod};
+    use crate::surface::{AdaptiveContour, MaterialSlot, ProceduralHardParts, SurfaceSettings, mesh_lod};
 
     fn body(ron: &str) -> Anatomy {
         let plan: BodyPlan = ron::from_str(ron).unwrap();

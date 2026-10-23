@@ -33,7 +33,7 @@ pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
     ATTRIBUTE_SOFT, BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
-    NOT_CLOTH, SoftVertex, Submesh, Vertex,
+    NOT_CLOTH, SoftVertex, Submesh, Vertex, VertexChannel,
 };
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;
