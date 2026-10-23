@@ -8,8 +8,6 @@ use super::Gait;
 use super::stages::{Frame, Sim, leg_length};
 use crate::anatomy::{Anatomy, MAX_CROWD_BONES};
 use crate::num::{Idx, Saturate, ToF32};
-#[cfg(feature = "soft-tissue")]
-use smallvec::SmallVec;
 
 /// Frames recorded per gait cycle.
 pub const BAKE_FRAMES: usize = 24;
@@ -97,6 +95,14 @@ fn skin_frame(anatomy: &Anatomy, local: &[Transform]) -> SkinFrame {
         .collect()
 }
 
+/// `frame` followed by one matrix per crowd soft region (`soft::crowd_matrices`).
+#[cfg(feature = "soft-tissue")]
+fn with_regions(anatomy: &Anatomy, regions: &[crate::soft::SoftRegion], root: Affine3A, state: &crate::soft::SoftState, mut frame: SkinFrame) -> SkinFrame {
+    let bones = frame.clone();
+    crate::soft::crowd_matrices(anatomy, regions, root, state, &bones, &mut frame);
+    frame
+}
+
 /// Bakes `gait` on `anatomy`: each mode is walked in a straight line at a representative speed;
 /// after a warm-up, one cycle is recorded.
 ///
@@ -107,15 +113,10 @@ pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
     debug_assert!(anatomy.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
     #[cfg(feature = "soft-tissue")]
     let soft = crate::soft::SoftTissue::of(anatomy).crowd;
-    #[allow(unused_mut)]
-    let mut idle = skin_frame(anatomy, &anatomy.idle_pose());
+    let idle = skin_frame(anatomy, &anatomy.idle_pose());
     // Standing still, the tissue rests: the soft joints sit on their bones.
     #[cfg(feature = "soft-tissue")]
-    {
-        let rest = crate::soft::SoftState::new(soft.len());
-        let bones = idle.clone();
-        crate::soft::crowd_matrices(anatomy, &soft, Affine3A::IDENTITY, &rest, &bones, &mut idle);
-    }
+    let idle = with_regions(anatomy, &soft, Affine3A::IDENTITY, &crate::soft::SoftState::new(soft.len()), idle);
     let leg = leg_length(anatomy);
 
     let clips = gait
@@ -140,15 +141,12 @@ pub fn bake_motion(anatomy: &Anatomy, gait: &Gait) -> BakedMotion {
                 root.translation += bevy::math::Vec3A::from(sim.loco.velocity * dt);
                 let f = Frame { a: anatomy, gait, root: *root, dt, time: i.to_f32() * dt, leg };
                 let local = sim.frame(&f, None).to_vec();
-                #[allow(unused_mut)]
-                let mut frame = skin_frame(anatomy, &local);
+                let frame = skin_frame(anatomy, &local);
                 #[cfg(feature = "soft-tissue")]
-                {
-                    let planted: SmallVec<[bool; 8]> = sim.feet.0.iter().map(|f| f.planted).collect();
-                    crate::soft::step(anatomy, &soft, *root, &local, &planted, dt, &mut tissue);
-                    let bones = frame.clone();
-                    crate::soft::crowd_matrices(anatomy, &soft, *root, &tissue, &bones, &mut frame);
-                }
+                let frame = {
+                    crate::soft::step(anatomy, &soft, *root, &local, &sim.feet.planted(), dt, &mut tissue);
+                    with_regions(anatomy, &soft, *root, &tissue, frame)
+                };
                 frame
             };
             // Springs settle over the warm-up too, so the recorded cycle loops without a jump.
