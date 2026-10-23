@@ -23,6 +23,9 @@ use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
 
+mod common;
+use common::{Orbit, shot_frames, spawn_stage};
+
 const BODIES: [&str; 6] = [
     "mobs/biped.body.ron",
     "mobs/quadruped.body.ron",
@@ -40,7 +43,7 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.3, 0.35, 13.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, drive, orbit_camera.after(drive), screenshot, frame_stats))
@@ -78,25 +81,6 @@ struct Walker {
     centre: Vec3,
 }
 
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.3, pitch: 0.35, distance: 13.0, target: Vec3::new(0.0, 0.6, 0.0) },
-        }
-    }
-}
-
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -105,19 +89,9 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        // `ORNISCULPT_LIGHT_YAW=deg` swings the light round (to light a mob's back, say).
-        Transform::from_translation(
-            Quat::from_rotation_y(std::env::var("ORNISCULPT_LIGHT_YAW").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0).to_radians())
-                * Vec3::new(3.0, 6.0, 2.0),
-        )
-        .looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    // `ORNISCULPT_LIGHT_YAW=deg` swings the light round (to light a mob's back, say).
+    let light_yaw = std::env::var("ORNISCULPT_LIGHT_YAW").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 80.0, Quat::from_rotation_y(light_yaw) * Vec3::new(3.0, 6.0, 2.0));
     // One graph for every body.
     let graph = graphs.add(library::standard());
     for (i, path) in BODIES.iter().enumerate() {
@@ -195,25 +169,21 @@ fn orbit_camera(
     scroll: Res<AccumulatedMouseScroll>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 100.0);
+    orbit.step(buttons.pressed(MouseButton::Left), motion.delta, scroll.delta.y, true);
     if let Some(f) = demo.focus
         && let Some((_, tf)) = walkers.iter().find(|(w, _)| w.index == f) {
             orbit.target = tf.translation + Vec3::Y * 0.6;
         }
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
+    let view = orbit.transform_at(orbit.target, 0.0);
     for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
+        *t = view;
     }
 }
 
 fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     // `ORNISCULPT_SHOT_FRAME=360` or several, `300,302,304` (saved as `<path>.<frame>.png`).
-    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| "360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let frames = shot_frames(360);
     let last = frames.iter().copied().max().unwrap_or(360);
     *frame += 1;
     if frames.contains(&*frame) {

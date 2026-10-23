@@ -14,15 +14,15 @@ use std::process::ExitCode;
 
 use bevy::prelude::*;
 use ornisculpt::anatomy::{
-    Anatomy, BodyPlan, BoneBudget, FeetReachGround, Form, MAX_BONES, PartAssets, PartLodRules, StaticBalance, Viability, ViabilityCheck,
-    ViabilityChecks, apply_form, build_anatomy,
+    Anatomy, BodyPlan, BoneBudget, FeetReachGround, MAX_BONES, PartAssets, PartLodRules, StaticBalance, Viability, ViabilityCheck, ViabilityChecks,
 };
+
+mod common;
 
 fn build(path: &Path) -> Result<Anatomy, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let plan: BodyPlan = ron::from_str(&text).map_err(|e| e.to_string())?;
-    let live = apply_form(&plan, &Form::default()).map_err(|e| e.to_string())?;
-    build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).map_err(|e| e.to_string())
+    common::build_plan(&plan, PartLodRules::default(), &PartAssets::default())
 }
 
 fn describe(v: &Viability) -> String {

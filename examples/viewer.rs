@@ -17,19 +17,19 @@
 //! camera on the middle of that bone, offset by the `x,y,z` of `ORNISCULPT_CAM`.
 
 use bevy::asset::AssetPlugin;
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{LodLevel, Tone};
 use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::{MobCoat, MobMaterial};
 use ornisculpt::mob::{BodyReady, ForceTier, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSet, MobSkeleton};
 
+mod common;
+use common::{Orbit, TIER_KEYS, asset_arg, cam_env, orbit_camera, shoot_when_ready, spawn_stage, tier_env};
+
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
-    let path = path.strip_prefix("assets/").map(str::to_owned).unwrap_or(path);
-    let coat = std::env::args().nth(2).map(|c| c.strip_prefix("assets/").map(str::to_owned).unwrap_or(c));
+    let path = asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
+    let coat = asset_arg(2);
     App::new()
         .add_plugins((
             DefaultPlugins
@@ -39,7 +39,8 @@ fn main() {
         ))
         .insert_resource(Viewer::new(path, coat))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.9, 0.35, 3.0, Vec3::new(0.0, 0.5, 0.0), (0.3, 30.0)))
+        .init_resource::<Focus>()
         .add_observer(on_ready)
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, focus_camera.before(orbit_camera), orbit_camera, wiggle.after(MobSet::Motion), muscle_flex, draw_skeleton, screenshot))
@@ -68,11 +69,7 @@ struct Viewer {
 impl Viewer {
     fn new(path: String, coat: Option<String>) -> Self {
         let env = |k: &str| std::env::var(k).ok();
-        let lod = match env("ORNISCULPT_LOD").as_deref() {
-            Some("near") => LodLevel::Near,
-            Some("far") => LodLevel::Far,
-            _ => LodLevel::Hero,
-        };
+        let lod = tier_env("ORNISCULPT_LOD").unwrap_or(LodLevel::Hero);
         let tone = env("ORNISCULPT_TONE").and_then(|t| TONE_PRESETS.iter().position(|(n, _)| *n == t)).unwrap_or(0);
         Self {
             path,
@@ -90,10 +87,10 @@ impl Viewer {
     }
 }
 
-/// (name, [muscle, fat, folds, landmarks]); `authored` keeps the RON's tone.
 /// Joint bend held by B (degrees).
 const BEND_DEGREES: f32 = 50.0;
 
+/// (name, [muscle, fat, folds, landmarks]); `authored` keeps the RON's tone.
 const TONE_PRESETS: [(&str, [f32; 4]); 5] = [
     ("authored", [0.0; 4]),
     ("smooth", [0.0, 0.0, 0.0, 0.0]),
@@ -102,45 +99,34 @@ const TONE_PRESETS: [(&str, [f32; 4]); 5] = [
     ("heavy", [0.4, 1.2, 0.8, 0.2]),
 ];
 
+/// `ORNISCULPT_FOCUS`: the bone to follow, and the target's offset from its middle.
 #[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-    /// `ORNISCULPT_FOCUS`: the bone to follow, and the target's offset from its middle.
-    focus: Option<(String, Vec3)>,
-}
+struct Focus(Option<(String, Vec3)>);
 
-impl Default for Orbit {
+impl Default for Focus {
     fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        let (yaw, pitch, distance, target) = match v[..] {
-            [yaw, pitch, distance, x, y, z] => (yaw, pitch, distance, Vec3::new(x, y, z)),
-            _ => (0.9, 0.35, 3.0, Vec3::new(0.0, 0.5, 0.0)),
-        };
-        let focus = std::env::var("ORNISCULPT_FOCUS").ok().map(|bone| (bone, if v.len() == 6 { target } else { Vec3::ZERO }));
-        Self { yaw, pitch, distance, target, focus }
+        let offset = cam_env().map_or(Vec3::ZERO, |(.., target)| target);
+        Self(std::env::var("ORNISCULPT_FOCUS").ok().map(|bone| (bone, offset)))
     }
 }
 
 /// Keeps the orbit target on the middle of the `ORNISCULPT_FOCUS` bone.
 fn focus_camera(
     mut orbit: ResMut<Orbit>,
+    focus: Res<Focus>,
     viewer: Res<Viewer>,
     bodies: Res<Assets<GeneratedBody>>,
     mobs: Query<(&MobBody, &MobSkeleton)>,
     joints: Query<&GlobalTransform, With<MobJoint>>,
 ) {
-    let Some((name, offset)) = orbit.focus.clone() else { return };
+    let Some((name, offset)) = &focus.0 else { return };
     let Ok((body, skeleton)) = mobs.get(viewer.mob) else { return };
     let Some(body) = bodies.get(&body.0) else { return };
     let sk = &body.anatomy.skeleton;
-    let Some(bone) = sk.find(&name) else { return };
+    let Some(bone) = sk.find(name) else { return };
     let Some(Ok(g)) = skeleton.0.get(bone.index()).map(|&j| joints.get(j)) else { return };
     let length = sk.get(bone).map_or(0.0, |b| b.length);
-    orbit.target = g.transform_point(Vec3::Y * length * 0.5) + offset;
+    orbit.target = g.transform_point(Vec3::Y * length * 0.5) + *offset;
 }
 
 fn setup(
@@ -151,16 +137,9 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn(Camera3d::default());
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 20.0, Vec3::new(3.0, 6.0, 2.0));
     viewer.mob = commands.spawn((Mob::new(assets.load(viewer.path.clone())), ForceTier(viewer.lod))).id();
-    if let Some(outfit) = std::env::args().nth(3).map(|c| c.strip_prefix("assets/").map(str::to_owned).unwrap_or(c)) {
+    if let Some(outfit) = asset_arg(3) {
         commands.entity(viewer.mob).insert(MobOutfit(assets.load(outfit)));
     }
     if let Some(coat) = viewer.coat.as_ref().filter(|c| c.as_str() != "-") {
@@ -221,7 +200,7 @@ fn controls(
     mut viewer: ResMut<Viewer>,
     mut lives: Query<&mut LiveBody>,
 ) {
-    for (key, level) in [(KeyCode::Digit1, LodLevel::Hero), (KeyCode::Digit2, LodLevel::Near), (KeyCode::Digit3, LodLevel::Far)] {
+    for (key, level) in TIER_KEYS {
         if keys.just_pressed(key) {
             viewer.lod = level;
             commands.entity(viewer.mob).insert(ForceTier(level));
@@ -254,24 +233,6 @@ fn controls(
         } else if apply_tone(&mut lives, viewer.mob, viewer.tone) {
             commands.entity(viewer.mob).insert(GenRequest);
         }
-    }
-}
-
-fn orbit_camera(
-    mut orbit: ResMut<Orbit>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.3, 30.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
     }
 }
 
@@ -340,13 +301,7 @@ fn draw_skeleton(
 
 fn screenshot(mut commands: Commands, mut viewer: ResMut<Viewer>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    let Some(frames) = viewer.ready_frames.as_mut() else { return };
-    *frames += 1;
-    // Give pipelines time to compile before capturing.
-    if *frames == 120 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frames == 140 {
-        exit.write(AppExit::Success);
+    if let Some(frames) = viewer.ready_frames.as_mut() {
+        shoot_when_ready(&mut commands, &mut exit, frames, path);
     }
 }

@@ -17,11 +17,13 @@
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::num::ToF32;
 use ornisculpt::mob::{Mob, TierCamera};
 use ornisculpt::motion::{Feet, MobIntent};
+
+mod common;
+use common::{Orbit, screenshot_frames, spawn_stage};
 
 const BODIES: [&str; 7] = [
     "mobs/quadruped.body.ron",
@@ -37,10 +39,10 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.5, 0.4, 9.0, Vec3::new(0.0, 0.4, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (drive, orbit_camera, draw_feet, screenshot))
+        .add_systems(Update, (drive, orbit_camera, draw_feet, screenshot_frames(360)))
         .add_observer(report_viability)
         .run();
 }
@@ -58,25 +60,6 @@ struct Walker {
     centre: Vec3,
 }
 
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.5, pitch: 0.4, distance: 9.0, target: Vec3::new(0.0, 0.4, 0.0) },
-        }
-    }
-}
-
 fn setup(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -84,14 +67,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(60.0, 60.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 60.0, Vec3::new(3.0, 6.0, 2.0));
     for (i, path) in BODIES.iter().enumerate() {
         let centre = Vec3::new(i.to_f32().mul_add(4.0, -8.0), 0.0, 0.0);
         commands.spawn((
@@ -176,29 +152,11 @@ fn orbit_camera(
         let f = tf.rotation * Vec3::Z;
         (tf.translation + Vec3::Y * orbit.target.y, f.x.atan2(f.z))
     });
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 100.0);
+    orbit.step(buttons.pressed(MouseButton::Left), motion.delta, scroll.delta.y, true);
     let (target, heading) = followed.unwrap_or((orbit.target, 0.0));
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw + heading, -orbit.pitch, 0.0);
+    let view = orbit.transform_at(target, heading);
     for mut t in &mut camera {
-        *t = Transform::from_translation(target + rot * Vec3::Z * orbit.distance).looking_at(target, Vec3::Y);
-    }
-}
-
-fn screenshot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    let frames: Vec<u32> = std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| "360".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    let last = frames.iter().copied().max().unwrap_or(360);
-    *frame += 1;
-    if frames.contains(&*frame) {
-        let path = if frames.len() > 1 { format!("{path}.{}.png", *frame) } else { path };
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frame == last + 20 {
-        exit.write(AppExit::Success);
+        *t = view;
     }
 }
 

@@ -11,18 +11,19 @@
 //! `ORNISCULPT_DEMO=1` triggers sever/graft/stretch automatically;
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::num::{Saturate, ToF32, usize_to_u64};
 use ornisculpt::anatomy::{
-    AttachSlot, Form, FormPatch, HardKind, HardParams, Lever, LodLevel, PartKind, PartNode, PartPath,
+    AttachSlot, Form, FormPatch, HardKind, HardParams, Lever, PartKind, PartNode, PartPath,
 };
 use ornisculpt::mob::{
     BodyReady, BoneScale, BoneScales, GenCache, GeneratedBody, GraftPart, Mob, MobBody, MobSeed, MobTier, Part,
     QualityProfile, SeverPart, TierCamera,
 };
+
+mod common;
+use common::{Orbit, cycle_quality, orbit_camera, screenshot_at, spawn_stage, tier_counts};
 
 fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(64);
@@ -30,34 +31,15 @@ fn main() {
         .add_plugins((DefaultPlugins, OrnisculptPlugin))
         .insert_resource(Count(count))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.6, 0.45, 12.0, Vec3::ZERO, (0.5, 200.0)))
         .add_observer(on_ready)
         .add_systems(Startup, setup)
-        .add_systems(Update, (controls, orbit_camera, report, screenshot))
+        .add_systems(Update, (controls, orbit_camera, report, screenshot_at(300)))
         .run();
 }
 
 #[derive(Resource)]
 struct Count(usize);
-
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.6, pitch: 0.45, distance: 12.0, target: Vec3::ZERO },
-        }
-    }
-}
 
 /// Index of a spawned mob, used to pick demo targets deterministically.
 #[derive(Component)]
@@ -71,14 +53,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(200.0, 200.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 200.0, Vec3::new(3.0, 6.0, 2.0));
 
     let body = assets.load("mobs/quadruped.body.ron");
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
@@ -174,32 +149,7 @@ fn controls(
         }
         info!("toggled long necks on every third mob");
     }
-    if keys.just_pressed(KeyCode::KeyQ) {
-        *quality = (*quality + 1) % 3;
-        let presets = [(QualityProfile::MEDIUM, "medium"), (QualityProfile::HIGH, "high"), (QualityProfile::LOW, "low")];
-        if let Some((preset, name)) = presets.get(*quality) {
-            *profile = preset.clone();
-            info!("quality: {name}");
-        }
-    }
-}
-
-fn orbit_camera(
-    mut orbit: ResMut<Orbit>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 200.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
-    }
+    cycle_quality(&keys, &mut profile, &mut quality);
 }
 
 fn report(
@@ -214,7 +164,7 @@ fn report(
         return;
     }
     *next = time.elapsed_secs() + 2.0;
-    let counts = LodLevel::ALL.map(|level| tiers.iter().filter(|t| t.0 == level).count());
+    let counts = tier_counts(&tiers);
     info!(
         "{} mobs, {} part entities | {} bodies cached, {} generating | tiers hero/near/far = {:?}",
         mobs.iter().count(),
@@ -223,15 +173,4 @@ fn report(
         cache.in_flight(),
         counts
     );
-}
-
-fn screenshot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    *frame += 1;
-    if *frame == 300 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frame == 320 {
-        exit.write(AppExit::Success);
-    }
 }

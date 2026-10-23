@@ -12,14 +12,15 @@
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::LodLevel;
 use ornisculpt::mob::{ForceTier, Mob, TierCamera};
 use ornisculpt::motion::{Hand, HandPose};
 use ornisculpt::num::ToF32;
+
+mod common;
+use common::{Orbit, orbit_camera, screenshot_at, spawn_stage};
 
 const PRESETS: [(&str, KeyCode, Hand); 6] = [
     ("relaxed", KeyCode::Digit1, Hand::RELAXED),
@@ -35,10 +36,11 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 400.0, ..default() })
-        .init_resource::<Orbit>()
+        // The right hand, from the front and a little to its side.
+        .insert_resource(Orbit::from_env(-0.5, 0.15, 0.75, Vec3::new(-0.22, 0.7, 0.0), (0.2, 50.0)))
         .init_resource::<Mode>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (keys, piano, orbit_camera, screenshot))
+        .add_systems(Update, (keys, piano, orbit_camera, screenshot_at(240)))
         .run();
 }
 
@@ -62,36 +64,9 @@ impl Default for Mode {
     }
 }
 
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            // The right hand, from the front and a little to its side.
-            _ => Self { yaw: -0.5, pitch: 0.15, distance: 0.75, target: Vec3::new(-0.22, 0.7, 0.0) },
-        }
-    }
-}
-
 fn setup(mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     commands.spawn((Camera3d::default(), TierCamera));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(-2.0, 5.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(20.0, 20.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 20.0, Vec3::new(-2.0, 5.0, 4.0));
     commands.spawn((Mob::new(assets.load("mobs/biped.body.ron")), ForceTier(LodLevel::Hero), HandPose::default(), Transform::default()));
     info!("controls: 1-6 presets (relaxed, open, fist, grip, point, pinch), Q/W/E/R/T one digit, P piano, 0 animation");
 }
@@ -145,34 +120,5 @@ fn piano(time: Res<Time>, mode: Res<Mode>, mut mobs: Query<&mut HandPose>) {
     }
     for mut hands in &mut mobs {
         *hands = HandPose::both(hand);
-    }
-}
-
-fn orbit_camera(
-    mut orbit: ResMut<Orbit>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.2, 50.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
-    }
-}
-
-fn screenshot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    *frame += 1;
-    if *frame == 240 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frame == 260 {
-        exit.write(AppExit::Success);
     }
 }

@@ -12,16 +12,17 @@
 //! forces a tier from the start; `ORNISCULPT_STILL=1` keeps the mobs standing. Frame time is
 //! logged every second.
 
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use ornisculpt::OrnisculptPlugin;
-use ornisculpt::anatomy::{LodLevel, Side, SocketKind};
+use ornisculpt::anatomy::{Side, SocketKind};
 use ornisculpt::equip::{HeldBy, Holding, SocketSel};
 use ornisculpt::mob::{BodyReady, ForceTier, GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::motion::MobIntent;
 use ornisculpt::num::{Saturate, ToF32};
+
+mod common;
+use common::{Orbit, TIER_KEYS, orbit_camera, screenshot_at, spawn_stage, tier_env};
 
 const BODIES: [&str; 4] = ["mobs/biped.body.ron", "mobs/quadruped.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
 
@@ -39,9 +40,9 @@ fn main() {
         ))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
         .insert_resource(Count(count))
-        .init_resource::<Orbit>()
+        .insert_resource(Orbit::from_env(0.5, 0.35, 8.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 200.0)))
         .add_systems(Startup, setup)
-        .add_systems(Update, (wander, keys, orbit_camera, screenshot))
+        .add_systems(Update, (wander, keys, orbit_camera, screenshot_at(360)))
         .add_observer(equip)
         .run();
 }
@@ -67,25 +68,6 @@ struct Wanderer {
 #[derive(Component, Clone)]
 struct Owned(HeldBy);
 
-#[derive(Resource)]
-struct Orbit {
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
-    target: Vec3,
-}
-
-impl Default for Orbit {
-    fn default() -> Self {
-        let v: Vec<f32> = std::env::var("ORNISCULPT_CAM")
-            .map_or_default(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
-        match v[..] {
-            [yaw, pitch, distance, x, y, z] => Self { yaw, pitch, distance, target: Vec3::new(x, y, z) },
-            _ => Self { yaw: 0.5, pitch: 0.35, distance: 8.0, target: Vec3::new(0.0, 0.6, 0.0) },
-        }
-    }
-}
-
 fn setup(
     mut commands: Commands,
     count: Res<Count>,
@@ -94,14 +76,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
-    commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
-        Transform::from_xyz(3.0, 6.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(200.0, 200.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
-    ));
+    spawn_stage(&mut commands, &mut meshes, &mut materials, 200.0, Vec3::new(3.0, 6.0, 2.0));
     let mut mat = |r, g, b, rough| materials.add(StandardMaterial { base_color: Color::srgb(r, g, b), perceptual_roughness: rough, ..default() });
     let (wood, metal, leather) = (mat(0.45, 0.3, 0.17, 0.8), mat(0.7, 0.72, 0.75, 0.35), mat(0.35, 0.22, 0.12, 0.9));
     // Tools are authored with their main axis along +Y and the grip at the origin.
@@ -118,12 +93,7 @@ fn setup(
         pouch: (meshes.add(pouch), leather),
     });
 
-    let forced = match std::env::var("ORNISCULPT_TIER").as_deref() {
-        Ok("hero") => Some(LodLevel::Hero),
-        Ok("near") => Some(LodLevel::Near),
-        Ok("far") => Some(LodLevel::Far),
-        _ => None,
-    };
+    let forced = tier_env("ORNISCULPT_TIER");
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
     for (i, path) in BODIES.iter().cycle().take(count.0).enumerate() {
         let centre = Vec3::new((i % side).to_f32() * 2.5, 0.0, (i / side).to_f32() * 2.5) - Vec3::new(side.to_f32() * 1.25, 0.0, side.to_f32() * 1.25);
@@ -208,7 +178,7 @@ fn keys(
         }
         info!("{}", if *dropped { "dropped" } else { "picked up" });
     }
-    for (key, tier) in [(KeyCode::Digit1, LodLevel::Hero), (KeyCode::Digit2, LodLevel::Near), (KeyCode::Digit3, LodLevel::Far)] {
+    for (key, tier) in TIER_KEYS {
         if input.just_pressed(key) {
             for mob in &mobs {
                 commands.entity(mob).insert(ForceTier(tier));
@@ -221,34 +191,5 @@ fn keys(
             commands.entity(mob).remove::<ForceTier>();
         }
         info!("automatic tiers");
-    }
-}
-
-fn orbit_camera(
-    mut orbit: ResMut<Orbit>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Left) {
-        orbit.yaw = motion.delta.x.mul_add(-0.008, orbit.yaw);
-        orbit.pitch = motion.delta.y.mul_add(0.008, orbit.pitch).clamp(-1.4, 1.4);
-    }
-    orbit.distance = (orbit.distance * scroll.delta.y.mul_add(-0.1, 1.0)).clamp(0.5, 200.0);
-    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    for mut t in &mut camera {
-        *t = Transform::from_translation(orbit.target + rot * Vec3::Z * orbit.distance).looking_at(orbit.target, Vec3::Y);
-    }
-}
-
-fn screenshot(mut commands: Commands, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
-    *frame += 1;
-    if *frame == 360 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
-    }
-    if *frame == 380 {
-        exit.write(AppExit::Success);
     }
 }
