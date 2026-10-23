@@ -42,6 +42,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::BodyField;
 use super::body::{PreparedShape, local_bounds, transform_aabb};
+use super::hard::{horn_dims, plate_radii};
 use crate::anatomy::{Anatomy, CrossSection, HardKind, HardPart, PrimOp, PrimShape};
 use crate::num::{Clamp, Idx, ToF32};
 
@@ -221,19 +222,9 @@ fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     let s = part.params.size;
     let (kind, params, flag) = match &part.params.kind {
         HardKind::Eye => (SPHERE, [s, 0.0, 0.0, 0.0], EYE),
-        HardKind::Plate => (ELLIPSOID, [s * 0.45, s * 0.12f32.mul_add(part.params.curve.clamp(0.0, 1.0), 0.06), s * 0.5, 0.0], HARD),
-        HardKind::Mesh { .. } => return None,
-        horn => {
-            let (length, base) = match horn {
-                HardKind::Nail => (s * 0.4, s * 0.5),
-                HardKind::Horn | HardKind::Fang => (s, s * 0.22),
-                HardKind::Tusk => (s, s * 0.15),
-                HardKind::Tooth => (s, s * 0.35),
-                HardKind::Spike => (s, s * 0.3),
-                HardKind::Beak => (s, s * 0.45),
-                HardKind::Antler { .. } => (s, s * 0.08),
-                _ => (s, s * 0.25),
-            };
+        HardKind::Plate => (ELLIPSOID, plate_radii(s, part.params.curve).extend(0.0).to_array(), HARD),
+        kind => {
+            let (length, base, _) = horn_dims(kind, s)?;
             let tip = base * 0.15;
             (ROUND_CONE, [base, tip, (length - tip).max(1e-4), 0.0], HARD)
         }

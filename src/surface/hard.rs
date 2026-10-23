@@ -77,23 +77,16 @@ impl HardPartGen for ProceduralHardParts {
             HardKind::Plate => {
                 // A dome flattened onto the skin: wide across (x), long along (z), thin outward (y).
                 sphere(&mut mesh, 1.0, rings.max(4), sides);
-                let scale = Vec3::new(s * 0.45, s * 0.12f32.mul_add(p.curve.clamp(0.0, 1.0), 0.06), s * 0.5);
+                let scale = plate_radii(s, p.curve);
                 for (v, n) in mesh.positions.iter_mut().zip(&mut mesh.normals) {
                     *v *= scale;
                     *n = (*n / scale).normalize_or(Vec3::Y);
                 }
                 MaterialSlot::Hard
             }
-            HardKind::Claw => horn_mesh(&mut mesh, &horn(s, s * 0.25, Vec2::new(0.7, 1.0)), Transform::IDENTITY, rings, sides),
-            HardKind::Nail => horn_mesh(&mut mesh, &horn(s * 0.4, s * 0.5, Vec2::new(1.0, 0.25)), Transform::IDENTITY, rings, sides),
-            HardKind::Horn => horn_mesh(&mut mesh, &horn(s, s * 0.22, Vec2::ONE), Transform::IDENTITY, rings, sides),
-            HardKind::Tusk => horn_mesh(&mut mesh, &horn(s, s * 0.15, Vec2::ONE), Transform::IDENTITY, rings, sides),
-            HardKind::Tooth => horn_mesh(&mut mesh, &horn(s, s * 0.35, Vec2::new(1.0, 0.6)), Transform::IDENTITY, rings, sides),
-            HardKind::Fang => horn_mesh(&mut mesh, &horn(s, s * 0.22, Vec2::new(1.0, 0.8)), Transform::IDENTITY, rings, sides),
-            HardKind::Spike => horn_mesh(&mut mesh, &horn(s, s * 0.3, Vec2::ONE), Transform::IDENTITY, rings, sides),
-            HardKind::Beak => horn_mesh(&mut mesh, &horn(s, s * 0.45, Vec2::new(1.0, 0.7)), Transform::IDENTITY, rings, sides),
             HardKind::Antler { tines } => {
-                let beam = horn(s, s * 0.08, Vec2::ONE);
+                let (length, base, flatten) = horn_dims(&p.kind, s)?;
+                let beam = horn(length, base, flatten);
                 horn_mesh(&mut mesh, &beam, Transform::IDENTITY, rings, sides);
                 let tines = (*tines).max(1);
                 for i in 0..tines {
@@ -104,6 +97,10 @@ impl HardPartGen for ProceduralHardParts {
                     horn_mesh(&mut mesh, &horn(s * 0.4 * t.mul_add(-0.5, 1.0), s * 0.05, Vec2::ONE), tine, rings.min(5), sides);
                 }
                 MaterialSlot::Hard
+            }
+            kind => {
+                let (length, base, flatten) = horn_dims(kind, s)?;
+                horn_mesh(&mut mesh, &horn(length, base, flatten), Transform::IDENTITY, rings, sides)
             }
         };
 
@@ -130,6 +127,28 @@ impl HardPartGen for ProceduralHardParts {
         mesh.submeshes = vec![Submesh { indices: 0..mesh.indices.len().clamp_u32(), slot }];
         Some(mesh)
     }
+}
+
+/// Length, base radius and cross-section scale (x, z) of a horn-like part of size `s` (an antler's
+/// beam); `None` for eyes, plates and authored meshes. The SDF preview stands in with the same.
+pub(super) fn horn_dims(kind: &HardKind, s: f32) -> Option<(f32, f32, Vec2)> {
+    Some(match kind {
+        HardKind::Claw => (s, s * 0.25, Vec2::new(0.7, 1.0)),
+        HardKind::Nail => (s * 0.4, s * 0.5, Vec2::new(1.0, 0.25)),
+        HardKind::Horn => (s, s * 0.22, Vec2::ONE),
+        HardKind::Tusk => (s, s * 0.15, Vec2::ONE),
+        HardKind::Tooth => (s, s * 0.35, Vec2::new(1.0, 0.6)),
+        HardKind::Fang => (s, s * 0.22, Vec2::new(1.0, 0.8)),
+        HardKind::Spike => (s, s * 0.3, Vec2::ONE),
+        HardKind::Beak => (s, s * 0.45, Vec2::new(1.0, 0.7)),
+        HardKind::Antler { .. } => (s, s * 0.08, Vec2::ONE),
+        HardKind::Eye | HardKind::Plate | HardKind::Mesh { .. } => return None,
+    })
+}
+
+/// Radii of a plate of `size`: wide across (x), thin outward (y, thicker with `curve`), long along (z).
+pub(super) fn plate_radii(size: f32, curve: f32) -> Vec3 {
+    Vec3::new(size * 0.45, size * 0.12f32.mul_add(curve.clamp(0.0, 1.0), 0.06), size * 0.5)
 }
 
 /// Frame on the horn's centreline at `t` (Y along the horn).
