@@ -103,16 +103,11 @@ pub fn shape(p: Vec3A, s: &PrimShape) -> f32 {
     match s {
         PrimShape::Sphere { r } => sphere(p, *r),
         PrimShape::Ellipsoid { radii } => ellipsoid(p, (*radii).into()),
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => round_cone(p, *r0, *r1, *len),
+        PrimShape::RoundCone { r0, r1, len } => round_cone(p, *r0, *r1, *len),
         PrimShape::RoundBox { half, round } => round_box(p, (*half).into(), *round),
         PrimShape::Grid { grid, mirror_x } => {
             let q = if *mirror_x { Vec3A::new(-p.x, p.y, p.z) } else { p };
             grid.sample(q.into())
-        }
-        PrimShape::Sweep { points, radii, cross } => {
-            // `BodyField` converts the points once; this path converts them per call.
-            let points: Vec<Vec3A> = points.iter().map(|&v| v.into()).collect();
-            sweep(p, &points, radii, *cross)
         }
     }
 }

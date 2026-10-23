@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::{Anatomy, CrossSection, PrimLayer, PrimOp, PrimShape, Weigh};
+use super::{Anatomy, PrimLayer, PrimOp, PrimShape, Weigh};
 use crate::num::Idx;
 
 /// Water, kg/m³: a body of density `1.0` weighs what its volume of water would.
@@ -76,7 +76,7 @@ fn weighed((volume, centroid): (f32, Vec3), shape: &PrimShape, weigh: Weigh, pla
     match (weigh, shape) {
         (Weigh::Fraction(f), _) => (volume * f.clamp(0.0, 1.0), centroid),
         // The joint sphere (both caps) sits at the cone's start.
-        (Weigh::Continues, PrimShape::Capsule { r0, .. } | PrimShape::RoundCone { r0, .. }) => {
+        (Weigh::Continues, PrimShape::RoundCone { r0, .. }) => {
             let joint = (4.0 / 3.0 * PI * r0.powi(3) * place.matrix3.determinant().abs()).min(volume * 0.9);
             let rest = volume - joint;
             let at = place.transform_point3(Vec3::ZERO);
@@ -100,24 +100,10 @@ fn volume(shape: &PrimShape, place: &Affine3A) -> (f32, Vec3) {
     match shape {
         PrimShape::Sphere { r } => (4.0 / 3.0 * PI * r.powi(3) * scale, at(Vec3::ZERO)),
         PrimShape::Ellipsoid { radii } => (4.0 / 3.0 * PI * radii.x * radii.y * radii.z * scale, at(Vec3::ZERO)),
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => rod(*r0, *r1, *len),
+        PrimShape::RoundCone { r0, r1, len } => rod(*r0, *r1, *len),
         PrimShape::RoundBox { half, round } => {
             let extent = *half + Vec3::splat(*round);
             (8.0 * extent.x * extent.y * extent.z * scale, at(Vec3::ZERO))
-        }
-        PrimShape::Sweep { points, radii, cross } => {
-            // A teardrop's keel adds a little under the ellipse (see `sdf::sweep`).
-            let keel = if matches!(cross, CrossSection::Teardrop { .. }) { 0.5f32.mul_add(CrossSection::TEARDROP_KEEL, 1.0) } else { 1.0 };
-            let squash = cross.aspect() * keel;
-            let (mut total, mut moment) = (0.0, Vec3::ZERO);
-            for (i, [p0, p1]) in points.array_windows().enumerate() {
-                let (r0, r1) = (radii.get(i).copied().unwrap_or(0.0), radii.get(i + 1).copied().unwrap_or(0.0));
-                let len = p1.distance(*p0);
-                let seg = PI / 3.0 * len * f32::mul_add(r1, r1, f32::mul_add(r0, r1, r0 * r0)) * squash * scale;
-                total += seg;
-                moment += at((*p0 + *p1) * 0.5) * seg;
-            }
-            (total, if total > 0.0 { moment / total } else { at(points.first().copied().unwrap_or_default()) })
         }
         PrimShape::Grid { grid, mirror_x } => {
             let cell = grid.cell.x * grid.cell.y * grid.cell.z;

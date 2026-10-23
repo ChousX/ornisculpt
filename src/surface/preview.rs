@@ -42,7 +42,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::BodyField;
 use super::mesh_data::vertex_normals;
-use super::body::{PreparedShape, local_bounds, transform_aabb};
+use super::body::{local_bounds, transform_aabb};
 use super::hard::{horn_dims, plate_radii};
 use crate::anatomy::{Anatomy, CrossSection, HardKind, HardPart, PrimOp, PrimShape};
 use crate::num::{Clamp, Idx, ToF32};
@@ -165,21 +165,6 @@ const fn word_u32(a: u32, b: u32, c: u32, d: u32) -> [f32; 4] {
     [bits(a), bits(b), bits(c), bits(d)]
 }
 
-/// Appends a sweep's points to `segments`; returns its kind and parameter words (the second
-/// holds the largest radius, for the teardrop keel's blend).
-fn sweep(segments: &mut Vec<[f32; 4]>, points: impl ExactSizeIterator<Item = Vec3>, radii: &[f32], cross: CrossSection) -> (u32, [f32; 4], [f32; 4]) {
-    let first = segments.len();
-    let count = points.len();
-    segments.extend(points.zip(radii).map(|(p, r)| [p.x, p.y, p.z, *r]));
-    let teardrop = matches!(cross, CrossSection::Teardrop { .. });
-    let max_radius = radii.iter().copied().fold(0.0, f32::max);
-    (
-        SWEEP,
-        [bits(first.clamp_u32()), bits(count.min(radii.len()).clamp_u32()), cross.aspect(), f32::from(u8::from(teardrop))],
-        [max_radius, 0.0, 0.0, 0.0],
-    )
-}
-
 /// One primitive on its way into the words.
 struct Packed {
     to_local: Affine3A,
@@ -246,23 +231,20 @@ impl BodyField {
     /// Creases are left out (they are shading-scale).
     #[must_use]
     pub fn preview(&self, anatomy: &Anatomy, highlight: impl Fn(u16) -> bool) -> PreviewField {
-        let mut segments: Vec<[f32; 4]> = Vec::new();
+        let segments: Vec<[f32; 4]> = Vec::new();
         let mut grids: Vec<[f32; 4]> = Vec::new();
         // Grids shared by several primitives (mirrored copies) are packed once.
         let mut packed_grids: Vec<(*const crate::anatomy::SdfGrid, usize)> = Vec::new();
         let mut packed = Vec::with_capacity(self.prims.len() + anatomy.hard_parts.len());
         for prim in &self.prims {
             let (kind, params, more) = match &prim.shape {
-                PreparedShape::Simple(PrimShape::Sphere { r }) => (SPHERE, [*r, 0.0, 0.0, 0.0], [0.0; 4]),
-                PreparedShape::Simple(PrimShape::Ellipsoid { radii }) => (ELLIPSOID, radii.extend(0.0).to_array(), [0.0; 4]),
-                PreparedShape::Simple(PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len }) => {
+                PrimShape::Sphere { r } => (SPHERE, [*r, 0.0, 0.0, 0.0], [0.0; 4]),
+                PrimShape::Ellipsoid { radii } => (ELLIPSOID, radii.extend(0.0).to_array(), [0.0; 4]),
+                PrimShape::RoundCone { r0, r1, len } => {
                     (ROUND_CONE, [*r0, *r1, *len, 0.0], [0.0; 4])
                 }
-                PreparedShape::Simple(PrimShape::RoundBox { half, round }) => (ROUND_BOX, half.extend(*round).to_array(), [0.0; 4]),
-                PreparedShape::Sweep { points, radii, cross } => sweep(&mut segments, points.iter().map(|p| Vec3::from(*p)), radii, *cross),
-                // `BodyField` converts sweeps; this arm is never taken.
-                PreparedShape::Simple(PrimShape::Sweep { points, radii, cross }) => sweep(&mut segments, points.iter().copied(), radii, *cross),
-                PreparedShape::Simple(PrimShape::Grid { grid, mirror_x }) => {
+                PrimShape::RoundBox { half, round } => (ROUND_BOX, half.extend(*round).to_array(), [0.0; 4]),
+                PrimShape::Grid { grid, mirror_x } => {
                     let key = std::ptr::from_ref(grid.as_ref());
                     let at = if let Some((_, at)) = packed_grids.iter().find(|(k, _)| *k == key) {
                         *at

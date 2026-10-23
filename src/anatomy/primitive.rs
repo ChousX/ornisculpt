@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use super::{BoneId, CrossSection, HardParams, LodLevel, RegionId, SdfGrid, TriMesh};
+use super::{BoneId, HardParams, LodLevel, RegionId, SdfGrid, TriMesh};
 
 /// One SDF primitive, owned by a bone. Its owning bone is also its skin-weight source.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,13 +49,9 @@ pub enum Weigh {
 pub enum PrimShape {
     Sphere { r: f32 },
     Ellipsoid { radii: Vec3 },
-    /// Tapered capsule from `r0` at the origin to `r1` at `len`.
-    Capsule { r0: f32, r1: f32, len: f32 },
     RoundCone { r0: f32, r1: f32, len: f32 },
     /// Rounded box (snouts, hooves, blocky masses).
     RoundBox { half: Vec3, round: f32 },
-    /// Swept cross-section along a polyline (necks, tails, tentacles).
-    Sweep { points: Vec<Vec3>, radii: Vec<f32>, cross: CrossSection },
     /// Authored shape sampled from a grid; `mirror_x` samples it reflected (right-side copies).
     Grid { grid: Arc<SdfGrid>, mirror_x: bool },
 }

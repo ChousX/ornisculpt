@@ -4,7 +4,7 @@ use bevy::shape::{Aabb3d, BoundingVolume, IntersectsVolume};
 
 use super::{Field, Influences, SurfaceInfo, sdf};
 use crate::num::{Idx, Saturate, ToF32};
-use crate::anatomy::{Anatomy, BoneId, BuiltPart, CrossSection, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
+use crate::anatomy::{Anatomy, BoneId, BuiltPart, LodLevel, PrimLayer, PrimOp, PrimShape, RegionId};
 use crate::random::{Noise, NoiseSettings};
 
 /// Inputs to building a [`BodyField`] beyond the anatomy itself.
@@ -118,7 +118,7 @@ pub(super) struct PreparedPrim {
     pub(super) to_local: Affine3A,
     /// Smallest axis scale of the local → model transform (keeps distances conservative).
     pub(super) min_scale: f32,
-    pub(super) shape: PreparedShape,
+    pub(super) shape: PrimShape,
     pub(super) blend: f32,
     /// Local anchor point and reach for blend fading (see `Primitive::blend_anchor`).
     pub(super) anchor: Option<(Vec3A, f32)>,
@@ -135,21 +135,12 @@ pub(super) struct PreparedPrim {
     pub(super) aabb: Aabb3d,
 }
 
-/// [`PrimShape`] with sweeps pre-converted for fast evaluation.
-pub(super) enum PreparedShape {
-    Simple(PrimShape),
-    Sweep { points: Vec<Vec3A>, radii: Vec<f32>, cross: CrossSection },
-}
-
 impl PreparedPrim {
     /// Distance and effective blend radius at `p`.
     #[inline]
     fn eval(&self, p: Vec3A) -> (f32, f32) {
         let q = self.to_local.transform_point3a(p);
-        let d = match &self.shape {
-            PreparedShape::Simple(s) => sdf::shape(q, s),
-            PreparedShape::Sweep { points, radii, cross } => sdf::sweep(q, points, radii, *cross),
-        };
+        let d = sdf::shape(q, &self.shape);
         let blend = match self.anchor {
             Some((a, reach)) => self.blend * (1.0 - (q - a).length() * self.min_scale / reach).clamp(0.0, 1.0),
             None => self.blend,
@@ -163,7 +154,7 @@ pub(super) fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
     match shape {
         PrimShape::Sphere { r } => (Vec3::splat(-r), Vec3::splat(*r)),
         PrimShape::Ellipsoid { radii } => (-*radii, *radii),
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => {
+        PrimShape::RoundCone { r0, r1, len } => {
             let r = r0.max(*r1);
             (Vec3::new(-r, -r0, -r), Vec3::new(r, len + r1, r))
         }
@@ -171,12 +162,6 @@ pub(super) fn local_bounds(shape: &PrimShape) -> (Vec3, Vec3) {
         PrimShape::Grid { grid, mirror_x } => {
             let (lo, hi) = grid.bounds();
             if *mirror_x { (Vec3::new(-hi.x, lo.y, lo.z), Vec3::new(-lo.x, hi.y, hi.z)) } else { (lo, hi) }
-        }
-        PrimShape::Sweep { points, radii, .. } => {
-            let r = radii.iter().copied().fold(0.0, f32::max);
-            let lo = points.iter().copied().fold(Vec3::INFINITY, Vec3::min);
-            let hi = points.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max);
-            (lo - r, hi + r)
         }
     }
 }
@@ -307,14 +292,7 @@ impl BodyField {
             let m = *bone * p.local.compute_affine();
             let min_scale = (0..3).map(|c| m.matrix3.col(c).length()).fold(f32::INFINITY, f32::min);
             let aabb = transform_aabb(&m, local_bounds(&p.shape)).grow(Vec3A::splat(p.blend + fold_pad));
-            let shape = match &p.shape {
-                PrimShape::Sweep { points, radii, cross } => PreparedShape::Sweep {
-                    points: points.iter().map(|&v| v.into()).collect(),
-                    radii: radii.clone(),
-                    cross: *cross,
-                },
-                s => PreparedShape::Simple(s.clone()),
-            };
+            let shape = p.shape.clone();
             prims.push(PreparedPrim {
                 to_local: m.inverse(),
                 min_scale,
@@ -440,7 +418,7 @@ impl BodyField {
                     }
                 }
                 PrimOp::Displace { height } => {
-                    if let PreparedShape::Simple(PrimShape::Ellipsoid { radii }) = &prim.shape {
+                    if let PrimShape::Ellipsoid { radii } = &prim.shape {
                         let s = 1.0 - (prim.to_local.transform_point3a(p) / Vec3A::from(*radii)).length_squared();
                         if s > 0.0 {
                             // A limb's stamps raise only that limb.

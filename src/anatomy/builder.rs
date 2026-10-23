@@ -429,12 +429,10 @@ impl AnatomyBuilder {
         region: RegionId,
         lod: LodLevel,
     ) {
-        if self.mirrored() {
-            match &mut shape {
-                PrimShape::Sweep { points, .. } => points.iter_mut().for_each(|p| *p = mirror_point(*p)),
-                PrimShape::Grid { mirror_x, .. } => *mirror_x = !*mirror_x,
-                _ => {}
-            }
+        if self.mirrored()
+            && let PrimShape::Grid { mirror_x, .. } = &mut shape
+        {
+            *mirror_x = !*mirror_x;
         }
         let local = self.local_of(bone, model);
         self.anatomy.primitives.push(Primitive { bone, shape, local, blend, blend_anchor: None, op, layer, region, lod, weigh: Weigh::Whole, soft: None });
@@ -755,15 +753,10 @@ fn lowest_point(shape: &PrimShape, m: &Affine3A) -> f32 {
             let ext = (0..3).map(|i| (col(i).y * radii[i]).powi(2)).sum::<f32>().sqrt();
             at(0.0) - ext
         }
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => {
+        PrimShape::RoundCone { r0, r1, len } => {
             (at(0.0) - r0 * s).min(at(*len) - r1 * s)
         }
         PrimShape::RoundBox { half, .. } => at(0.0) - (0..3).map(|i| col(i).y.abs() * half[i]).sum::<f32>(),
-        PrimShape::Sweep { points, radii, .. } => points
-            .iter()
-            .zip(radii)
-            .map(|(p, r)| m.transform_point3(*p).y - r * s)
-            .fold(f32::INFINITY, f32::min),
         PrimShape::Grid { grid, mirror_x } => {
             let flip = if *mirror_x { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
             if let Some(low) = grid.lowest(|p| m.transform_point3(p * flip).y, s) {
@@ -789,11 +782,8 @@ pub fn bounding_radius(shape: &PrimShape) -> f32 {
     match shape {
         PrimShape::Sphere { r } => *r,
         PrimShape::Ellipsoid { radii } => radii.max_element(),
-        PrimShape::Capsule { r0, r1, len } | PrimShape::RoundCone { r0, r1, len } => len + r0.max(*r1),
+        PrimShape::RoundCone { r0, r1, len } => len + r0.max(*r1),
         PrimShape::RoundBox { half, .. } => half.length(),
-        PrimShape::Sweep { points, radii, .. } => {
-            points.iter().map(|p| p.length()).fold(0.0, f32::max) + radii.iter().copied().fold(0.0, f32::max)
-        }
         PrimShape::Grid { grid, .. } => {
             let (lo, hi) = grid.bounds();
             lo.abs().max(hi.abs()).length()
