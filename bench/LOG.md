@@ -18,6 +18,28 @@ Machine: Lenovo Yoga Slim 7x (Snapdragon X, Adreno X1-85, turnip Vulkan), 12 cor
 mains power. Times are p50 unless noted. Per-pass GPU times (`gpu.*`) are unreliable on this
 driver (a furry full-body main pass reads 0.05 ms); frame time is the primary metric.
 
+## Bench version 4 baseline (2026-10-24)
+
+Version 4 runs headless (no window or winit; see `docs/design/perf-and-look-plan.md` §1.1).
+Results: `bench/results/v4-base-{1,2}`.
+
+| Scenario | Case | Metric | Value | Noise (spread of 2) |
+|---|---|---|---|---|
+| gen | biped / quadruped+fur / horse+fur / bird / dragon / beetle | total | 561 / 638 / 1160 / 493 / 562 / 249 ms | ≤ 3 % |
+| hero | biped full / head / eye | frame | 15.3 / 14.7 / 16.4 ms | ≤ 10 % |
+| hero | quadruped+fur full / head / eye | frame | 22.0 / 43.1 / 66.2 ms | ≤ 1 % |
+| hero | horse+fur full / head / eye | frame | 24.3 / 25.4 / 48.4 ms | ≤ 2 % |
+| hero | bird full / head / eye | frame | 15.9 / 17.9 / 17.3 ms | ≤ 10 % |
+| hero | dragon full / head / eye | frame | 18.5 / 20.9 / 28.3 ms | ≤ 5 % |
+| hero | beetle full / head / eye | frame | 16.1 / 17.8 / 18.4 ms | ≤ 3 % |
+| motion | dragon / quadruped+fur walking | frame | 16.0 / 20.2 ms | ≤ 10 % |
+| crowd | 4000 cold start | total / p50 / p95 / frames > 33 ms / frames > 100 ms | 31.3 s / 21.0 ms / 44.6 ms / 253 / 3–4 | 1 % / 1.4 % / 1.4 % / 4 % / |
+| crowd | 4000 steady | frame | 55.0 ms | 1.7 % |
+| (all) | | peak RSS | ≤ 1.09 GB (crowd), ≤ 0.6 GB (hero) | |
+
+Light hero and motion cases (under ~20 ms) move up to 10 % between runs: compare them against
+several baselines.
+
 ## Bench version 3 baseline (2026-10-19)
 
 Version 3 adds a 60-frame empty-scene pre-roll, so renderer start-up (a 1.5 s pipeline compile)
@@ -66,3 +88,4 @@ widens their image gates accordingly.
 | 2026-10-19 | (v3, all of the above vs the v3 baseline) | crowd cold | total / p50 / p95 / max / frames > 100 ms | 45.4 → 34.8 s / 93 → 29 ms / 282 → 49 ms / 532 → 303 ms / 175 → 3 | crowd image differs (attach order); all others within noise | Hero, motion and crowd steady frame times within noise. `compare` now gates only medians, means and totals |
 | 2026-10-19 | Parallel meshing: LODs built at once (near/far beside hero), `skin_and_attrs` and `VoxelBinding::apply` per vertex, binding spread per bone (all through order-preserving `surface::par_map` / bone-order merge) | gen (stage probe, not yet benched) | hero `mesh_lod` biped / horse | 673 → 340 ms / 1206 → 556 ms | meshes identical (determinism test) | Benched 2026-10-20 at 4fe5c3e vs the v3 baselines (`bench/results/head-4fe5c3e`): gen totals −48 to −55 % (biped 1199 → 544 ms, horse 2452 → 1107 ms, beetle 430 → 200 ms); crowd cold total 45.4 → 29.5 s, p50 93 → 29 ms; crowd steady +3 % (54.9 ms); hero full-body frames +3 to +13 % with the look change of 1bbada9 in between (muzzles, horse reshape, mixed coats). Probe: `surface::lod::stage_probe` (ignored test) |
 | 2026-10-20 | Editor previews: `LodSpec::deformation` (default on; off skips centres of rotation and muscle flex), `BodyFailed` event, editor preview/refine flow | gen, hero, motion, crowd (vs `head-4fe5c3e`, one run each) | gen total / crowd cold total / crowd steady p50 / hero p50 | −2.5 to +4 % / 29.5 → 29.2 s / 54.9 → 53.8 ms / heavy fur cases ±3 % | biped and bird identical (PSNR ∞); fur close-ups 0.4–1.7 % pixels (run-to-run) | Default path unchanged (one flag check per level). In the hero rerun every light case sat at 16.6–16.7 ms: the window was presented at 60 Hz, so those frame-time deltas (+5 to +16 %) are the display cap, not the change. Editor: preview 82 ms biped / 100 ms furry horse, full 0.57 / 0.52 s |
+| 2026-10-24 | Bench headless (v3 → v4): no window or winit; the 1920×1080 target, per-frame GPU wait and everything else as v3 | hero, motion, crowd (2 windowed runs vs 2 headless, alternating, same tree) | crowd cold p50 / p95 / frames > 33 ms; crowd steady p50; hero and motion p50 | 33.3 → 21.1 ms / 53.7 → 44 ms / 451 → ~260; 56.8 → 55.2 ms (within noise); all within noise (light cases move ±10 % run to run in both modes) | fur and scale close-ups 0.3–4.2 % pixels vs windowed, though headless runs agree with each other within the usual 0.7 %; biped and bird identical; crowd 2.5 % (attach order) | The window competed for the GPU even while it showed nothing (its camera was off while measuring, but it was still presented), and capped light cases at 60 Hz before. Cold-start totals unchanged (31.5 → 31.3 s). Results `bench/results/{windowed,headless}-{1,2}` |

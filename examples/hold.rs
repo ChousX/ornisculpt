@@ -22,7 +22,7 @@ use ornisculpt::motion::MobIntent;
 use ornisculpt::num::{Saturate, ToF32};
 
 mod common;
-use common::{Orbit, TIER_KEYS, orbit_camera, screenshot_at, spawn_stage, tier_env};
+use common::{Orbit, TIER_KEYS, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_env};
 
 const BODIES: [&str; 4] = ["mobs/biped.body.ron", "mobs/quadruped.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
 
@@ -30,10 +30,7 @@ fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(16);
     App::new()
         .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window { present_mode: PresentMode::AutoNoVsync, ..default() }),
-                ..default()
-            }),
+            default_plugins(Window { present_mode: PresentMode::AutoNoVsync, ..default() }),
             OrnisculptPlugin,
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::diagnostic::LogDiagnosticsPlugin::default(),

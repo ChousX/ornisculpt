@@ -1,11 +1,12 @@
 //! The editor's self-test (`ORNISCULPT_EDITOR_TEST`): scripted edits, timed.
 
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::window::screenshot::save_to_disk;
 use ornisculpt::anatomy::{AttachSlot, PartLodRules, path_matches};
 use ornisculpt::mob::PartAssetCache;
 use ornisculpt::num::ToF32;
 
+use crate::common::ShotTarget;
 use crate::{BuildCtx, Drag, DragMode, Editor, FieldKind};
 
 /// Scripted edits (`ORNISCULPT_EDITOR_TEST`): a held key on the first number of the first
@@ -60,6 +61,7 @@ pub fn scripted_edits(
     mut editor: ResMut<Editor>,
     rules: Res<PartLodRules>,
     cache: Res<PartAssetCache>,
+    target: Option<Res<ShotTarget>>,
     time: Res<Time>,
 ) {
     if script.done || editor.body.is_none() {
@@ -112,7 +114,7 @@ pub fn scripted_edits(
                 && let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT")
             {
                 let path = std::path::Path::new(&path).with_extension("preview.png");
-                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+                commands.spawn(crate::common::screenshot(target.as_deref())).observe(save_to_disk(path));
             }
         }
         181 => editor.end_drag(),

@@ -20,7 +20,7 @@ use ornisculpt::motion::{Hand, HandPose};
 use ornisculpt::num::ToF32;
 
 mod common;
-use common::{Orbit, orbit_camera, screenshot_at, spawn_stage};
+use common::{Orbit, default_plugins, orbit_camera, screenshot_at, spawn_stage};
 
 const PRESETS: [(&str, KeyCode, Hand); 6] = [
     ("relaxed", KeyCode::Digit1, Hand::RELAXED),
@@ -34,7 +34,7 @@ const DIGIT_KEYS: [KeyCode; 5] = [KeyCode::KeyQ, KeyCode::KeyW, KeyCode::KeyE, K
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, OrnisculptPlugin))
+        .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 400.0, ..default() })
         // The right hand, from the front and a little to its side.
         .insert_resource(Orbit::from_env(-0.5, 0.15, 0.75, Vec3::new(-0.22, 0.7, 0.0), (0.2, 50.0)))

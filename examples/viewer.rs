@@ -25,15 +25,14 @@ use ornisculpt::coat::{MobCoat, MobMaterial};
 use ornisculpt::mob::{BodyReady, ForceTier, GenRequest, GeneratedBody, LiveBody, Mob, MobBody, MobJoint, MobSet, MobSkeleton};
 
 mod common;
-use common::{Orbit, TIER_KEYS, asset_arg, cam_env, orbit_camera, shoot_when_ready, spawn_stage, tier_env};
+use common::{Orbit, ShotTarget, TIER_KEYS, asset_arg, cam_env, default_plugins, orbit_camera, shoot_when_ready, spawn_stage, tier_env};
 
 fn main() {
     let path = asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
     let coat = asset_arg(2);
     App::new()
         .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin { primary_window: Some(Window { title: "Ornisculpt viewer".into(), ..default() }), ..default() })
+            default_plugins(Window { title: "Ornisculpt viewer".into(), ..default() })
                 .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
             OrnisculptPlugin,
         ))
@@ -299,9 +298,9 @@ fn draw_skeleton(
     }
 }
 
-fn screenshot(mut commands: Commands, mut viewer: ResMut<Viewer>, mut exit: MessageWriter<AppExit>) {
+fn screenshot(mut commands: Commands, mut viewer: ResMut<Viewer>, target: Option<Res<ShotTarget>>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     if let Some(frames) = viewer.ready_frames.as_mut() {
-        shoot_when_ready(&mut commands, &mut exit, frames, path);
+        shoot_when_ready(&mut commands, target.as_deref(), &mut exit, frames, path);
     }
 }

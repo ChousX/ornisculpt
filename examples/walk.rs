@@ -23,7 +23,7 @@ use ornisculpt::mob::{Mob, TierCamera};
 use ornisculpt::motion::{Feet, MobIntent};
 
 mod common;
-use common::{Orbit, screenshot_frames, spawn_stage};
+use common::{Orbit, default_plugins, screenshot_frames, spawn_stage};
 
 const BODIES: [&str; 7] = [
     "mobs/quadruped.body.ron",
@@ -37,7 +37,7 @@ const BODIES: [&str; 7] = [
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, OrnisculptPlugin))
+        .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
         .insert_resource(Orbit::from_env(0.5, 0.4, 9.0, Vec3::new(0.0, 0.4, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()

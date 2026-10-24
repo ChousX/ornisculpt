@@ -24,16 +24,13 @@ use ornisculpt::num::{Saturate, ToF32};
 
 mod common;
 use common::crowd::{self, BODIES, ROOTS};
-use common::{Orbit, cycle_quality, orbit_camera, screenshot_at, spawn_stage, tier_counts};
+use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_counts};
 
 fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(4000);
     App::new()
         .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window { present_mode: PresentMode::AutoNoVsync, ..default() }),
-                ..default()
-            }),
+            default_plugins(Window { present_mode: PresentMode::AutoNoVsync, ..default() }),
             FrameTimeDiagnosticsPlugin::default(),
             OrnisculptPlugin,
         ))

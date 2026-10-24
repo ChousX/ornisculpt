@@ -1,10 +1,17 @@
-//! Shared by the examples: the orbit camera, the stage they stand on, screenshots, the crowd
-//! workload (`crowd` and `bench`), and small helpers. Each example uses only part of it.
+//! Shared by the examples: the orbit camera, the stage they stand on, headless screenshots, the
+//! crowd workload (`crowd` and `bench`), and small helpers. Each example uses only part of it.
 #![allow(dead_code)]
 
+use std::time::Duration;
+
+use bevy::app::{PluginGroupBuilder, ScheduleRunnerPlugin};
+use bevy::camera::{ImageRenderTarget, RenderTarget};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
+use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::window::{ExitCondition, PresentMode};
+use bevy::winit::WinitPlugin;
 use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules};
 use ornisculpt::mob::{MobTier, QualityProfile};
 
@@ -82,14 +89,71 @@ pub fn spawn_stage(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials
     ));
 }
 
+/// `DefaultPlugins` with `window`, or, when `ORNISCULPT_SCREENSHOT` is set, headless as
+/// ornithochory's grove: no window, every camera renders into a fixed [`SHOT_SIZE`] image
+/// ([`ShotTarget`]) and screenshots copy out of it. The loop runs at 60 Hz, as a vsynced window
+/// would, or uncapped if `window` doesn't wait for vsync.
+pub fn default_plugins(window: Window) -> PluginGroupBuilder {
+    if std::env::var_os("ORNISCULPT_SCREENSHOT").is_none() {
+        return DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() });
+    }
+    let wait = match window.present_mode {
+        PresentMode::AutoNoVsync | PresentMode::Immediate => Duration::ZERO,
+        _ => Duration::from_secs_f64(1.0 / 60.0),
+    };
+    DefaultPlugins
+        .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
+        .disable::<WinitPlugin>()
+        // With a window plugin, DefaultPlugins leaves the runner to winit.
+        .add(ScheduleRunnerPlugin::run_loop(wait))
+        .add(ShotTargetPlugin)
+}
+
+/// The size headless screenshots render at (the default window's).
+pub const SHOT_SIZE: UVec2 = UVec2::new(1280, 720);
+
+/// What every camera renders into when headless.
+#[derive(Resource)]
+pub struct ShotTarget(pub Handle<Image>);
+
+struct ShotTargetPlugin;
+
+impl Plugin for ShotTargetPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_observer(retarget);
+    }
+
+    // Images only exist once the render plugins are built.
+    fn finish(&self, app: &mut App) {
+        let mut image = Image::new_target_texture(SHOT_SIZE.x, SHOT_SIZE.y, TextureFormat::Rgba8UnormSrgb, None);
+        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
+        app.insert_resource(ShotTarget(handle));
+    }
+}
+
+/// Points a window camera at the shot target, and the UI with it.
+fn retarget(add: On<Add<Camera>>, mut commands: Commands, target: Res<ShotTarget>, cameras: Query<&RenderTarget>) {
+    if let Ok(RenderTarget::Window(_)) = cameras.get(add.entity) {
+        commands
+            .entity(add.entity)
+            .insert((RenderTarget::Image(ImageRenderTarget { handle: target.0.clone(), scale_factor: 1.0 }), IsDefaultUiCamera));
+    }
+}
+
+/// A screenshot of what the camera shows: the shot target when headless, else the window.
+pub fn screenshot(target: Option<&ShotTarget>) -> Screenshot {
+    target.map_or_else(Screenshot::primary_window, |t| Screenshot::image(t.0.clone()))
+}
+
 /// `ORNISCULPT_SCREENSHOT=out.png`: saves a screenshot at `frame` and exits 20 frames later.
-pub fn screenshot_at(frame: u32) -> impl FnMut(Commands, MessageWriter<AppExit>) {
+pub fn screenshot_at(frame: u32) -> impl FnMut(Commands, Option<Res<ShotTarget>>, MessageWriter<AppExit>) {
     screenshots(vec![frame], frame)
 }
 
 /// As [`screenshot_at`], at each frame of `ORNISCULPT_SHOT_FRAME=360` or several, `300,302,304`
 /// (saved as `<path>.<frame>.png`); `default` without it.
-pub fn screenshot_frames(default: u32) -> impl FnMut(Commands, MessageWriter<AppExit>) {
+pub fn screenshot_frames(default: u32) -> impl FnMut(Commands, Option<Res<ShotTarget>>, MessageWriter<AppExit>) {
     let frames = shot_frames(default);
     let last = frames.iter().copied().max().unwrap_or(default);
     screenshots(frames, last)
@@ -100,14 +164,14 @@ pub fn shot_frames(default: u32) -> Vec<u32> {
     std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| default.to_string()).split(',').filter_map(|s| s.trim().parse().ok()).collect()
 }
 
-fn screenshots(frames: Vec<u32>, last: u32) -> impl FnMut(Commands, MessageWriter<AppExit>) {
+fn screenshots(frames: Vec<u32>, last: u32) -> impl FnMut(Commands, Option<Res<ShotTarget>>, MessageWriter<AppExit>) {
     let mut frame = 0u32;
-    move |mut commands: Commands, mut exit: MessageWriter<AppExit>| {
+    move |mut commands: Commands, target: Option<Res<ShotTarget>>, mut exit: MessageWriter<AppExit>| {
         let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
         frame += 1;
         if frames.contains(&frame) {
             let path = if frames.len() > 1 { format!("{path}.{frame}.png") } else { path };
-            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+            commands.spawn(screenshot(target.as_deref())).observe(save_to_disk(path));
         }
         if frame == last + 20 {
             exit.write(AppExit::Success);
@@ -117,10 +181,10 @@ fn screenshots(frames: Vec<u32>, last: u32) -> impl FnMut(Commands, MessageWrite
 
 /// Counts `frames` since the body became ready: a screenshot to `path` at 120 (pipelines have
 /// compiled by then), exit at 140.
-pub fn shoot_when_ready(commands: &mut Commands, exit: &mut MessageWriter<AppExit>, frames: &mut u32, path: String) {
+pub fn shoot_when_ready(commands: &mut Commands, target: Option<&ShotTarget>, exit: &mut MessageWriter<AppExit>, frames: &mut u32, path: String) {
     *frames += 1;
     if *frames == 120 {
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+        commands.spawn(screenshot(target)).observe(save_to_disk(path));
     }
     if *frames == 140 {
         exit.write(AppExit::Success);

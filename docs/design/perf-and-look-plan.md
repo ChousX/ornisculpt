@@ -38,15 +38,15 @@ cargo run --release --example bench -- compare BASE[,BASE...] NEW [--accept]
 
 ### 1.1 Global determinism
 
-- Every case renders into a fixed **1920×1080 offscreen image**, whatever size the window manager
-  gives the window (a tiling compositor ignored the requested size). The window shows a copy of
-  the image, except while measuring; a second camera's passes would otherwise mix into the
-  per-pass GPU times, which Bevy keys by pass name only.
+- **Headless**, as ornithochory's grove: no window and no winit. Every case renders into a fixed
+  **1920×1080 offscreen image**, which screenshots copy out of. Before this the image was shown
+  in a window, whose size a tiling compositor ignored and whose presentation capped light cases
+  at the display's 60 Hz.
 - **Pre-roll:** 60 empty-scene frames before the first case (v3), so renderer start-up (a
   1.5 s pipeline compile on this driver) isn't counted as the first case's or the crowd's cold
   start. Mob pipelines still compile when the first bodies appear; that is part of `cold`.
 - **Each frame waits for the GPU** (`RenderDevice::poll(wait_indefinitely)` in
-  `RenderSystems::Cleanup`). Offscreen frames have no swapchain to throttle the CPU, so
+  `RenderSystems::Cleanup`). Headless frames have no swapchain to throttle the CPU, so
   submissions queued without bound: about 0.6 MB per frame, 8 GB within minutes. Frame times
   then measured submission, not rendering (`BENCH_VERSION` 1 results are invalid for that
   reason). Frame time is now the full frame, CPU and GPU, with no queueing ahead.

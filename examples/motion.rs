@@ -17,14 +17,14 @@
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::window::screenshot::save_to_disk;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
 
 mod common;
-use common::{Orbit, shot_frames, spawn_stage};
+use common::{Orbit, ShotTarget, default_plugins, shot_frames, spawn_stage};
 
 const BODIES: [&str; 6] = [
     "mobs/biped.body.ron",
@@ -41,7 +41,7 @@ const ACTIONS: [(KeyCode, &str); 5] =
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, OrnisculptPlugin))
+        .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
         .insert_resource(Orbit::from_env(0.3, 0.35, 13.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
@@ -180,7 +180,7 @@ fn orbit_camera(
     }
 }
 
-fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+fn screenshot(mut commands: Commands, demo: Res<Demo>, target: Option<Res<ShotTarget>>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     // `ORNISCULPT_SHOT_FRAME=360` or several, `300,302,304` (saved as `<path>.<frame>.png`).
     let frames = shot_frames(360);
@@ -189,7 +189,7 @@ fn screenshot(mut commands: Commands, demo: Res<Demo>, mut frame: Local<u32>, mu
     if frames.contains(&*frame) {
         info!("footsteps so far: {}", demo.footsteps);
         let path = if frames.len() > 1 { format!("{path}.{}.png", *frame) } else { path };
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+        commands.spawn(common::screenshot(target.as_deref())).observe(save_to_disk(path));
     }
     if *frame == last + 20 {
         exit.write(AppExit::Success);

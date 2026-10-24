@@ -17,8 +17,10 @@
 //! - `motion`: two of them walking a circle, camera on a fixed orbit.
 //! - `crowd`: 4000 mobs as in `examples/crowd.rs` (coats on); cold start, then steady state.
 //!
-//! Animation advances exactly 1/60 s per frame and is paused until bodies are ready, so frame N of
-//! a case renders the same pose on every run. Runs on battery are refused (`--allow-battery` to
+//! Runs headless, as ornithochory's grove: no window, every case renders into a fixed 1920×1080
+//! image that screenshots copy out of, and nothing waits on a display. Animation advances exactly
+//! 1/60 s per frame and is paused until bodies are ready, so frame N of a case renders the same
+//! pose on every run. Runs on battery are refused (`--allow-battery` to
 //! override; the report records it).
 //!
 //! `compare` takes one or more baseline result directories (several = their spread is the noise
@@ -32,10 +34,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::{AssetPlugin, RenderAssetUsages};
-use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{OrthographicProjection, PerspectiveProjection, Projection, RenderTarget, ScalingMode};
-use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::camera::{PerspectiveProjection, Projection, RenderTarget};
 use bevy::render::render_resource::{PollType, TextureFormat, TextureUsages};
 use bevy::render::renderer::RenderDevice;
 use bevy::render::{Render, RenderApp, RenderSystems};
@@ -46,7 +47,8 @@ use bevy::render::diagnostic::RenderDiagnosticsPlugin;
 use bevy::render::renderer::RenderAdapterInfo;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use bevy::time::TimeUpdateStrategy;
-use bevy::window::{PresentMode, WindowResolution};
+use bevy::window::ExitCondition;
+use bevy::winit::WinitPlugin;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartAssets, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
@@ -63,7 +65,7 @@ use common::crowd::{self, Wander};
 use common::spawn_stage;
 
 /// Bump whenever a workload parameter below changes.
-const BENCH_VERSION: u32 = 3;
+const BENCH_VERSION: u32 = 4;
 
 /// (case name, body plan, coat): the hero and generation set.
 const MOBS: [(&str, &str, Option<&str>); 6] = [
@@ -94,7 +96,7 @@ const SHOT_SETTLE: u32 = 15;
 /// Empty-scene frames before the first case.
 const PREROLL: u32 = 60;
 const HERO_FOV_DEG: f32 = 30.0;
-/// Render resolution (an offscreen target, so the window manager can't change it).
+/// Render resolution.
 const RESOLUTION: UVec2 = UVec2::new(1920, 1080);
 
 const SCENARIOS: [&str; 4] = ["gen", "hero", "motion", "crowd"];
@@ -139,7 +141,7 @@ fn usage() -> String {
     "usage: bench <gen|hero|motion|crowd|all> [--out DIR] [--allow-battery] | bench compare BASE[,BASE...] NEW [--accept]".into()
 }
 
-/// Each windowed scenario in its own process (a winit event loop can't be made twice).
+/// Each rendered scenario in its own process: a fresh renderer, and its own peak memory.
 fn run_all(out: &Path, args: &[String]) -> Result<(), String> {
     run_gen(out)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -400,7 +402,7 @@ fn run_gen(out: &Path) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Windowed scenarios
+// Rendered scenarios
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Framing {
@@ -500,25 +502,20 @@ fn run_app(scenario: &str, out: PathBuf) {
     };
     let mut app = App::new();
     app.add_plugins((
-            DefaultPlugins
-                .set(AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into(), ..default() })
-                .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: format!("ornisculpt bench: {scenario}"),
-                    resolution: WindowResolution::new(1920, 1080).with_scale_factor_override(1.0),
-                    present_mode: PresentMode::AutoNoVsync,
-                    resizable: false,
-                    ..default()
-                }),
-                ..default()
-            }),
-            OrnisculptPlugin,
-        ));
+        DefaultPlugins
+            .set(AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into(), ..default() })
+            .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
+            .disable::<WinitPlugin>(),
+        // With a window plugin, DefaultPlugins leaves the runner to winit. Uncapped: `wait_for_gpu`
+        // paces the frames.
+        ScheduleRunnerPlugin::run_loop(Duration::ZERO),
+        OrnisculptPlugin,
+    ));
     // `--no-gpu-timing`: no timestamp queries (per-pass GPU times are then missing).
     if !std::env::args().any(|a| a == "--no-gpu-timing") {
         app.add_plugins(RenderDiagnosticsPlugin);
     }
-    // Finish each frame on the GPU before the next: offscreen frames have no swapchain to hold the
+    // Finish each frame on the GPU before the next: headless frames have no swapchain to hold the
     // CPU back, so submissions would queue up without bound (and fill memory), and frame times
     // would measure submission rather than rendering.
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -549,20 +546,14 @@ fn run_app(scenario: &str, out: PathBuf) {
         .add_observer(|_: On<BodyReady>, mut bench: ResMut<Bench>| bench.ready += 1)
         .add_systems(Startup, setup)
         .add_systems(First, record_frame)
-        .add_systems(Update, (drive, toggle_display, crowd::wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
+        .add_systems(Update, (drive, crowd::wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
         .run();
 }
 
 #[derive(Component)]
 struct BenchCamera;
 
-/// Shows the render target in the window. Off while measuring: Bevy keys per-pass GPU times by pass
-/// name, so a second camera's passes would overwrite the scene camera's (and add their cost).
-#[derive(Component)]
-struct DisplayCamera;
-
-/// The image every case renders into: a fixed resolution whatever size the window manager gives
-/// the window (which only shows a copy).
+/// The image every case renders into.
 #[derive(Resource)]
 struct Target(Handle<Image>);
 
@@ -585,25 +576,6 @@ fn setup(
         TierCamera,
         Projection::Perspective(PerspectiveProjection { fov: HERO_FOV_DEG.to_radians(), near: 0.005, ..default() }),
     ));
-    // The window: the target on an unlit quad, on its own render layer.
-    let screen = RenderLayers::layer(1);
-    commands.spawn((
-        Camera3d::default(),
-        Camera { order: 1, ..default() },
-        DisplayCamera,
-        Tonemapping::None,
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::AutoMin { min_width: 16.0, min_height: 9.0 },
-            ..OrthographicProjection::default_3d()
-        }),
-        Transform::from_xyz(0.0, 0.0, 1.0),
-        screen.clone(),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Rectangle::new(16.0, 9.0))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color_texture: Some(target.clone()), unlit: true, ..default() })),
-        screen,
-    ));
     commands.insert_resource(Target(target));
     spawn_stage(&mut commands, &mut meshes, &mut materials, 400.0, Vec3::new(3.0, 6.0, 2.0));
 }
@@ -612,16 +584,6 @@ fn setup(
 fn wait_for_gpu(device: Res<RenderDevice>) {
     if let Err(e) = device.poll(PollType::wait_indefinitely()) {
         error!("bench: waiting for the GPU: {e}");
-    }
-}
-
-/// The window shows the scene except while measuring (it keeps the last frame shown).
-fn toggle_display(bench: Res<Bench>, mut display: Query<&mut Camera, With<DisplayCamera>>) {
-    let show = !matches!(bench.phase, Phase::Measure(_));
-    for mut camera in &mut display {
-        if camera.is_active != show {
-            camera.is_active = show;
-        }
     }
 }
 

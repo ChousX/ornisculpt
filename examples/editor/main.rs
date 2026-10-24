@@ -62,11 +62,16 @@ use script::{Script, scripted_edits};
 
 fn main() {
     let path = common::asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
+    let test = std::env::var_os("ORNISCULPT_EDITOR_TEST").is_some();
     let mut app = App::new();
     app.add_plugins((
-        DefaultPlugins
-            .set(WindowPlugin { primary_window: Some(Window { title: "Ornisculpt editor".into(), ..default() }), ..default() })
-            .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
+        common::default_plugins(Window {
+            title: "Ornisculpt editor".into(),
+            // The self-test's frame times are a measure: don't wait for the display.
+            present_mode: if test { PresentMode::AutoNoVsync } else { PresentMode::default() },
+            ..default()
+        })
+        .set(AssetPlugin { watch_for_changes_override: Some(true), ..default() }),
         OrnisculptPlugin,
         SdfPreviewPlugin,
     ))
@@ -84,9 +89,7 @@ fn main() {
         Update,
         (sync_from_asset, pointer, controls, update_preview, drive_generation, swap_views, orbit_camera, draw_skeleton, render_panel, screenshot).chain(),
     );
-    if std::env::var_os("ORNISCULPT_EDITOR_TEST").is_some() {
-        // Frame times are the measure: don't wait for the display.
-        app.add_systems(Startup, |mut window: Single<&mut Window, With<PrimaryWindow>>| window.present_mode = PresentMode::AutoNoVsync);
+    if test {
         app.init_resource::<Script>().add_systems(Update, scripted_edits.after(pointer).before(update_preview));
     }
     app.run();
@@ -1163,13 +1166,19 @@ fn render_panel(editor: Res<Editor>, mut panels: Query<&mut Text, With<Panel>>) 
     }
 }
 
-fn screenshot(mut commands: Commands, mut editor: ResMut<Editor>, script: Option<Res<Script>>, mut exit: MessageWriter<AppExit>) {
+fn screenshot(
+    mut commands: Commands,
+    mut editor: ResMut<Editor>,
+    script: Option<Res<Script>>,
+    target: Option<Res<common::ShotTarget>>,
+    mut exit: MessageWriter<AppExit>,
+) {
     let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
     if script.is_some_and(|s| !s.done) {
         return;
     }
     if let Some(frames) = editor.ready_frames.as_mut() {
-        common::shoot_when_ready(&mut commands, &mut exit, frames, path);
+        common::shoot_when_ready(&mut commands, target.as_deref(), &mut exit, frames, path);
     }
 }
 
