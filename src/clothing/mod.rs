@@ -22,10 +22,14 @@
 //! through an armhole.
 //!
 //! An [`Outfit`] (`*.outfit.ron`, worn via [`MobOutfit`]) is baked into the generated body: one
-//! cloth submesh per LOD, coloured from the outfit's palette.
+//! cloth submesh per LOD, coloured from the outfit's palette. There cloth close over the skin
+//! takes the skin's muscle flex and soft-tissue jiggle, so the two move as one, and the skin it
+//! hides leaves the mesh ([`cover_skin`]): only what shows moves.
 
+mod cover;
 mod fit;
 
+pub use cover::cover_skin;
 pub use fit::{fit_outfit, garment_lods};
 
 use bevy::prelude::*;
