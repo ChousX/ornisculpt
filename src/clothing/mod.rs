@@ -15,9 +15,11 @@
 //! doesn't hang, `y` beyond 0..1 instead wraps over the part's end cap (`y = -1` reaches the
 //! tip): shorts over a pelvis, a hood over a head end, a mitten over a hand.
 //!
-//! A garment hugs the whole body, blend bulges included, but never sits further out than its own
-//! part's surface plus a small allowance: where its rays run into another part (a torso garment
-//! at an arm root), that part emerges through it as through an armhole.
+//! A garment hugs the whole body, blend bulges included, and rises smoothly toward a neighbouring
+//! part across a narrow gap (an armpit), but never sits further out than its own part's surface
+//! plus a small allowance. Other limbs count only near where they attach: an arm lying along the
+//! ribs, or one reaching further out than the allowance, emerges through a torso garment as
+//! through an armhole.
 //!
 //! An [`Outfit`] (`*.outfit.ron`, worn via [`MobOutfit`]) is baked into the generated body: one
 //! cloth submesh per LOD, coloured from the outfit's palette.
