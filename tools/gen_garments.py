@@ -3,7 +3,8 @@
 
 Wrap space (see src/clothing/mod.rs): a unit cylinder around +Y stands for one body part.
 y 0..1 runs over the garment's span, the angle around Y is the angle around the part (-Z = back,
-+X = left/outer), and r - 1 is the height above the skin in metres. y < 0 hangs below the span.
++X = left on a torso, inner side on a limb), and r - 1 is the height above the skin in
+metres. y < 0 hangs below the span.
 
 Mesh0 tube    plain sleeve/tunic/trouser tube with rolled hems
 Mesh1 bracer  tube with raised rims and lacing ridges

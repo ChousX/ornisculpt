@@ -337,14 +337,15 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
         };
         let at_edge = surf.position + surf.normal * height;
         let skin = (surf.info.bones.map(|b| u16::from(b.0)), surf.info.weights);
-        let (position, (joints, weights)) = match (hanging, g.hang, chains) {
-            (true, Some(hang), Some(chains)) if !chains.is_empty() => {
+        // Without chains (no bones left) hanging cloth still hangs, rigid on the edge's skin.
+        let (position, (joints, weights)) = match (hanging, g.hang) {
+            (true, Some(hang)) => {
                 let start_edge = p.y < 0.0;
                 let beyond = if start_edge { -p.y } else { p.y - 1.0 };
                 let along = hang_edge(piece, start_edge).map_or(Vec3::NEG_Y, |(_, along)| along);
                 let (dir, radial) = drop_dir(piece, along, surf.normal, &hang);
                 let drop = beyond * hang.length;
-                (at_edge + dir * drop + radial * drop * hang.flare, hang_influences(chains, theta, beyond).unwrap_or(skin))
+                (at_edge + dir * drop + radial * drop * hang.flare, chains.and_then(|c| hang_influences(c, theta, beyond)).unwrap_or(skin))
             }
             _ => (at_edge, skin),
         };
@@ -428,12 +429,17 @@ mod tests {
     use crate::anatomy::build_src;
 
     fn tube() -> TriMesh {
+        tube_over(0.0, 1.0)
+    }
+
+    /// A ring of 16 columns from `y = lo` to `y = hi` in 8 rows, on the skin.
+    fn tube_over(lo: f32, hi: f32) -> TriMesh {
         let (rows, cols) = (8u32, 16u32);
         let mut positions = Vec::new();
         for i in 0..=rows {
             for j in 0..cols {
                 let t = j.to_f32() / cols.to_f32() * TAU;
-                positions.push(Vec3::new(t.sin(), i.to_f32() / rows.to_f32(), -t.cos()));
+                positions.push(Vec3::new(t.sin(), f32::mul_add(hi - lo, i.to_f32() / rows.to_f32(), lo), -t.cos()));
             }
         }
         let v = |i: u32, j: u32| i * cols + j % cols;
@@ -466,5 +472,53 @@ mod tests {
         assert_eq!(mesh.positions.len(), 2 * 9 * 16);
         // One sleeve each side, around shoulder-to-elbow height.
         assert!(lo.x < -0.15 && hi.x > 0.15, "{lo} {hi}");
+    }
+
+    #[test]
+    fn hanging_cloth_without_bones_still_hangs() {
+        let anatomy = biped();
+        let bones = anatomy.skeleton.len();
+        let hip = anatomy.parts.iter().find(|p| p.path.0 == "torso").and_then(|p| sample_axis(&p.axis, 0.0)).expect("torso").centre();
+        let mut assets = PartAssets::default();
+        assets.insert(String::from("skirt"), Arc::new(tube_over(-1.0, 1.0)));
+        // Far more chains than the bones a biped has left.
+        let hang = Hang { length: 0.3, chains: 40, segments: 2, ..default() };
+        let outfit = Outfit {
+            garments: vec![Garment { name: "skirt".into(), on: "torso".into(), span: (0.0, 0.1), mesh: "skirt".into(), hang: Some(hang), ..default() }],
+        };
+        let (dressed, mesh) = fit_outfit(anatomy, &outfit, &assets);
+        assert_eq!(dressed.skeleton.len(), bones, "no cloth bones fit");
+        let low = mesh.expect("skirt").positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(low < hip.y - 0.25, "hem at {low}, hips at {}", hip.y);
+    }
+
+    /// Every hanging garment of the sample outfits gets its spring bones on the bodies it is
+    /// meant for (a body that grows bones can push one past the budget).
+    #[test]
+    fn sample_outfits_fit_the_bone_budget() {
+        let pairs = [
+            (include_str!("../../assets/outfits/warrior.outfit.ron"), include_str!("../../assets/mobs/biped.body.ron")),
+            (include_str!("../../assets/outfits/peasant.outfit.ron"), include_str!("../../assets/mobs/biped.body.ron")),
+            (include_str!("../../assets/outfits/harness.outfit.ron"), include_str!("../../assets/mobs/quadruped.body.ron")),
+        ];
+        for (outfit, body) in pairs {
+            let outfit: Outfit = ron::from_str(outfit).expect("outfit parses");
+            let anatomy = build_src(body);
+            let mut assets = PartAssets::default();
+            for path in outfit.referenced_meshes() {
+                assets.insert(path, Arc::new(tube_over(-1.0, 1.0)));
+            }
+            let wanted: usize = outfit
+                .garments
+                .iter()
+                .filter_map(|g| {
+                    let parts = anatomy.parts.iter().filter(|p| !p.axis.is_empty() && path_matches(&PartPath(g.on.clone()), &p.path)).count();
+                    g.hang.map(|h| parts * usize::from(h.chains) * usize::from(h.segments))
+                })
+                .sum();
+            let bones = anatomy.skeleton.len();
+            let (dressed, _) = fit_outfit(anatomy, &outfit, &assets);
+            assert_eq!(dressed.skeleton.len(), bones + wanted, "{bones} bones + {wanted} for cloth");
+        }
     }
 }

@@ -3,7 +3,8 @@
 //! A garment is a mesh authored in **wrap space**, a unit cylinder standing for one body part:
 //! - `y` runs along the part over the garment's [`Garment::span`] (0 = span start, 1 = span end);
 //! - the angle around Y is the angle around the part (`-Z` = dorsal/back, `+X` = left on a
-//!   torso, the outer side on a limb; mirrored parts mirror it, so asymmetric details mirror);
+//!   torso, the inner side (toward the midline) on a limb; mirrored parts mirror it, so
+//!   asymmetric details mirror);
 //! - the distance outside the cylinder, `r - 1`, is the height above the skin in metres.
 //!
 //! Fitting marches out from the part's axis to the real body surface at every vertex (muscle,
