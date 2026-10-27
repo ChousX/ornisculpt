@@ -115,7 +115,60 @@ impl SdfGrid {
             // are exact for watertight, consistently wound meshes.
             mesh_to_sdf::AccelerationMethod::Bvh(mesh_to_sdf::SignMethod::Normal),
         );
-        Self { origin, cell: Vec3::splat(cell), dims, values }
+        let mut grid = Self { origin, cell: Vec3::splat(cell), dims, values };
+        grid.fill_voids();
+        grid
+    }
+
+    /// Makes enclosed pockets solid: a mouth cavity, the cups behind modelled eyelids, the inside
+    /// of a hollow mesh. Outside space is what the padding reaches (a flood fill through positive
+    /// cells from the grid's faces); any other positive cell is a void and goes inside, as far in
+    /// as it was from the pocket's wall.
+    fn fill_voids(&mut self) {
+        let (nx, ny, nz) = (self.dims.x.idx(), self.dims.y.idx(), self.dims.z.idx());
+        let at = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
+        let mut outside = vec![false; self.values.len()];
+        let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    if (x == 0 || y == 0 || z == 0 || x + 1 == nx || y + 1 == ny || z + 1 == nz) && self.values.get(at(x, y, z)).is_some_and(|v| *v > 0.0) {
+                        stack.push((x, y, z));
+                    }
+                }
+            }
+        }
+        while let Some((x, y, z)) = stack.pop() {
+            let i = at(x, y, z);
+            if outside.get(i).copied().unwrap_or(true) {
+                continue;
+            }
+            if let Some(o) = outside.get_mut(i) {
+                *o = true;
+            }
+            let near = [
+                (x.wrapping_sub(1), y, z),
+                (x + 1, y, z),
+                (x, y.wrapping_sub(1), z),
+                (x, y + 1, z),
+                (x, y, z.wrapping_sub(1)),
+                (x, y, z + 1),
+            ];
+            for (a, b, c) in near {
+                if a < nx && b < ny && c < nz {
+                    let j = at(a, b, c);
+                    if !outside.get(j).copied().unwrap_or(true) && self.values.get(j).is_some_and(|v| *v > 0.0) {
+                        stack.push((a, b, c));
+                    }
+                }
+            }
+        }
+        let floor = self.cell.min_element() * 0.5;
+        for (v, out) in self.values.iter_mut().zip(&outside) {
+            if *v > 0.0 && !*out {
+                *v = -v.max(floor);
+            }
+        }
     }
 
     #[must_use]
