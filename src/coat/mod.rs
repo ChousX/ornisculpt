@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 use serde::{Deserialize, Serialize};
 
-use crate::anatomy::{Anatomy, RegionMask, RegionSelector};
+use crate::anatomy::{Anatomy, RegionId, RegionMask, RegionSelector};
 
 /// The look of a mob.
 #[derive(Asset, Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -33,7 +33,8 @@ pub struct Coat {
     pub secondary: [f32; 3],
     pub accent: [f32; 3],
     pub roughness: f32,
-    /// Later coverings win where selectors overlap.
+    /// Later coverings win where selectors overlap. Fur coverings after the first set only their
+    /// regions' strand length (see [`Fur::length`]).
     pub coverings: Vec<Covering>,
     /// Colour laid over the skin and hard parts by region and shape, in order (see [`Marking`]).
     pub markings: Vec<Marking>,
@@ -91,7 +92,9 @@ impl Default for Scales {
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(default)]
 pub struct Fur {
-    /// Strand length in metres.
+    /// Strand length in metres. The one fur parameter that varies over a body: a second fur
+    /// covering (a mane, a beard, hair) gives its regions their own length, while the rest of
+    /// its parameters come from the body's first fur covering.
     pub length: f32,
     /// Strands per metre (along each axis).
     pub density: f32,
@@ -211,6 +214,25 @@ impl Coat {
     #[must_use]
     pub fn feathers(&self) -> Option<Feathers> {
         self.first(|k| if let CoveringKind::Feathers(f) = k { Some(*f) } else { None })
+    }
+
+    /// Each region's fur length in metres: the last fur covering that takes the region, or the
+    /// first fur covering's length where none does. Fur coverings differ in length only; density,
+    /// thickness, tip colour and shell count come from the first (one shell set per mob).
+    #[must_use]
+    pub fn fur_lengths(&self, anatomy: &Anatomy) -> [f32; RegionId::MAX] {
+        let mut lengths = [self.fur().map_or(0.0, |f| f.length); RegionId::MAX];
+        for c in &self.coverings {
+            if let CoveringKind::Fur(f) = c.kind {
+                let mask = c.regions.mask(anatomy);
+                for (id, l) in (0u8..).zip(lengths.iter_mut()) {
+                    if mask.contains(RegionId(id)) {
+                        *l = f.length;
+                    }
+                }
+            }
+        }
+        lengths
     }
 
     /// The shader uniform for this coat on `anatomy`.

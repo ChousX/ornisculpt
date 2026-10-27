@@ -7,6 +7,10 @@
     roughness: 0.6,
     hard: (0.85, 0.72, 0.66),
     iris: (0.2, 0.4, 0.65),
+    coverings: [
+        // The beard and moustache: long, coarse white strands.
+        (regions: Or([Part("torso/neck/head/beard"), Part("torso/neck/head/moustache")]), kind: Fur((length: 0.035, density: 1200.0, thickness: 0.8, tip: 0.1, shells: 12))),
+    ],
     markings: [
         (color: (0.82, 0.45, 0.4), regions: Kind(Face), patches: Some((size: 0.03, cover: 0.55, soft: 0.3, seed: 4)), strength: 0.5),
         (color: (0.88, 0.86, 0.82), regions: Or([Part("torso/neck/head/beard"), Part("torso/neck/head/moustache")])),

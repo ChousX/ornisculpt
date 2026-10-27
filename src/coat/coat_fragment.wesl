@@ -1,7 +1,7 @@
 // Mob fragment shader: StandardMaterial lighting with coat shading.
 // - COAT_SKIN: base colour; scales (cellular colour + relief) where covered; fur/feather regions
 //   get a darker undercoat.
-// - COAT_SHELL: fur strands, alpha-tested per shell height.
+// - COAT_SHELL: fur strands, alpha-tested per shell height (uv = shell height, fur length).
 // - COAT_FEATHER: feather vane shape on a card, alpha-tested.
 // - COAT_HARD: plain colour.
 // Coat markings (COAT_PAINT, `paint_io.wesl`) replace the base colour where they show.
@@ -306,13 +306,34 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
 @if(COAT_SHELL) {
     var h = 0.0;
 @if(VERTEX_UVS_A) {
+    var fur_length = coat.fur.x;
     h = in.uv.x;
 }
+    fur_length = in.uv.y;
     // One strand per cell, thinning to a point at full length.
     let c = cellular(rest * coat.fur.y);
     let radius = 0.5 * coat.fur.z * (1.0 - h);
-    if c.x > radius {
-        discard;
+    let level = max(0.0, log2(4.0 * pixel / cell));
+    let top = log2(max(2.0 * fur_length / cell, 1.0));
+    var pelt = 0.0;
+    if level > top || fur_length < 12.0 * pixel {
+        let step = 1.0 / max(coat.scales.w, 1.0);
+        if h > 0.5 + 1e-3 || h <= 0.5 - step + 1e-3 {
+            discard;
+        }
+        pelt = 1.0;
+    } else {
+        let l0 = floor(level);
+        let f = level - l0;
+        let k0 = exp2(l0);
+        let fine = cellular(rest * coat.fur.y / k0).x <= radius * sqrt(1.0 - f);
+        var coarse = false;
+        if f > 0.0 {
+            coarse = cellular_fast(rest * coat.fur.y / (k0 * 2.0)).x <= radius * sqrt(f);
+        }
+        if !(fine || coarse) {
+            discard;
+        }
     }
     let root = mix(0.35, 1.0, h);
     color = mix(base, accent, h * coat.fur.w) * root;

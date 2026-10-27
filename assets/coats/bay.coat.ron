@@ -9,8 +9,11 @@
     coverings: [
         (
             regions: AllExcept([Kind(LimbEnd), Kind(Snout), Kind(Hard), Kind(Mass), Kind(TailBase), Kind(TailTip)]),
-            kind: Fur((length: 0.008, density: 900.0, thickness: 0.8, tip: 0.2, shells: 6)),
+            kind: Fur((length: 0.008, density: 900.0, thickness: 0.8, tip: 0.2, shells: 8)),
         ),
+        // Mane, forelock and tail: long hair (its own length; the rest as the body coat).
+        (regions: Or([Part("torso/neck/mane"), Part("torso/neck/head/forelock")]), kind: Fur((length: 0.035))),
+        (regions: Or([Kind(TailBase), Kind(TailTip)]), kind: Fur((length: 0.045))),
     ],
     markings: [
         // Black points: the legs darken from the knee and hock down.

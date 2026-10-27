@@ -4,7 +4,8 @@
 //   slot in the mesh tag (COAT_CROWD). Both rotate each vertex about its precomputed centre of
 //   rotation (COAT_COR), or blend dual quaternions where a mesh has none (`dqs.wesl`): limbs keep
 //   their volume at bent joints, where averaging matrices shrinks them.
-// - Fur shells (COAT_SHELL) are pushed out along the normal by uv.x · fur length, drooping a little.
+// - Fur shells (COAT_SHELL) are pushed out along the normal by uv.x · the fur length baked in uv.y,
+//   drooping a little.
 // - Muscles (COAT_MUSCLE) bulge along the normal as they shorten: the distance from the skinned
 //   vertex to its muscle's insertion (carried by the joint across) against the rest distance,
 //   over the muscle's length.
@@ -82,8 +83,9 @@ struct CoatVertex {
 fn rest_position(v: CoatVertex) -> vec3<f32> {
     var position = v.position;
 @if(COAT_SHELL && COAT_UV) {
+    // uv = (shell height, the fur's length here).
     let h = v.uv.x;
-    position += v.normal * coat.fur.x * h + vec3<f32>(0.0, -1.0, 0.0) * coat.fur.x * h * h * 0.35;
+    position += v.normal * v.uv.y * h + vec3<f32>(0.0, -1.0, 0.0) * v.uv.y * h * h * 0.35;
 }
 @if(COAT_SKIN && COAT_CROWD && COAT_UV) {
     // Crowd tiers have no shells or cards: carry their volume in the skin.

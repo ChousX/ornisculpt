@@ -7,6 +7,10 @@
     roughness: 0.55,
     hard: (0.85, 0.7, 0.66),
     iris: (0.22, 0.32, 0.4),
+    coverings: [
+        // Short hair: fine, dense strands over the sculpted cap.
+        (regions: Part("torso/neck/head/hair"), kind: Fur((length: 0.022, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
+    ],
     markings: [
         // Hands and feet slightly redder.
         (color: (0.76, 0.52, 0.44), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),

@@ -6,6 +6,10 @@
     roughness: 0.5,
     hard: (0.88, 0.72, 0.68),
     iris: (0.3, 0.24, 0.1),
+    coverings: [
+        // Hair: fine, dense strands over the sculpted cap and ponytail.
+        (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/ponytail")]), kind: Fur((length: 0.03, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
+    ],
     markings: [
         (color: (0.78, 0.54, 0.46), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
         // A little colour in the cheeks.

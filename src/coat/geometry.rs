@@ -37,8 +37,9 @@ pub fn build_coat_meshes(coat: &Coat, anatomy: &Anatomy, body: &BodyMeshData, le
     // Fur hides fine surface detail, so shells use a simplified copy of the skin: every shell
     // multiplies its triangle count and they are alpha-tested.
     let shell_source = (shells > 0).then(|| simplify(body, SHELL_SOURCE_RATIO, 0.01));
+    let lengths = coat.fur_lengths(anatomy);
     CoatMeshes {
-        shells: shell_source.and_then(|s| fur_shells(&s, masks.fur, shells)),
+        shells: shell_source.and_then(|s| fur_shells(&s, masks.fur, shells, &lengths)),
         feathers: feathers
             .filter(|_| detail > 0.0)
             .and_then(|f| feather_cards(body, anatomy, level, masks.feathers, &f, f.density * detail)),
@@ -65,9 +66,10 @@ fn covered_triangles(body: &BodyMeshData, mask: RegionMask) -> impl Iterator<Ite
     })
 }
 
-/// `shells` offset copies of the covered skin; `uvs.x` is the shell height (0..1].
+/// `shells` offset copies of the covered skin; `uvs` = (shell height (0..1], the fur's length at
+/// the vertex in metres, by its region from `lengths`).
 #[must_use]
-fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<BodyMeshData> {
+fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32, lengths: &[f32; RegionId::MAX]) -> Option<BodyMeshData> {
     let tris: Vec<[u32; 3]> = covered_triangles(body, mask).collect();
     if tris.is_empty() {
         return None;
@@ -92,7 +94,8 @@ fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<Body
             out.push_vertex(v);
             // No coverage on shells or cards: a skin mesh with coverage puts coat weights in UV0
             // in place of these coordinates (see `BodyMeshData::build_mesh`).
-            out.uvs.push([h, 0.0]);
+            let length = region_of(body, i).and_then(|r| lengths.get(usize::from(r.0))).copied().unwrap_or(0.0);
+            out.uvs.push([h, length]);
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
             out.push_from(body, i, &[VertexChannel::Paint, VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
         }

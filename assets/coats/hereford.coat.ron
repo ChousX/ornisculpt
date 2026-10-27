@@ -11,6 +11,8 @@
             regions: AllExcept([Kind(LimbEnd), Kind(Snout), Kind(Hard)]),
             kind: Fur((length: 0.012, density: 800.0, thickness: 0.75, tip: 0.12, shells: 8)),
         ),
+        // The tail switch: long hair.
+        (regions: Part("torso/tail/switch"), kind: Fur((length: 0.04))),
     ],
     markings: [
         // White face and crown.
