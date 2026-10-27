@@ -52,7 +52,7 @@ impl Default for SurfaceSettings {
                 // wrinkles belong in shading; keep geometry for large folds only.
                 // Detail levels: cells halve (to 2 mm close up) where the body is thin, so fingers and
                 // ears keep their shape without meshing the whole body finer.
-                spec(0.008, 2, 0.5, 0.0015, false, true), // Hero
+                spec(0.008, 2, 0.5, 0.0012, false, true), // Hero
                 spec(0.02, 1, 0.22, 0.01, false, true),   // Near
                 spec(0.05, 0, 0.35, 0.01, false, false),  // Far
             ],
@@ -569,7 +569,8 @@ pub mod sheet_tests {
     #[test]
     fn swung_legs_stretch_few_triangles() {
         // (body, at most stretched with a corner on a sheet, at most stretched in all)
-        for (body, max_sheet, max_total) in [("horse", 200, 450), ("biped", 25, 25)] {
+        // The biped's hands hang against its thighs (the thumb toward them), which the swing tears a few more.
+        for (body, max_sheet, max_total) in [("horse", 200, 450), ("biped", 32, 32)] {
             let a = anatomy(body);
             let (data, sheets) = hero_bound(&a);
             let s = stretched(&a, &data, &sheets, &legs_swung(&a, 30.0));

@@ -670,9 +670,10 @@ fn limb_end(end: LimbEnd, b: &mut AnatomyBuilder, last: BoneId, tip: Transform, 
         LimbEnd::None | LimbEnd::Point => tip,
         LimbEnd::Hand { palm } => {
             let m = moved(tip, Vec3::Y * palm * 0.5);
-            // A flat, square-edged palm the fingers line up along (not a pillow).
+            // A flat, square-edged palm the fingers line up along (not a pillow). No heel pads:
+            // a pad lying along the box's face meshes as slivers where the two nearly coincide.
             let round = palm * 0.1;
-            let half = (Vec3::new(palm * 0.42, palm * 0.5, palm * 0.14) - Vec3::splat(round)).max(Vec3::splat(palm * 0.02));
+            let half = (Vec3::new(palm * 0.42, palm * 0.5, palm * 0.13) - Vec3::splat(round)).max(Vec3::splat(palm * 0.02));
             prim(b, PrimShape::RoundBox { half, round }, m);
             moved(tip, Vec3::Y * palm)
         }
@@ -1170,7 +1171,8 @@ impl PartBuild for DigitParams {
         let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
         // An opposable first digit (a thumb) roots back toward the wrist on the palm side, shorter
-        // and thicker, turned to close across the palm; the rest line up along the end.
+        // and thicker, turned to close across the palm and lifted out of the palm's plane, its tip
+        // beside the index finger's middle; the rest line up along the end.
         let thumb = self.opposable && n > 1;
         let row = if thumb { n - 1 } else { n };
         let reach: f32 = lens.iter().sum();
@@ -1184,8 +1186,8 @@ impl PartBuild for DigitParams {
             let k = if row > 1 { place.to_f32() / (row - 1).to_f32() - 0.5 } else { 0.0 };
             let start = if is_thumb {
                 let edge = (spacing * 0.5).mul_add((row - 1).to_f32(), radius);
-                base * Transform::from_translation(Vec3::new(-edge, -reach * 0.6, radius * 0.6))
-                    .with_rotation(Quat::from_rotation_z(40f32.to_radians()) * Quat::from_rotation_y(70f32.to_radians()))
+                let turn = Quat::from_rotation_z(26f32.to_radians()) * Quat::from_rotation_x(14f32.to_radians()) * Quat::from_rotation_y(55f32.to_radians());
+                base * Transform::from_translation(Vec3::new(-edge * 0.9, -reach * 0.5, radius * 0.9)).with_rotation(turn)
             } else {
                 base * Transform::from_translation(Vec3::X * spacing * k * (row - 1).to_f32())
                     .with_rotation(Quat::from_rotation_z((-self.spread_deg * k).to_radians()))
