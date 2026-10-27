@@ -192,7 +192,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
             MobVertexData {
                 region: sheet.region,
                 cavity: 0,
-                curvature: 128,
+                shade: 0,
                 limb_t: 0,
                 primary_bone: BoneId(j[0].clamp_u8()),
                 layer: PrimLayer::Base,

@@ -99,7 +99,7 @@ pub(super) fn hard_part_mesh(part: &HardPart, anatomy: &Anatomy, level: LodLevel
     let data = MobVertexData {
         region: part.region,
         cavity: 0,
-        curvature: 128,
+        shade: 0,
         limb_t: 255,
         primary_bone: part.bone,
         layer: PrimLayer::Base,

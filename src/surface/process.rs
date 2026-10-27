@@ -102,15 +102,20 @@ pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> Bo
         submeshes: Vec::new(),
     };
     // Each vertex queries the field on its own: in parallel.
+    // Two occlusion probes out along the normal: a short one for creases, and one about a
+    // fourteenth of the body long for what the body shades of itself.
+    let extent = Vec3::from(field.bounds().max - field.bounds().min).max_element();
+    let wide = (extent * 0.07).clamp(PROBE, 0.25);
     let probe = |f: &dyn Field, pa: Vec3A| {
         let normal = f.gradient(pa).normalize_or(Vec3A::Y);
         let occluded = ((PROBE - f.distance(pa + normal * PROBE)) / PROBE).clamp(0.0, 1.0);
-        (normal, f.surface_info(pa), occluded)
+        let shaded = ((wide - f.distance(pa + normal * wide)) / wide).clamp(0.0, 1.0);
+        (normal, f.surface_info(pa), occluded, shaded)
     };
     let at: Vec<(Vec3, u16)> = out.positions.iter().enumerate().map(|(i, p)| (*p, mesh.sheets.get(i).copied().unwrap_or(Sheet::WHOLE_ID))).collect();
     let attrs = super::par_map(&at, |&(p, sheet)| {
         let pa = Vec3A::from(p);
-        let (normal, info, occluded) = match Sheet::from_id(sheet) {
+        let (normal, info, occluded, shaded) = match Sheet::from_id(sheet) {
             Sheet::Whole => probe(field, pa),
             sheet => probe(&field.sheet(sheet), pa),
         };
@@ -126,7 +131,7 @@ pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> Bo
         let data = MobVertexData {
             region: info.region,
             cavity: (occluded * 255.0).sat_u8(),
-            curvature: 128,
+            shade: (shaded * 255.0).sat_u8(),
             limb_t: (limb_t * 255.0).sat_u8(),
             primary_bone: bone,
             layer: info.layer,

@@ -401,7 +401,7 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
             MobVertexData {
                 region: surf.region,
                 cavity: 0,
-                curvature: 128,
+                shade: 0,
                 limb_t: 0,
                 primary_bone: BoneId(joints[0].clamp_u8()),
                 layer: surf.layer,

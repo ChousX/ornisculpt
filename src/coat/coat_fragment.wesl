@@ -204,12 +204,28 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
     let surface = surface_of(out_v);
 
 @if(COAT_SKIN) {
-    // Creases baked from the field (armpits, between the fingers, under the jaw, the lids): less
-    // sky and less highlight reach them, and bare skin flushes where it folds.
+    // Occlusion baked from the field: creases (between the fingers, the lids, the lips) and
+    // what the body shades of itself (under the chin, the armpit, between the thighs). Less sky
+    // and less highlight reach them; they also darken under direct light, as the light bouncing
+    // in them is lost, and bare skin flushes where it folds.
     let cavity = surface.x;
-    pbr.diffuse_occlusion *= 1.0 - 0.45 * cavity;
-    pbr.specular_occlusion *= 1.0 - 0.6 * cavity;
-    color *= mix(vec3<f32>(1.0), vec3<f32>(1.0, 0.84, 0.78), cavity * (1.0 - max(weights.x, weights.y)) * 0.7);
+    let shade = surface.y;
+    pbr.diffuse_occlusion *= (1.0 - 0.45 * cavity) * (1.0 - 0.5 * shade);
+    pbr.specular_occlusion *= (1.0 - 0.6 * cavity) * (1.0 - 0.5 * shade);
+    color *= 1.0 - 0.2 * cavity - 0.3 * shade;
+    let bare = 1.0 - max(max(weights.x, weights.y), scale_w);
+    color *= mix(vec3<f32>(1.0), vec3<f32>(1.0, 0.84, 0.78), cavity * bare * 0.7);
+    // Bare skin reflects little (F0 about 0.03), is rougher in its creases, and its sheen is
+    // mottled at a few millimetres (oilier and drier patches) while that can be seen.
+    reflectance = mix(reflectance, vec3<f32>(0.3), bare);
+    roughness = mix(roughness, min(roughness + 0.25 * cavity, 1.0), bare);
+@if(!COAT_CROWD) {
+    let mottle_size = 0.004;
+    let mottle = detail(mottle_size, pixel) * bare;
+    if mottle > 0.0 {
+        roughness = clamp(roughness + (value3(rest / mottle_size) - 0.5) * 0.2 * mottle, 0.05, 1.0);
+    }
+}
 
     // Scales. Hero: computed for every pixel when the coat has any (uniform branch) so the
     // derivatives used for relief stay in uniform control flow. Crowd: no relief, so uncovered
@@ -344,7 +360,8 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
         }
     }
     let root = mix(mix(0.35, 1.0, h), 0.72, pelt);
-    color = mix(base, accent, mix(h, 0.5, pelt) * coat.fur.w) * root;
+    color = mix(base, accent, mix(h, 0.5, pelt) * coat.fur.w) * root * (1.0 - 0.3 * surface.y);
+    pbr.diffuse_occlusion *= 1.0 - 0.5 * surface.y;
 }
 
 @if(COAT_FEATHER) {

@@ -9,7 +9,7 @@ use crate::anatomy::{BoneId, PrimLayer, RegionId};
 use crate::num::{Clamp, Idx};
 
 /// Per-vertex Ornisculpt data, packed into two `u32`s on the GPU:
-/// - x: `region | cavity << 8 | curvature << 16 | limb_t << 24`
+/// - x: `region | cavity << 8 | shade << 16 | limb_t << 24`
 /// - y: `primary_bone | layer << 8` (upper 16 bits reserved)
 ///
 /// Bone-local position is not stored; shaders rebuild it from `primary_bone` and the bind pose.
@@ -68,8 +68,9 @@ pub struct MobVertexData {
     pub region: RegionId,
     /// Ambient-occlusion-like concavity, 0 = open, 255 = deep crease.
     pub cavity: u8,
-    /// Signed curvature remapped to 0..=255 (128 = flat).
-    pub curvature: u8,
+    /// Ambient occlusion at the body's scale (a probe about a fourteenth of the body long), 0 =
+    /// open, 255 = enclosed: under the chin, in the armpit, between the thighs.
+    pub shade: u8,
     /// Position along the owning limb/chain, 0 = root, 255 = tip.
     pub limb_t: u8,
     pub primary_bone: BoneId,
@@ -86,19 +87,19 @@ impl MobVertexData {
             PrimLayer::Fat => 3,
         };
         [
-            u32::from_le_bytes([self.region.0, self.cavity, self.curvature, self.limb_t]),
+            u32::from_le_bytes([self.region.0, self.cavity, self.shade, self.limb_t]),
             u32::from_le_bytes([self.primary_bone.0, layer, 0, 0]),
         ]
     }
 
     #[must_use]
     pub const fn unpack([x, y]: [u32; 2]) -> Self {
-        let [region, cavity, curvature, limb_t] = x.to_le_bytes();
+        let [region, cavity, shade, limb_t] = x.to_le_bytes();
         let [bone, layer, _, _] = y.to_le_bytes();
         Self {
             region: RegionId(region),
             cavity,
-            curvature,
+            shade,
             limb_t,
             primary_bone: BoneId(bone),
             layer: match layer {
@@ -403,7 +404,7 @@ mod tests {
         let d = MobVertexData {
             region: RegionId(41),
             cavity: 200,
-            curvature: 128,
+            shade: 0,
             limb_t: 255,
             primary_bone: BoneId(63),
             layer: PrimLayer::Landmark,
