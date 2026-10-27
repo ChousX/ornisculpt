@@ -275,6 +275,122 @@ pub fn ride_torso(f: &Frame, loco: &Locomotion, clock: &GaitClock, step: &Active
     }
 }
 
+/// A model-space rotation applied to bone `b` in its own frame (the pose's local transforms are
+/// in the parent's frame; this turns the bone about model axes wherever it points).
+fn turn_in_model(a: &Anatomy, local: &mut [Transform], b: BoneId, q: Quat) {
+    let model = a.skeleton.rest_model();
+    let m = model.get(b.index()).map_or(Quat::IDENTITY, |m| Quat::from_mat3a(&m.matrix3).normalize());
+    if let Some(t) = local.get_mut(b.index()) {
+        t.rotation *= m.inverse() * q * m;
+    }
+}
+
+/// The neck's bones from its base up (the skull alone without a neck).
+fn neck_bones(a: &Anatomy) -> SmallVec<[BoneId; 6]> {
+    let Some(base) = a.skeleton.find("neck.0").or_else(|| a.skeleton.find("skull")) else { return SmallVec::new() };
+    std::iter::successors(Some(base), |b| a.skeleton.children(*b).find(|c| a.skeleton.get(*c).is_some_and(|d| d.name.starts_with("neck.")))).collect()
+}
+
+/// Standing still, an upright biped rests its weight on one leg: the pelvis slides over that
+/// leg and lifts on its side, the shoulders tilt back the other way (less), the head comes
+/// back level, and the free leg, its hip now lower and nearer its foot, bends at the knee when
+/// the legs are solved. The weight shifts to the other leg every several seconds, easing across
+/// in about a second, and the stance eases out as soon as the body moves.
+pub fn stand_with_weight(f: &Frame, loco: &Locomotion, clock: &GaitClock, state: &mut TorsoState, pose: &mut MobPose) {
+    let (a, dt) = (f.a, f.dt);
+    let upright = *state.upright_biped.get_or_insert_with(|| {
+        let traits = super::fit::BodyTraits::of(a);
+        traits.family == super::fit::BodyFamily::UprightBiped && a.legs.len() == 2 && !a.spine.is_empty()
+    });
+    if !upright {
+        return;
+    }
+    let s = &mut state.stance;
+    let still = f.speed(loco) < 0.05 && !clock.stepping;
+    let ease = |rate: f32| 1.0 - (-rate * dt).exp();
+    s.level = (f32::from(u8::from(still)) - s.level).mul_add(ease(if still { 1.2 } else { 6.0 }), s.level);
+    if still {
+        s.timer -= dt;
+        if s.timer <= 0.0 {
+            s.side = -s.side;
+            // A period that differs a little by where the body stands, so a crowd doesn't sway as one.
+            let at = f.root.translation;
+            s.timer = at.z.mul_add(3.1, at.x * 7.3).sin().abs().mul_add(5.0, 9.0);
+        }
+    } else {
+        s.timer = 3.0;
+    }
+    s.weight = s.side.mul_add(s.level, -s.weight).mul_add(ease(2.5), s.weight);
+    let w = s.weight;
+    if w.abs() < 1e-3 {
+        return;
+    }
+    let Some(&hips) = a.spine.first() else { return };
+    let local = &mut pose.local;
+    // Half the distance between the hip joints: what the roll lifts the standing hip by.
+    let model = a.skeleton.rest_model();
+    let hip_x: SmallVec<[f32; 2]> = a.legs.iter().filter_map(|l| model.get(l.chain.first()?.index())).map(|m| m.translation.x).collect();
+    let half_hips = hip_x.iter().copied().fold(0.0f32, |m, x| m.max(x.abs())).max(0.02);
+    let roll = 7f32.to_radians() * w;
+    let yaw = 2f32.to_radians() * w;
+    turn_in_model(a, local, hips, Quat::from_rotation_z(roll) * Quat::from_rotation_y(yaw));
+    if let Some(t) = local.get_mut(hips.index()) {
+        // Over the standing leg, and down by what the roll lifted that hip, so the standing leg
+        // keeps its length.
+        t.translation += Vec3::new(0.06 * f.leg * w, -roll.abs().sin() * half_hips, 0.0);
+    }
+    let rest: Vec<BoneId> = a.spine.iter().skip(1).copied().collect();
+    if !rest.is_empty() {
+        let share = 1.0 / rest.len().to_f32();
+        let bend = Quat::from_rotation_z(-9f32.to_radians() * w * share) * Quat::from_rotation_y(-3f32.to_radians() * w * share);
+        for b in rest {
+            turn_in_model(a, local, b, bend);
+        }
+    }
+    let neck = neck_bones(a);
+    if !neck.is_empty() {
+        let level = Quat::from_rotation_z(3f32.to_radians() * w / neck.len().to_f32());
+        for b in neck {
+            turn_in_model(a, local, b, level);
+        }
+    }
+}
+
+/// The body leans into what it does: forward as it speeds up and back as it brakes, into a turn
+/// against the centrifugal pull, by the heavier its build, eased so a lean builds over a few
+/// tenths of a second and settles; the head counters half of it and stays steadier.
+pub fn lean_into_motion(f: &Frame, loco: &Locomotion, heft: &Heft, state: &mut TorsoState, pose: &mut MobPose) {
+    const G: f32 = 9.81;
+    let (a, dt) = (f.a, f.dt);
+    if a.spine.is_empty() || dt <= 0.0 {
+        return;
+    }
+    let accel = f.root.matrix3.inverse() * Vec3A::from((loco.velocity - loco.prev_velocity) / dt);
+    let forward = f.root.matrix3.inverse() * Vec3A::from(loco.velocity);
+    // Centripetal pull to the outside of the turn: the body leans in.
+    let lateral = forward.z.mul_add(loco.turn_rate, accel.x);
+    let weight = heft.heaviness.clamp(0.6, 1.6) * 0.45;
+    let target = Vec2::new((accel.z / G).atan() * weight, (lateral / G).atan() * weight).clamp(Vec2::splat(-0.17), Vec2::splat(0.17));
+    let ease = 1.0 - (-4.0 * dt).exp();
+    state.lean = (target - state.lean).mul_add(Vec2::splat(ease), state.lean);
+    let lean = state.lean;
+    if lean.length_squared() < 1e-8 {
+        return;
+    }
+    let Some(&hips) = a.spine.first() else { return };
+    // Pitch forward is a turn about -X by a negative "front up"; a lean left tips the top toward
+    // +X, a turn about -Z.
+    let q = Quat::from_axis_angle(Vec3::NEG_X, -lean.x) * Quat::from_rotation_z(-lean.y);
+    turn_in_model(a, &mut pose.local, hips, q);
+    let neck = neck_bones(a);
+    if !neck.is_empty() {
+        let counter = Quat::IDENTITY.slerp(q.inverse(), 0.5 / neck.len().to_f32());
+        for b in neck {
+            turn_in_model(a, &mut pose.local, b, counter);
+        }
+    }
+}
+
 /// Spring chains (tails, ears) lag behind acceleration and turns.
 pub fn swing_springs(f: &Frame, loco: &Locomotion, springs: &mut SpringState, pose: &mut MobPose) {
     let dt = f.dt;
@@ -826,6 +942,8 @@ pub fn pose_frame(f: &Frame, input: &PoseInput, scales: impl Iterator<Item = Vec
     let landed = plant_feet(f, i.loco, i.clock, i.step, i.ground, feet);
     bob_and_bend(f, i.loco, i.clock, i.step, pose);
     ride_torso(f, i.loco, i.clock, i.step, i.heft, torso, pose);
+    stand_with_weight(f, i.loco, i.clock, torso, pose);
+    lean_into_motion(f, i.loco, i.heft, torso, pose);
     swing_springs(f, i.loco, springs, pose);
     if let Some(cycles) = i.cycles {
         apply_cycles(a, cycles, pose);

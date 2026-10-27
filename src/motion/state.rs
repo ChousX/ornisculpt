@@ -116,11 +116,36 @@ impl Default for LookState {
     }
 }
 
-/// The torso motion being eased toward the step's, and how lively it is (0 standing).
+/// The torso motion being eased toward the step's, and how lively it is (0 standing); the
+/// standing stance and the lean into acceleration (`stages::stand_with_weight`,
+/// `stages::lean_into_motion`).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct TorsoState {
     pub(crate) motion: Option<BodyMotion>,
     pub(crate) level: f32,
+    pub(crate) stance: Stance,
+    /// Smoothed lean (pitch forward, roll left), radians.
+    pub(crate) lean: Vec2,
+    /// Whether the body stands on two legs under an upright spine (found once).
+    pub(crate) upright_biped: Option<bool>,
+}
+
+/// An upright biped's standing weight: on one leg, swapped now and then.
+#[derive(Clone, Copy, Debug)]
+pub struct Stance {
+    /// How far the stance is in (0 moving, 1 standing).
+    pub level: f32,
+    /// The weight's side, eased: +1 over the left leg, -1 the right.
+    pub weight: f32,
+    pub side: f32,
+    /// Seconds until the weight shifts to the other leg.
+    pub timer: f32,
+}
+
+impl Default for Stance {
+    fn default() -> Self {
+        Self { level: 0.0, weight: 0.0, side: 1.0, timer: 3.0 }
+    }
 }
 
 /// This frame's pose, local transform per bone (hero tier). Written by the pose stages, copied
