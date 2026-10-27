@@ -1,0 +1,17 @@
+// Orc hide: grey-green, darker and browner over the back and shoulders, scarred and mottled; lips
+// and knuckles darker; coarse black hair; yellowed tusks and claws; amber eyes.
+(
+    base: (0.34, 0.4, 0.24),
+    secondary: (0.22, 0.27, 0.15),
+    accent: (0.45, 0.5, 0.32),
+    roughness: 0.62,
+    hard: (0.78, 0.7, 0.5),
+    iris: (0.55, 0.35, 0.05),
+    markings: [
+        (color: (0.25, 0.28, 0.16), facing: Some((dir: (0.0, 1.0, -0.4), from: 0.2, to: 0.8)), strength: 0.6),
+        (color: (0.27, 0.3, 0.18), patches: Some((size: 0.06, cover: 0.4, soft: 0.1, seed: 5)), strength: 0.5),
+        (color: (0.22, 0.2, 0.14), regions: Or([Kind(Face), Kind(Jaw)]), tip: Some((0.88, 0.97)), strength: 0.7),
+        // Coarse black hair cropped close over the crown and the back of the head.
+        (color: (0.06, 0.055, 0.045), regions: Kind(Skull), facing: Some((dir: (0.0, 0.75, -0.66), from: 0.1, to: 0.3))),
+    ],
+)

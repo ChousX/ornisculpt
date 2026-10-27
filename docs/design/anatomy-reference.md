@@ -122,6 +122,80 @@ Applied (`hexapod.body.ron`, L ≈ 0.6 m):
 - Ratios `[1, 1.15, 0.75]` (femur, tibia, tarsus).
 - Yaw: fore +40°, mid 0°, hind −40°.
 
+## Cattle (ox), reference size: withers height W
+
+From cattle conformation and body-measurement studies (e.g. smallholder dairy and beef breeds):
+- **Longer than tall.** Body length (point of shoulder → pin bone) ≈ 1.1–1.3 W. The topline is
+  level from withers to tail head.
+- **Deep, wide barrel.** Heart girth ≈ 1.3–1.4 W, so the chest is ≈ 0.55 W deep, and the body is
+  broader than a horse's. The croup is wide, with hook and pin bones showing.
+- **Neck and head.** The neck is short and deep, carried low, with a dewlap from throat to
+  brisket. The head is long and broad across the forehead, with a wide, moist muzzle. Horns grow
+  from the poll.
+- **Legs.** Short and stout. The cannons are shorter than a horse's, and the hind leg is
+  straighter ("post-legged"). Each leg ends in a cloven hoof.
+- **Tail.** Hangs to the hocks and ends in a switch.
+
+Applied (`ox.body.ron`, W ≈ 1.45 m, body 1.45 m):
+- Fore: ratios `[0.85, 0.9, 0.55, 0.25]`, shoulder −28°, elbow 30°, fetlock −30°.
+- Hind: ratios `[1.0, 1.0, 0.7, 0.25]`, hip 22°, stifle 42°, hock 34°.
+- Neck 0.55 m, carried ~35° down from the topline.
+
+## Humans and fantasy humanoids, reference size: stature H
+
+`man.body.ron` (H = 1.78 m) and `woman.body.ron` (H = 1.65 m) use the biped's Drillis & Contini
+fractions above:
+- Shoulders are broader than the hips in the man and about equal in the woman.
+- The woman's waist is ≈ 0.75 of her hips.
+- Breasts, buttocks and hips are `Drop` stamps (see `thick.body.ron`).
+
+The fantasy humanoids follow illustration conventions, not measurements:
+
+| | Stature | Head | Build |
+|---|---|---|---|
+| Orc | ~1.95 m | ≈ H/8, brow ×2, jaw ×1.5, lower tusks | Strongman: torso radius ×1.2, muscle tone 1.35, slight stoop |
+| Gnome | ~1.0 m | ≈ H/4.5 (nearly an adult head) | Short limbs (legs ≈ 0.36 H), round belly, big nose, beard, pointed hat |
+| Goblin | ~1.1 m | ≈ H/5 | Wiry (fat 0.05, landmarks 0.9); arms to the knees; huge ears; hunched 22° forward, knees bent 50° |
+
+## Spider (wolf spider), reference size: body length L
+
+From arachnid morphology:
+- **Body.** Two tagmata joined by a narrow pedicel. The prosoma (≈ 0.45 L) carries all eight
+  legs, the pedipalps and the chelicerae with their fangs. The opisthosoma (≈ 0.55 L) is legless
+  and egg-shaped.
+- **Eyes.** Lycosids have eight in three rows: four small in front, two large and forward-facing
+  above them, two on top looking back.
+- **Legs.** Seven segments: coxa, trochanter, femur, patella, tibia, metatarsus and tarsus. The
+  femur is the longest; the patella is short. Legs are ≈ 1.3–1.5 L long, IV the longest, then
+  I. The femur rises and the patella-tibia knee stands above the body.
+
+Applied (`spider.body.ron`, L ≈ 0.6 m): three segments per leg: femur, patella and tibia,
+metatarsus and tarsus. Ratios `[1, 1.2–1.25, 1.05–1.2]`. Lengths I 0.8, II 0.72, III 0.7, IV 0.9.
+
+## Dragonfly (green darner), reference size: body length L
+
+*Anax junius* is ≈ 76 mm long with a wingspan of ≈ 100–114 mm:
+- Head ≈ 0.09 L. The compound eyes meet on top of the head.
+- Thorax ≈ 0.17 L, slanted, carrying the wings and legs. The legs are held forward in a basket.
+- Abdomen ≈ 0.68 L: ten segments, swollen at the base.
+- Each wing ≈ 0.66 L. The hindwings are broader at the base, and the wings stay spread at rest.
+
+Applied (`darner.body.ron`, ×10: L = 0.76 m).
+
+## Lobster (American), reference size: body length L (rostrum → telson)
+
+From the morphology of *Homarus americanus*:
+- The carapace (cephalothorax) is ≈ 0.4 L, with a toothed rostrum.
+- The abdomen is ≈ 0.6 L: six rings, wider than tall, and the tail fan (telson plus two pairs of
+  uropods).
+- Two chelipeds. In big males the claws are as long as the carapace; they're dimorphic (a crusher
+  and a cutter, not modelled: mirrored copies match).
+- Four pairs of thin walking legs.
+- Long second antennae (≈ L), two pairs of short antennules, and eyes on stalks.
+
+Applied (`lobster.body.ron`, L ≈ 0.5 m; `Pincer(size: 0.085)` ≈ 0.17 m claws).
+
+
 ## Sources
 
 - Drillis R., Contini R., Bluestein M. (1964/66), *Body segment parameters: a survey of
@@ -143,6 +217,15 @@ Applied (`hexapod.body.ron`, L ≈ 0.6 m):
 - Insect legs:
   - [NDSU lab handout](https://ndsu.edu/faculty/rider/Pentatomoidea/Teaching%20Structure/Handouts/Laboratory%20Week%2007a%20Legs.pdf)
   - [Diptera morphology, legs](https://www.giand.it/diptera/morphology/legs)
+- Cattle body measurements (withers height, body length, heart girth):
+  - [Western Kenya smallholder dairy cattle, Springer Plus 2016](https://link.springer.com/10.1186/s40064-016-1698-3)
+  - [Body measurement indices](https://mail.spasb.ro/index.php/public_html/article/download/1442/1375/2683)
+- Green darner size and form: [Wikipedia](https://en.wikipedia.org/wiki/Green_darner),
+  [Espace pour la vie](https://espacepourlavie.ca/en/insects-arthropods/common-green-darner).
+- American lobster: [Wikipedia](https://en.wikipedia.org/wiki/American_lobster),
+  [Overview of *Homarus americanus*](https://parl.ns.ca/lobster/overview.htm).
+- Spider leg segments (measured tables for mygalomorphs; no lycosid table found):
+  [PMC4978081](https://pmc.ncbi.nlm.nih.gov/articles/PMC4978081/table/T2).
 - Dog limb proportions follow standard veterinary anatomy and conformation canon. The search
   found no single measured table for dog forelimb segments: Myers & Steudel (1997) measured
   dog fore/hind limbs, but their segment-level numbers weren't available.

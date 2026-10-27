@@ -89,6 +89,10 @@ pub struct ChainParams {
     /// Relative segment lengths, root first (`[1.0, 1.0, 0.35]` = a short third segment). Empty
     /// or mismatched = equal segments. Scaled so the segments sum to `length`.
     pub ratios: Vec<f32>,
+    /// Jointed like an exoskeleton, `0.0..=1.0`: each segment swells a little between narrow
+    /// joints that barely blend, so the segments read apart (arthropod legs, a lobster's tail,
+    /// antennae). `0.0` = one smooth surface. Plain profiles only (no section curves).
+    pub segmented: f32,
 }
 
 impl Default for ChainParams {
@@ -100,6 +104,7 @@ impl Default for ChainParams {
             curl: 0.0,
             blend: 0.05,
             ratios: Vec::new(),
+            segmented: 0.0,
         }
     }
 }
@@ -341,11 +346,14 @@ pub struct FaceParams {
     pub chin: f32,
     /// Width of the jaw at its angle (below the ears).
     pub jaw_width: f32,
+    /// Fullness of the cheeks (the buccal fat and masseter between cheekbone and jaw): `0.0` =
+    /// none, leaving a hollow under each cheekbone; `1.0` = a typical adult's.
+    pub cheeks: f32,
 }
 
 impl Default for FaceParams {
     fn default() -> Self {
-        Self { nose: 1.0, brow: 1.0, cheekbones: 1.0, lips: 1.0, chin: 1.0, jaw_width: 1.0 }
+        Self { nose: 1.0, brow: 1.0, cheekbones: 1.0, lips: 1.0, chin: 1.0, jaw_width: 1.0, cheeks: 0.0 }
     }
 }
 
@@ -507,13 +515,16 @@ pub enum LimbEnd {
     None,
     /// Grasping hand; add `Digits` children for fingers. `palm` = width in metres.
     Hand { palm: f32 },
-    /// Flat foot; add `Digits` children for toes. `length` in metres.
+    /// A foot: heel, arch, the broad ball and the toes, sole on the ground; add `Digits` children
+    /// for separate toes. `length` in metres.
     Foot { length: f32 },
-    /// `split` = cloven (two-toed) hoof.
+    /// A hoof wider at the sole, its toe forward; `split` = cloven (two claws with a cleft
+    /// between them: cattle, deer, pigs).
     Hoof { split: bool },
     /// Soft pad (cats, dogs); add `Hard(Claw)` children for claws.
     Pad,
-    /// Crab/scorpion claw; grasps. `size` in metres.
+    /// Crab, lobster or scorpion claw (chela): a swollen palm and two fingers, the fixed one and
+    /// the hinged one, slightly open; grasps. `size` in metres (the claw is about twice as long).
     Pincer { size: f32 },
     /// Mantis-style blade. `length` in metres.
     Blade { length: f32 },

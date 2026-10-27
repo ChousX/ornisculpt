@@ -94,7 +94,7 @@ fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32) -> Option<Body
             // in place of these coordinates (see `BodyMeshData::build_mesh`).
             out.uvs.push([h, 0.0]);
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
-            out.push_from(body, i, &[VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
+            out.push_from(body, i, &[VertexChannel::Paint, VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
         }
         let base = (k - 1) * n;
         out.indices.extend(tris.iter().flat_map(|t| t.map(|v| base + remap.get(v.idx()).copied().unwrap_or(0))));
@@ -112,6 +112,7 @@ const ANNOTATE_SMOOTHING: usize = 3;
 /// tangent to the skin, signed by region). Both are smoothed across the skin so covering borders
 /// and bone boundaries blend instead of stepping.
 pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: LodLevel) {
+    super::markings::paint(body, coat, anatomy, level);
     let n = body.positions.len();
     body.coverage.clear();
     // Non-skin layers (wing sheets) bring their own flow; keep it.
@@ -284,7 +285,7 @@ fn feather_cards(
                 out.flow.push(along.extend(0.0).to_array());
                 // A card turns about its root vertex's centre (it shares that vertex's weights),
                 // and rides its root vertex's muscle and soft tissue.
-                out.push_from(body, a.idx(), &[VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
+                out.push_from(body, a.idx(), &[VertexChannel::Paint, VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
             }
             out.indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
         }

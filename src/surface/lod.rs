@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use super::mesh_data::vertex_normals;
 use super::{
-    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, MaterialSlot, MeshSettings, Mesher, MobVertexData,
+    BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, MaterialSlot, MeshSettings, Mesher, MobVertexData, RawMesh,
     Submesh, SurfaceError, merge,
     remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
 };
 use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, Sheet};
-use crate::num::{Clamp, Idx};
+use crate::num::{Clamp, Idx, ToF32};
 
 /// How one LOD level is produced: re-meshed from the field (without parts culled at this level),
 /// then trimmed by simplification.
@@ -75,6 +75,25 @@ impl SurfaceSettings {
 /// Body extent (largest bounding-box side, metres) the [`LodSpec`] voxel sizes are tuned for.
 pub const REFERENCE_EXTENT: f32 = 1.8;
 
+/// Meshes `field`, coarsening `settings.voxel_size` (up to [`BUDGET_RETRIES`] times) while the mesh
+/// is over its triangle budget: a heavy body (an ox, a dragon) meshes a little coarser instead of
+/// failing. The triangle count goes as one over the voxel size squared.
+fn mesh_within_budget<M: Mesher>(mesher: &M, field: &BodyField, settings: &mut MeshSettings) -> Result<RawMesh, SurfaceError> {
+    let mut tries = 0;
+    loop {
+        match mesher.mesh(field, settings) {
+            Err(SurfaceError::TooManyTriangles { got, max }) if tries < BUDGET_RETRIES => {
+                settings.voxel_size *= ((got.to_f32() / max.max(1).to_f32()).sqrt() * 1.05).max(1.1);
+                tries += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// How many times [`mesh_within_budget`] coarsens a mesh over budget before giving up.
+const BUDGET_RETRIES: u32 = 3;
+
 /// Full pipeline for one level: field → mesh → weld → smooth → skin → simplify → hard parts →
 /// (crowd remap for `Near`/`Far`).
 ///
@@ -98,7 +117,7 @@ pub fn mesh_lod<M: Mesher>(
     let extent = Vec3::from(field.bounds().max - field.bounds().min).max_element();
     let mut mesh_settings = spec.mesh;
     mesh_settings.voxel_size *= (extent / REFERENCE_EXTENT).max(1.0);
-    let mut raw = mesher.mesh(&field, &mesh_settings)?;
+    let mut raw = mesh_within_budget(mesher, &field, &mut mesh_settings)?;
     weld(&mut raw, mesh_settings.voxel_size * 1e-3);
     smooth(&mut raw, 2);
     let sheets = raw.sheets.clone();
@@ -192,6 +211,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
         flow: sheet.dirs.iter().zip(&sheet.thickness).map(|(d, t)| d.extend(*t).to_array()).collect(),
         cloth: vec![u8::from(sheet.kind); n],
         cor: Vec::new(),
+        paint: Vec::new(),
         soft: Vec::new(),
         muscle: Vec::new(),
         indices: sheet.indices.clone(),

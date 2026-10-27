@@ -6,7 +6,9 @@ use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use super::CoatUniform;
-use crate::surface::{ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT, ATTRIBUTE_SOFT};
+use crate::surface::{
+    ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT, ATTRIBUTE_PAINT, ATTRIBUTE_SOFT,
+};
 
 const COAT_VERTEX: &str = "embedded://ornisculpt/coat/coat_vertex.wesl";
 const COAT_FRAGMENT: &str = "embedded://ornisculpt/coat/coat_fragment.wesl";
@@ -105,7 +107,13 @@ impl MaterialExtension for CoatExt {
         defs.extend(crate::mob::crowd_slot_defs());
         // Optional inputs by what the mesh has: the prepass would otherwise drop the ones it
         // doesn't need itself (shell heights in UV0, for one).
-        let inputs: Vec<_> = [(Mesh::ATTRIBUTE_UV_0, 2, "COAT_UV"), (Mesh::ATTRIBUTE_TANGENT, 4, "COAT_TANGENT"), (Mesh::ATTRIBUTE_COLOR, 5, "COAT_COLOR")]
+        // Coat markings (`ATTRIBUTE_PAINT`) ride to the fragment stage in `paint_io.wesl`.
+        let inputs: Vec<_> = [
+            (Mesh::ATTRIBUTE_UV_0, 2, "COAT_UV"),
+            (Mesh::ATTRIBUTE_TANGENT, 4, "COAT_TANGENT"),
+            (Mesh::ATTRIBUTE_COLOR, 5, "COAT_COLOR"),
+            (ATTRIBUTE_PAINT, 12, "COAT_PAINT"),
+        ]
             .into_iter()
             .filter(|(attribute, ..)| layout.0.contains(*attribute))
             .collect();

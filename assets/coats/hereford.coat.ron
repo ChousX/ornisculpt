@@ -1,0 +1,33 @@
+// A Hereford: deep red body, white face, crest, dewlap, belly, lower legs and tail switch;
+// pink-grey muzzle, pale horn with dark tips; short, slightly curly hair.
+(
+    base: (0.4, 0.13, 0.06),
+    secondary: (0.24, 0.08, 0.04),
+    accent: (0.55, 0.25, 0.12),
+    roughness: 0.75,
+    hard: (0.82, 0.76, 0.62),
+    coverings: [
+        (
+            regions: AllExcept([Kind(LimbEnd), Kind(Snout), Kind(Hard)]),
+            kind: Fur((length: 0.012, density: 800.0, thickness: 0.75, tip: 0.12, shells: 8)),
+        ),
+    ],
+    markings: [
+        // White face and crown.
+        (color: (0.92, 0.9, 0.85), regions: Or([Kind(Skull), Kind(Face), Kind(Snout), Kind(Jaw), Part("torso/neck/head/poll")])),
+        // White along the dewlap and brisket, and the underside.
+        (color: (0.92, 0.9, 0.85), regions: Or([Part("torso/neck/dewlap"), Part("torso/brisket")])),
+        (color: (0.92, 0.9, 0.85), regions: Or([Kind(Neck), Kind(TorsoFront), Kind(TorsoMid), Kind(Belly)]), facing: Some((dir: (0.0, -1.0, 0.0), from: 0.55, to: 0.85))),
+        // White crest along the top of the neck.
+        (color: (0.92, 0.9, 0.85), regions: Kind(Neck), facing: Some((dir: (0.0, 1.0, 0.0), from: 0.7, to: 0.9))),
+        // White socks from the knees and hocks down.
+        (color: (0.9, 0.88, 0.83), regions: Role(Locomotor), along: Some((0.55, 0.75))),
+        // Dark hooves.
+        (color: (0.13, 0.11, 0.1), regions: Kind(LimbEnd)),
+        // Pink-grey muzzle.
+        (color: (0.62, 0.45, 0.42), regions: Or([Kind(Snout), Kind(Jaw)]), tip: Some((0.78, 0.93))),
+        // White switch.
+        (color: (0.92, 0.9, 0.85), regions: Part("torso/tail/switch")),
+        (color: (0.92, 0.9, 0.85), regions: Kind(TailTip), along: Some((0.7, 0.95))),
+    ],
+)

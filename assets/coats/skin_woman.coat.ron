@@ -1,0 +1,19 @@
+// Light olive human skin with rosy lips and cheeks; auburn hair; hazel eyes.
+(
+    base: (0.8, 0.6, 0.49),
+    secondary: (0.64, 0.44, 0.36),
+    accent: (0.88, 0.7, 0.6),
+    roughness: 0.5,
+    hard: (0.88, 0.72, 0.68),
+    iris: (0.3, 0.24, 0.1),
+    markings: [
+        (color: (0.78, 0.54, 0.46), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
+        // A little colour in the cheeks.
+        (color: (0.82, 0.52, 0.46), regions: Kind(Face), patches: Some((size: 0.03, cover: 0.5, soft: 0.3, seed: 2)), strength: 0.25),
+        // Lips.
+        (color: (0.64, 0.32, 0.3), regions: Or([Kind(Face), Kind(Jaw)]), tip: Some((0.88, 0.97)), strength: 0.85),
+        // Auburn hair over the crown, back of the head and the ponytail.
+        (color: (0.3, 0.12, 0.05), regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/ponytail")])),
+        (color: (0.3, 0.12, 0.05), regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2))),
+    ],
+)

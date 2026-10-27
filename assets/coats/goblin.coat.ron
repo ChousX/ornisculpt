@@ -1,0 +1,16 @@
+// Goblin skin: sallow yellow-green, darker and greener on the back, pinkish in the ears and on
+// the nose tip, dirty hands and feet; black claws; yellow eyes.
+(
+    base: (0.48, 0.52, 0.26),
+    secondary: (0.32, 0.36, 0.16),
+    accent: (0.6, 0.62, 0.36),
+    roughness: 0.55,
+    hard: (0.08, 0.07, 0.05),
+    iris: (0.7, 0.55, 0.05),
+    markings: [
+        (color: (0.34, 0.4, 0.17), facing: Some((dir: (0.0, 1.0, -0.4), from: 0.1, to: 0.8)), strength: 0.7),
+        (color: (0.62, 0.45, 0.32), regions: Kind(Appendage), strength: 0.45),
+        (color: (0.3, 0.27, 0.15), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
+        (color: (0.32, 0.3, 0.16), patches: Some((size: 0.05, cover: 0.35, soft: 0.12, seed: 9)), strength: 0.4),
+    ],
+)

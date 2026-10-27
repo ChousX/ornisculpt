@@ -223,9 +223,9 @@ fn body_materials(
     materials: &mut Assets<MobMaterial>,
 ) -> [SlotMaterials; 2] {
     let skin_uniform = CoatUniform { cloth: outfit.palette(), ..coat.uniform(anatomy) };
-    let hard = Coat::plain([0.85, 0.8, 0.68], 0.4);
+    let hard = Coat::plain(coat.hard, 0.4);
     // Iris (base), white (secondary), pupil (accent); eyes without white show only the iris.
-    let eye = Coat { secondary: [0.86, 0.84, 0.8], accent: [0.01, 0.01, 0.01], ..Coat::plain([0.13, 0.075, 0.04], 0.1) };
+    let eye = Coat { secondary: [0.86, 0.84, 0.8], accent: [0.01, 0.01, 0.01], ..Coat::plain(coat.iris, 0.1) };
     [false, true].map(|crowd| {
         let mut mat = |uniform: CoatUniform, roughness: f32, layer: CoatLayer| {
             // Thin wing surfaces let light through (a flipped diffuse lobe; the shader varies it).

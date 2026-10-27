@@ -1,0 +1,28 @@
+// A live American lobster: dark greenish brown above, mottled, with orange-red spines, joints and
+// antennae, a cream-orange underside and claw tips; a wet, glossy shell.
+(
+    base: (0.17, 0.16, 0.1),
+    secondary: (0.1, 0.09, 0.06),
+    accent: (0.7, 0.32, 0.12),
+    roughness: 0.32,
+    hard: (0.05, 0.04, 0.03),
+    iris: (0.02, 0.02, 0.02),
+    coverings: [
+        (regions: All, kind: Scales((size: 0.004, relief: 0.15, contrast: 0.2))),
+    ],
+    markings: [
+        // Darker mottling over the back.
+        (color: (0.07, 0.08, 0.06), patches: Some((size: 0.035, cover: 0.45, soft: 0.06, seed: 7)), strength: 0.8),
+        // Red-orange round every joint of the legs, claws and tail rings.
+        (color: (0.62, 0.22, 0.08), regions: Or([Kind(LimbUpper), Kind(LimbLower), Kind(LimbEnd)]), bands: Some((count: 3.0, width: 0.25, soft: 0.2, offset: 0.5)), strength: 0.7),
+        // Orange edges where the tail rings overlap.
+        (color: (0.55, 0.22, 0.08), regions: Or([Kind(TailBase), Kind(TailTip)]), bands: Some((count: 6.0, width: 0.18, soft: 0.15, offset: 0.5)), strength: 0.45),
+        // Orange underside.
+        (color: (0.72, 0.42, 0.2), facing: Some((dir: (0.0, -1.0, 0.0), from: -0.1, to: 0.6))),
+        // Walking legs paler and redder toward the tips; antennae red.
+        (color: (0.66, 0.3, 0.12), regions: Role(Locomotor), along: Some((0.3, 0.9))),
+        (color: (0.6, 0.2, 0.08), regions: Kind(Appendage), along: Some((0.0, 0.3))),
+        // Claw fingers orange-red to the tips.
+        (color: (0.7, 0.28, 0.1), regions: And([Role(Manipulator), Kind(LimbEnd)]), facing: Some((dir: (0.0, 0.0, 1.0), from: -1.0, to: 1.0)), strength: 0.6),
+    ],
+)

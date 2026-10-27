@@ -1,0 +1,94 @@
+// A gnome (fantasy): a small, stout humanoid about 1.0 m tall. Childlike proportions in the
+// head (about 1/4.5 of stature, so nearly a man's head on half the body) on an adult's thick-set
+// build: short limbs, broad hands and feet, a round belly. A big bulbous nose, full cheeks, a long
+// white beard over the chest and a tall, soft, pointed hat that flops back.
+//
+// The torso stands vertically (t = 0 pelvis, 1 shoulders; around 0 = back, 90 = left, 180 = front).
+(
+    root: (
+        name: "torso",
+        kind: Torso((
+            // Pelvis → waist → ribcage → shoulders: the V of a man's trunk, widest over the
+            // shoulders, ~1.5× wider than deep.
+            chain: (segments: 3, length: 0.34, radius: (curve: [(0.0, 0.95), (0.2, 1.05), (0.45, 1.1), (0.7, 1.02), (0.9, 0.92), (1.0, 0.55)], scale: 0.12, cross: Ellipse(aspect: 1.3))),
+            belly: 0.7,
+        )),
+        offset: (rotate_deg: (-90.0, 0.0, 0.0)),
+        detail: Always,
+        stamps: Custom([
+            (at: Surface(t: 0.42, around_deg: 180.0), kind: Fat, size: (0.75, 0.7, 0.6), depth: 0.1, mirror: false, form: Mass, hang: 0.15, soft: (firmness: 0.85)), // round belly
+            (at: Surface(t: 0.95, around_deg: 30.0), kind: Muscle, size: (0.55, 0.38, 0.35), depth: 0.08, mirror: true), // trapezius
+            (at: Surface(t: 0.12, around_deg: 30.0), kind: Fat, size: (0.6, 0.6, 0.48), depth: 0.1, mirror: true),     // buttock
+        ]),
+        children: [
+            (
+                name: "neck",
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.05, radius: (curve: [(0.0, 1.25), (0.4, 1.0), (1.0, 0.95)], scale: 0.055, cross: Ellipse(aspect: 1.1))))),
+                attach: End,
+                offset: (rotate_deg: (8.0, 0.0, 0.0)),
+                detail: Always,
+                children: [
+                    (
+                        name: "head",
+                        kind: Head((
+                            skull: (shape: Ellipsoid, size: (0.074, 0.098, 0.092)),
+                            snout: 0.0,
+                            jaw: Some((segments: 1, length: 0.085)),
+                            eye_spacing: 0.42,
+                            face: Some((nose: 2.0, brow: 1.1, cheekbones: 1.3, lips: 0.9, chin: 0.8, jaw_width: 1.05, cheeks: 1.5)),
+                        )),
+                        offset: (rotate_deg: (-6.0, 0.0, 0.0)),
+                        detail: Always,
+                        children: [
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.012, sclera: 1.0)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.05, radius: (curve: [(0.0, 1.0), (0.5, 0.9), (1.0, 0.25)], scale: 0.017, cross: Flat(aspect: 2.4)), blend: 0.005))), attach: Ear, offset: (rotate_deg: (-50.0, 0.0, 10.0)), mirror: true),
+                            // A long full beard from the cheeks and chin, hanging over the chest.
+                            (name: "beard", kind: Mass((shape: Ellipsoid, size: (0.075, 0.13, 0.055), blend: 0.03)), attach: Mouth, offset: (translate: (0.0, -0.05, 0.02), rotate_deg: (95.0, 0.0, 0.0))),
+                            (name: "moustache", kind: Mass((shape: Ellipsoid, size: (0.05, 0.018, 0.02), blend: 0.012)), attach: Mouth, offset: (translate: (0.0, -0.022, -0.008))),
+                            // Tall pointed felt hat, soft enough to flop back at the tip.
+                            (name: "hat", kind: Chain((role: Antenna, chain: (segments: 5, length: 0.36, radius: (curve: [(0.0, 1.0), (0.15, 0.86), (0.5, 0.48), (1.0, 0.08)], scale: 0.088), curl: -260.0, blend: 0.006))), attach: Crown, offset: (translate: (0.0, -0.045, -0.01), rotate_deg: (-15.0, 0.0, 0.0))),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                name: "leg",
+                kind: Limb((
+                    chain: (segments: 2, length: 0.36, ratios: [1.0, 0.9], radius: (curve: [(0.0, 1.1), (0.3, 0.92), (0.5, 0.75), (0.7, 0.75), (1.0, 0.55)], scale: 0.062)),
+                    role: Locomotor,
+                    stance: Plantigrade,
+                    end: Foot(length: 0.16),
+                    joints: Some((plan: Leg, swing: 6.0, flex: [8.0])),
+                )),
+                attach: Surface(t: 0.05, around_deg: 118.0),
+                offset: (translate: (0.0, -0.04, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "arm",
+                kind: Limb((
+                    chain: (segments: 2, length: 0.36, ratios: [1.0, 0.85], radius: (curve: [(0.0, 1.15), (0.3, 0.95), (0.5, 0.8), (0.62, 0.85), (1.0, 0.65)], scale: 0.042)),
+                    role: Manipulator,
+                    end: Hand(palm: 0.075),
+                    joints: Some((plan: Arm, swing: 0.0, flex: [12.0])),
+                    splay_deg: 6.0,
+                )),
+                attach: Surface(t: 0.9, around_deg: 92.0),
+                // Turned so the palms face the thighs.
+                offset: (translate: (0.0, 0.035, 0.0), rotate_deg: (0.0, 75.0, 0.0)),
+                mirror: true,
+                detail: Always,
+                children: [
+                    (
+                        name: "fingers",
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.06, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.85)], scale: 0.0085), curl: 420.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.009)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    tone: (muscle: 0.5, fat: 0.6, landmarks: 0.2),
+)
