@@ -45,19 +45,18 @@
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.077, 0.108, 0.098)),
+                            // The authored head (MakeHuman's, CC0), 22 cm tall.
+                            skull: (shape: Ellipsoid, size: (0.088, 0.11, 0.104)),
                             snout: 0.0,
-                            jaw: Some((segments: 1, length: 0.085)),
                             eye_spacing: 0.42,
-                            face: Some((nose: 0.85, brow: 1.0, cheekbones: 1.05, lips: 0.7, chin: 1.1, jaw_width: 0.95, cheeks: 0.9)),
+                            sculpt: Some(()),
                         )),
                         offset: (rotate_deg: (-6.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.012, sclera: 1.0)), attach: Eye, mirror: true),
-                            (name: "ear", kind: Mass((shape: Flap, size: (0.017, 0.03, 0.032), blend: 0.004)), attach: Ear, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.0138, sclera: 1.0)), attach: Eye, mirror: true),
                             // Short hair: a cap over the crown and back of the skull.
-                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.081, 0.095, 0.1), blend: 0.008)), attach: Crown, offset: (translate: (0.0, -0.132, -0.02))),
+                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.084, 0.066, 0.098), blend: 0.008)), attach: Crown, offset: (translate: (0.0, -0.055, -0.03))),
                         ],
                     ),
                 ],

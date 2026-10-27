@@ -42,20 +42,19 @@
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.073, 0.099, 0.093)),
+                            // The authored head (MakeHuman's, CC0), 21 cm tall.
+                            skull: (shape: Ellipsoid, size: (0.084, 0.105, 0.099)),
                             snout: 0.0,
-                            jaw: Some((segments: 1, length: 0.085)),
                             eye_spacing: 0.42,
-                            face: Some((nose: 0.75, brow: 0.6, cheekbones: 1.2, lips: 1.0, chin: 0.8, jaw_width: 0.72, cheeks: 1.0)),
+                            sculpt: Some(()),
                         )),
                         offset: (rotate_deg: (-6.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.0125, sclera: 1.0)), attach: Eye, mirror: true),
-                            (name: "ear", kind: Mass((shape: Flap, size: (0.017, 0.03, 0.032), blend: 0.004)), attach: Ear, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.013, sclera: 1.0)), attach: Eye, mirror: true),
                             // Long hair: a cap over the crown, sides and back of the skull, and the
                             // fall behind the shoulders to the middle of the back.
-                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.08, 0.1, 0.098), blend: 0.01)), attach: Crown, offset: (translate: (0.0, -0.128, -0.026))),
+                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.082, 0.065, 0.095), blend: 0.01)), attach: Crown, offset: (translate: (0.0, -0.055, -0.03))),
                             // A broad, flat sheet hanging from the back of the head; it swings.
                             (name: "fall", kind: Chain((role: Tail, chain: (segments: 3, length: 0.36, radius: (curve: [(0.0, 1.0), (0.3, 1.1), (1.0, 0.7)], scale: 0.055, cross: Ellipse(aspect: 3.0)), curl: 30.0, blend: 0.02))), attach: Crown, offset: (translate: (0.0, -0.05, -0.09), rotate_deg: (-168.0, 0.0, 0.0))),
                         ],
