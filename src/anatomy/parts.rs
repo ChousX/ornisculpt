@@ -780,7 +780,7 @@ impl HeadParams {
     fn face_eye(&self) -> Vec3 {
         let s = self.skull.size;
         let cy = s.z * 0.8;
-        Vec3::new(s.x * self.eye_spacing.max(0.2), self.eye_radius().mul_add(-0.3, s.z.mul_add(0.72, cy)), -s.y * 0.05)
+        Vec3::new(s.x * self.eye_spacing.max(0.2), self.eye_radius().mul_add(-0.15, s.z.mul_add(0.72, cy)), -s.y * 0.05)
     }
 
     /// The head's fixed slots in model space, from its `skull` frame (Y forward, Z down, X left)
@@ -1078,13 +1078,13 @@ fn build_face(
         }
     }
     if face.lips > 0.0 {
-        b.base(bone, ellipsoid(0.26, 0.08 * face.lips.sqrt(), 0.055), at(p(0.0, 0.9, 0.46)), rz * 0.06, face_region);
+        b.base(bone, ellipsoid(0.28, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.46)), rz * 0.06, face_region);
     }
     // Cheeks: the soft fill under each cheekbone, out to the jaw.
     if face.cheeks > 0.0 {
         let scale = face.cheeks.sqrt();
         for x in [0.55, -0.55] {
-            b.base(bone, ellipsoid(0.3 * scale, 0.34, 0.3 * scale), at(p(x, 0.44, 0.5)), rz * 0.25, face_region);
+            b.base(bone, ellipsoid(0.3 * scale, 0.34, 0.3 * scale), at(p(x, 0.44, 0.5)), rz * 0.35, face_region);
         }
     }
     // Eyelids: a thin skin shell round each eyeball (a mound just bigger than the ball, blended
@@ -1094,8 +1094,9 @@ fn build_face(
     if face.eyelids > 0.0 {
         for x in [1.0, -1.0] {
             let centre = Vec3::new(x * eye_at.x, eye_at.y, eye_at.z);
-            let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.3, eye_r * 1.1, eye_r * 1.25) };
-            b.base(bone, lids, at(centre), rz * 0.12, face_region);
+            // A small blend: a wide one would swell the lids a few millimetres clear of the ball.
+            let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.25, eye_r * 1.05, eye_r * 1.2) };
+            b.base(bone, lids, at(centre), rz * 0.06, face_region);
             let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.55 * face.eyelids.min(2.0)) };
             let model = at(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05));
             b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, face_region);
@@ -1113,7 +1114,7 @@ fn build_face(
     // Each side of the jaw, from its angle below the ear to the chin.
     for x in [0.7 * face.jaw_width, -0.7 * face.jaw_width] {
         let (model, len) = span(p(x, -0.05, 0.72), chin + Vec3::new(x * rx * 0.3, -ry * 0.15, -rz * 0.05));
-        add(PrimShape::RoundCone { r0: rz * 0.1, r1: rz * 0.09, len }, model, rz * 0.3);
+        add(PrimShape::RoundCone { r0: rz * 0.1, r1: rz * 0.09, len }, model, rz * 0.4);
     }
     // Floor of the mouth, so the jaw is solid underneath.
     add(ellipsoid(0.42, 0.38, 0.14), at(p(0.0, 0.45, 0.67)), rz * 0.3);
@@ -1122,7 +1123,7 @@ fn build_face(
         add(ellipsoid(0.27 * scale, 0.12 * scale, 0.11), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.08)), rz * 0.1);
     }
     if face.lips > 0.0 {
-        add(ellipsoid(0.23, 0.08 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.58)), rz * 0.06);
+        add(ellipsoid(0.25, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.83, 0.57)), rz * 0.06);
     }
     Ok(Some((jaw, moved(jaw_model, Vec3::Y * jaw_len))))
 }
