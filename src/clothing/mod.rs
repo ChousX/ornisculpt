@@ -3,7 +3,8 @@
 //! A garment is a mesh authored in **wrap space**, a unit cylinder standing for one body part:
 //! - `y` runs along the part over the garment's [`Garment::span`] (0 = span start, 1 = span end);
 //! - the angle around Y is the angle around the part (`-Z` = dorsal/back, `+X` = left on a
-//!   torso, the outer side on a limb; mirrored parts mirror it, so asymmetric details mirror);
+//!   torso, the inner side (toward the midline) on a limb; mirrored parts mirror it, so
+//!   asymmetric details mirror);
 //! - the distance outside the cylinder, `r - 1`, is the height above the skin in metres.
 //!
 //! Fitting marches out from the part's axis to the real body surface at every vertex (muscle,
@@ -14,15 +15,21 @@
 //! doesn't hang, `y` beyond 0..1 instead wraps over the part's end cap (`y = -1` reaches the
 //! tip): shorts over a pelvis, a hood over a head end, a mitten over a hand.
 //!
-//! A garment hugs the whole body, blend bulges included, but never sits further out than its own
-//! part's surface plus a small allowance: where its rays run into another part (a torso garment
-//! at an arm root), that part emerges through it as through an armhole.
+//! A garment hugs the whole body, blend bulges included, and rises smoothly toward a neighbouring
+//! part across a narrow gap (an armpit), but never sits further out than its own part's surface
+//! plus a small allowance. Other limbs count only near where they attach: an arm lying along the
+//! ribs, or one reaching further out than the allowance, emerges through a torso garment as
+//! through an armhole.
 //!
 //! An [`Outfit`] (`*.outfit.ron`, worn via [`MobOutfit`]) is baked into the generated body: one
-//! cloth submesh per LOD, coloured from the outfit's palette.
+//! cloth submesh per LOD, coloured from the outfit's palette. There cloth close over the skin
+//! takes the skin's muscle flex and soft-tissue jiggle, so the two move as one, and the skin it
+//! hides leaves the mesh ([`cover_skin`]): only what shows moves.
 
+mod cover;
 mod fit;
 
+pub use cover::{GarmentCover, cover_skin};
 pub use fit::{fit_outfit, garment_lods};
 
 use bevy::prelude::*;

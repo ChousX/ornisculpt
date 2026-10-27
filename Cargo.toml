@@ -13,6 +13,9 @@ soft-tissue = []
 # Browser build (wasm32-unknown-unknown; `tools/web.sh`): Bevy's web platform support and the
 # WebGPU backend (the crowd skinning compute shader and storage buffers rule out WebGL2), randomness
 # from the browser, and the parallel meshing stages on the calling thread (browsers have no threads).
+# Creatures as DNA (`anatomy::genome`): body, coat and form in one genome, with the traits a
+# design lets vary, through the `genetics` crate.
+genetics = ["dep:genetics"]
 web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
 
 [dependencies]
@@ -20,6 +23,8 @@ bevy = { version = "0.20", default-features = false, features = ["3d", "serializ
 bytemuck = { version = "1", features = ["derive"] }
 fast-surface-nets = "0.2"
 fastnoise-lite = "1.1"
+# Local until its `traits` branch is pushed.
+genetics = { path = "../genetics", optional = true }
 mesh_to_sdf = "0.4"
 meshopt = "0.6"
 rand = "0.10"

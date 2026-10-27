@@ -6,6 +6,8 @@ mod build;
 mod builder;
 mod external;
 mod form;
+#[cfg(feature = "genetics")]
+pub mod genome;
 mod lever;
 mod loader;
 mod lod;
@@ -71,6 +73,8 @@ impl Plugin for AnatomyPlugin {
             .register_type::<PartPath>()
             .register_type::<RegionSelector>()
             .register_type::<PartLodRules>();
+        #[cfg(feature = "genetics")]
+        app.add_plugins(genome::GenomePlugin);
     }
 }
 

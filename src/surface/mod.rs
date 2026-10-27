@@ -26,6 +26,7 @@ pub use cor::centres_of_rotation;
 #[cfg(feature = "soft-tissue")]
 pub(crate) use body::primitive_parts;
 pub use body::{BodyField, BodyFieldOptions, ChunkView, Sheet, SheetField};
+pub(crate) use body::limb_of;
 pub use combinators::{Displace, Intersect, RegionClip};
 pub use field::{Field, Influences, SurfaceInfo};
 pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};

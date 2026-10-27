@@ -76,6 +76,10 @@ impl Creases {
     }
 }
 
+/// How far inside the region a garment sees another limb in (see [`BodyField::garment_info`])
+/// that limb's weights take to fade in, metres.
+const GARMENT_FADE: f32 = 0.02;
+
 /// How far apart legs must stand to mesh as separate surfaces, metres: two hero voxels.
 const LEG_GAP: f32 = 0.016;
 /// How far under the body legs may still overlap in the meshing pose, metres: the crotch.
@@ -793,11 +797,18 @@ impl BodyField {
     /// primitives come where it attaches, fading to a hard union clear of that.
     #[inline]
     fn joined(&self, l: &LimbField, body: Option<f32>, p: Vec3A) -> f32 {
+        self.joined_clipped(l, body, p, f32::NEG_INFINITY)
+    }
+
+    /// [`joined`](Self::joined), with the limb's own surface cut back to where `clip` (a distance
+    /// field of its own) is negative.
+    #[inline]
+    fn joined_clipped(&self, l: &LimbField, body: Option<f32>, p: Vec3A, clip: f32) -> f32 {
         // A limb with only raised stamps here has no union yet: it raises the body.
         if l.own >= f32::MAX {
             return body.map_or(f32::MAX, |b| b - l.raised);
         }
-        let own = l.own();
+        let own = l.own().max(clip);
         let Some(b) = body else { return own };
         let hard = b.min(own);
         let blended = l.with_body - l.raised;
@@ -889,6 +900,79 @@ impl BodyField {
     /// How thick `limb` is where it attaches (0 if it doesn't).
     pub(super) fn attach_radius(&self, limb: u16) -> f32 {
         self.attach.get(usize::from(limb)).and_then(Option::as_ref).map_or(0.0, |a| a.balls.iter().map(|b| b.1).fold(0.0, f32::max))
+    }
+
+    /// The body as a garment on limb `on` (a part index; `None` on the body) fits over it: the
+    /// whole field, but every other limb only within `reach` of where it attaches (one that doesn't
+    /// attach not at all). A torso garment follows an arm's root into the armpit; an arm lying
+    /// along the ribs or a forearm by the hip is not under it, and emerges through it. The cut is
+    /// an intersection with a field of distances, so the result is still a distance bound.
+    #[must_use]
+    pub fn garment_distance(&self, p: Vec3A, on: Option<u16>, reach: f32) -> f32 {
+        let acc = Acc::gather(self.prims.iter(), Sheet::Whole, p);
+        let mut joined = [f32::MAX; LIMB_SLOTS];
+        let mut d = acc.body.unwrap_or(f32::MAX);
+        for (l, j) in acc.limbs().zip(&mut joined) {
+            let clip = if on == Some(l.id) { f32::NEG_INFINITY } else { self.past_reach(l.id, p, reach) };
+            *j = self.joined_clipped(l, acc.body, p, clip);
+            d = d.min(*j);
+        }
+        let d = d.min(self.paired(acc.attached_slots(), &joined, p));
+        if d < f32::MAX { d - acc.raised } else { d }
+    }
+
+    /// Skin weights, region and layer under a garment on limb `on` (see
+    /// [`garment_distance`](Self::garment_distance)): another limb's weights only where the
+    /// garment sees it, fading in over 2 cm inside `reach` of where it attaches. A
+    /// torso garment never takes an arm's weights where the arm only lies against it.
+    #[must_use]
+    pub fn garment_info(&self, p: Vec3A, on: Option<u16>, reach: f32) -> SurfaceInfo {
+        // Each limb's share, worked out once per limb.
+        let mut shares: SmallVec<[(u16, f32); LIMB_SLOTS]> = SmallVec::new();
+        let mut share = |limb: Option<u16>| match limb {
+            None => 1.0,
+            Some(l) if on == Some(l) => 1.0,
+            Some(l) => {
+                let known = shares.iter().find(|(m, _)| *m == l).map(|share| share.1);
+                known.unwrap_or_else(|| {
+                    let s = (-self.past_reach(l, p, reach) / GARMENT_FADE).clamp(0.0, 1.0);
+                    shares.push((l, s));
+                    s
+                })
+            }
+        };
+        let seen: SmallVec<[(&PreparedPrim, f32); 32]> =
+            self.prims.iter().map(|prim| (prim, share(prim.limb))).filter(|(_, s)| *s > 0.0).collect();
+        let (d, near) = self.eval(seen.iter().map(|(prim, _)| *prim), std::iter::empty(), p);
+        let near_bone = near.map(|n| n.bone);
+        let mut influences = Influences::default();
+        for &(prim, s) in &seen {
+            // As `info_on`: weights only from bones in line with the nearest one.
+            if prim.op != PrimOp::Union || near_bone.is_some_and(|b| !self.in_line(b, prim.bone)) {
+                continue;
+            }
+            let (dl, blend) = prim.eval(p);
+            let gap = (dl - d).max(0.0);
+            let reach = f32::mul_add(blend, 2.0, 1e-4);
+            let w = (1.0 - gap / reach).max(0.0);
+            influences.add(prim.bone, w * w * s);
+        }
+        influences.normalize(near.map_or(BoneId(0), |n| n.bone));
+        SurfaceInfo {
+            influences,
+            region: near.map_or(RegionId(0), |n| n.region),
+            layer: near.map_or(PrimLayer::Base, |n| n.layer),
+        }
+    }
+
+    /// How far `p` is past `reach` beyond where `limb` attaches (negative within it; infinite for
+    /// a limb that doesn't attach): a distance field of the region garments see it in.
+    fn past_reach(&self, limb: u16, p: Vec3A, reach: f32) -> f32 {
+        self.attach.get(usize::from(limb)).and_then(Option::as_ref).map_or(f32::INFINITY, |a| {
+            let e = a.balls.iter().fold(f32::INFINITY, |e, (c, r)| e.min(p.distance(*c) - r));
+            // Out past where it is detached, then `reach` on.
+            e - 2.0f32.mul_add(a.margin, reach)
+        })
     }
 
     /// Whether `limb` is clear of where it attaches at `p`: there it and the body are separate
@@ -1127,7 +1211,7 @@ pub(super) fn in_line(parent: &[Option<BoneId>], a: BoneId, b: BoneId) -> bool {
 /// The limb `part` belongs to: itself if it is meshed apart (a leg, arm, wing or tail, see
 /// [`BuiltPart::apart`](crate::anatomy::BuiltPart::apart)), else its parent if that is one (hands,
 /// toes, hooves, a tail's club).
-pub(super) fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
+pub fn limb_of(anatomy: &Anatomy, part: u16) -> Option<u16> {
     let p = anatomy.parts.get(part.idx())?;
     if p.apart {
         return Some(part);
