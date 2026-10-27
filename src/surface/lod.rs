@@ -283,14 +283,14 @@ pub mod sheet_tests {
     use bevy::math::{Affine3A, Mat3A, Vec3A};
 
     use super::*;
-    use crate::anatomy::{BodyPlan, Form, PartAssets, PartLodRules, apply_form, build_anatomy};
+    use crate::anatomy::{BodyPlan, Form, PartLodRules, apply_form, build_anatomy, test_assets};
     use crate::surface::{AdaptiveContour, RawMesh, Sheet};
 
     /// The anatomy of `assets/mobs/<body>.body.ron`.
     pub fn anatomy(body: &str) -> Anatomy {
         let text = std::fs::read_to_string(format!("{}/assets/mobs/{body}.body.ron", env!("CARGO_MANIFEST_DIR"))).unwrap();
         let plan: BodyPlan = ron::from_str(&text).unwrap();
-        build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &PartAssets::default()).unwrap()
+        build_anatomy(&apply_form(&plan, &Form::default()).unwrap(), &PartLodRules::default(), &test_assets(&plan)).unwrap()
     }
 
     /// The hero mesh of `field`, welded, at the voxel size `mesh_lod` would use.

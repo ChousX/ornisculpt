@@ -374,6 +374,8 @@ pub fn default_stamps(kind: &PartKind) -> Vec<Stamp> {
             }
             s
         }
+        // An authored head is its own shape: no hollows cut into it.
+        PartKind::Head(h) if h.sculpt.is_some() => Vec::new(),
         PartKind::Head(h) if h.face.is_some() => face_stamps(),
         PartKind::Head(h) => vec![
             skull([0.45, 0.75, -0.55], K::Landmark, [0.50, 0.35, 0.25], 0.10), // brow

@@ -4631,6 +4631,7 @@ dependencies = [
 name = "ornisculpt"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bevy",
  "bytemuck",
  "fast-surface-nets",
@@ -4644,6 +4645,7 @@ dependencies = [
  "rand_pcg",
  "ron",
  "serde",
+ "serde_json",
  "smallvec",
  "thiserror 2.0.21",
  "xxhash-rust",

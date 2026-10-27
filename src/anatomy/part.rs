@@ -279,6 +279,54 @@ pub struct HeadParams {
     /// Shape of an animal's muzzle and jaw (ignored under a `face`). The default is the plain
     /// round, tapering snout.
     pub muzzle: MuzzleParams,
+    /// An authored head mesh in place of the cranium, face or muzzle: blended into the body as
+    /// an SDF, scaled to stand `skull.size.y` high (half the head's height), its slots at the
+    /// mesh's own landmarks. Eyes, hair and anything else still attach by slot.
+    pub sculpt: Option<SculptHead>,
+}
+
+/// An authored head for [`HeadParams::sculpt`].
+///
+/// A watertight glTF head in metres, origin at the base of the neck, Y up, +Z forward (as
+/// `tools/gen_head.py` writes one), and where its landmarks lie in those coordinates. The
+/// defaults are the `MakeHuman` head's (`parts/head_mh.gltf`).
+#[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct SculptHead {
+    /// Asset path of the glTF mesh primitive.
+    pub mesh: String,
+    /// SDF cells along the mesh's longest axis.
+    pub resolution: u16,
+    /// Smooth-min radius against the neck.
+    pub blend: f32,
+    /// The left eyeball's centre, and the eyeball's radius the lids are built round.
+    pub eye: Vec3,
+    pub eye_radius: f32,
+    /// The left nostril: the mesh's nostril cavities are filled with a small sphere here, since
+    /// a cavity meshes as a hole.
+    pub nostril: Vec3,
+    /// The left ear's root.
+    pub ear: Vec3,
+    pub nose: Vec3,
+    pub mouth: Vec3,
+    pub crown: Vec3,
+}
+
+impl Default for SculptHead {
+    fn default() -> Self {
+        Self {
+            mesh: "parts/head_mh.gltf#Mesh0/Primitive0".into(),
+            resolution: 128,
+            blend: 0.045,
+            eye: Vec3::new(0.0308, 0.0945, 0.0488),
+            eye_radius: 0.0138,
+            nostril: Vec3::new(0.011, 0.05, 0.078),
+            ear: Vec3::new(0.085, 0.09, -0.038),
+            nose: Vec3::new(0.0, 0.057, 0.092),
+            mouth: Vec3::new(0.0, 0.037, 0.082),
+            crown: Vec3::new(0.0, 0.2153, -0.006),
+        }
+    }
 }
 
 /// The muzzle of an animal [`HeadParams`]: its snout and lower jaw.

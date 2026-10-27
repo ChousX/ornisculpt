@@ -100,11 +100,47 @@ pub enum AnatomyError {
     Internal(&'static str),
 }
 
-/// Builds a body plan from RON source with the default form, LOD rules and no assets.
+/// Builds a body plan from RON source with the default form and LOD rules, and the glTF part
+/// meshes it references ([`test_assets`]).
 #[cfg(test)]
 pub(crate) fn build_src(src: &str) -> Anatomy {
     let plan: BodyPlan = ron::from_str(src).unwrap();
-    Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()).unwrap()
+    Anatomy::from_plan(&plan, &PartLodRules::default(), &test_assets(&plan)).unwrap()
+}
+
+/// The glTF part meshes a plan references, read from `assets/` (the first primitive of the named
+/// mesh; positions, normals and indices, as a little-endian embedded buffer, which is how
+/// `tools/` write them).
+#[cfg(test)]
+pub(crate) fn test_assets(plan: &BodyPlan) -> PartAssets {
+    let mut assets = PartAssets::default();
+    for path in referenced_assets(plan) {
+        let (file, _) = path.split_once('#').unwrap_or((path.as_str(), ""));
+        let gltf: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(format!("{}/assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap();
+        let uri = gltf["buffers"][0]["uri"].as_str().unwrap();
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, uri.split_once(',').unwrap().1).unwrap();
+        let index = |v: &serde_json::Value| usize::try_from(v.as_u64().unwrap_or(0)).unwrap();
+        let view = |accessor: &serde_json::Value| {
+            let acc = &gltf["accessors"][index(accessor)];
+            let v = &gltf["bufferViews"][index(&acc["bufferView"])];
+            let (o, l) = (index(&v["byteOffset"]), index(&v["byteLength"]));
+            (&bytes[o..o + l], acc["componentType"].as_u64().unwrap())
+        };
+        let prim = &gltf["meshes"][0]["primitives"][0];
+        let vec3s = |accessor: &serde_json::Value| -> Vec<Vec3> {
+            let (b, _) = view(accessor);
+            b.as_chunks::<12>().0.iter().map(|c| Vec3::new(f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]), f32::from_le_bytes([c[8], c[9], c[10], c[11]]))).collect()
+        };
+        let positions = vec3s(&prim["attributes"]["POSITION"]);
+        let normals = vec3s(&prim["attributes"]["NORMAL"]);
+        let (ib, kind) = view(&prim["indices"]);
+        let indices: Vec<u32> = match kind {
+            5125 => ib.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
+            _ => ib.as_chunks::<2>().0.iter().map(|c| u32::from(u16::from_le_bytes(*c))).collect(),
+        };
+        assets.insert(path, std::sync::Arc::new(TriMesh::new(positions, normals, indices)));
+    }
+    assets
 }
 
 #[cfg(test)]

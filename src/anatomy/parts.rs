@@ -14,7 +14,7 @@ use super::builder::{AxisSample, SkullFrame, frame_y_z};
 use super::{
     AnatomyBuilder, AnatomyError, AttachPoint, AttachSlot, BoneId, BuildCx, ChainParams, ChainPart,
     ChainRole, CrossSection, DigitParams, FaceParams, ClothFollow, HandDef, HardParams, HeadParams, JointPlan, LimbEnd, LimbJoints, LimbParams, LimbRole,
-    HardKind, LookDef, MassParams, MassShape, MuzzleParams, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile,
+    HardKind, LookDef, MassParams, MassShape, MuzzleParams, Orient, PartBuild, PartSlots, PrimLayer, PrimOp, PrimShape, Profile, SculptHead,
     SculptParams,
     RegionId, RegionKind, Side, SocketKind, SpringChainDef, Stance, TorsoParams, Weigh,
 };
@@ -825,6 +825,101 @@ impl HeadParams {
     }
 }
 
+impl HeadParams {
+    /// An authored head ([`SculptHead`]) on the skull bone: the mesh's SDF stands on the neck in
+    /// the `skull` frame (its Y up along the frame's -Z, its +Z forward along +Y), scaled so the
+    /// head is `2 · skull.size.y` tall; the slots sit at the mesh's landmarks.
+    #[allow(clippy::too_many_arguments)]
+    fn build_sculpt(
+        &self,
+        b: &mut AnatomyBuilder,
+        sculpt: &SculptHead,
+        at: AttachPoint,
+        cx: &BuildCx,
+        skull: Transform,
+        bone: BoneId,
+        region: RegionId,
+    ) -> Result<PartSlots, AnatomyError> {
+        let grid = b
+            .assets()
+            .sdf(&sculpt.mesh, sculpt.resolution)
+            .ok_or_else(|| AnatomyError::MissingAsset { path: cx.path.clone(), asset: sculpt.mesh.clone() })?;
+        let (lo, hi) = grid.bounds();
+        let s = self.skull.size;
+        let scale = s.y * 2.0 / (hi.y - lo.y).max(1e-3);
+        // Mesh coordinates (X left, Y up, Z forward) to the skull frame (X left, Y forward, Z down).
+        let to_skull = Quat::from_rotation_x(-FRAC_PI_2);
+        let model = Transform { translation: skull.translation, rotation: skull.rotation * to_skull, scale: Vec3::splat(scale) };
+        b.base(bone, PrimShape::Grid { grid, mirror_x: false }, model, sculpt.blend, region);
+        let point = |m: Vec3| Vec3::new(m.x, m.z, -m.y) * scale;
+        // Over the mesh: lids round each eyeball (a mesh's own lids are too thin to survive the
+        // SDF grid, which leaves hollow sockets), a brow ridge over each for brows to grow on,
+        // and a plug in each nostril. As `build_face` builds them, in the skull frame.
+        let eyelid = b.region(RegionKind::Eyelid, cx.side)?;
+        let brow = b.region(RegionKind::Brow, cx.side)?;
+        let face = b.region(RegionKind::Face, cx.side)?;
+        let eye_r = sculpt.eye_radius * scale;
+        let in_skull = |q: Vec3| moved(skull, q);
+        let tilted = |q: Vec3, side: f32, degrees: f32| {
+            let t = in_skull(q);
+            Transform { rotation: t.rotation * Quat::from_rotation_y((side * degrees).to_radians()), ..t }
+        };
+        for side in [1.0, -1.0] {
+            let centre = point(Vec3::new(side * sculpt.eye.x, sculpt.eye.y, sculpt.eye_radius.mul_add(-0.2, sculpt.eye.z)));
+            let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.25, eye_r * 1.2, eye_r * 1.2) };
+            b.base(bone, lids, in_skull(centre), s.y * 0.06, eyelid);
+            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.1, eye_r * 0.9, eye_r * 0.45) };
+            let model = tilted(centre + Vec3::new(0.0, eye_r * 0.7, eye_r * 0.05), side, 5.0);
+            b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, eyelid);
+            let ridge = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 2.0, eye_r * 0.8, eye_r * 0.4) };
+            b.base(bone, ridge, tilted(centre + Vec3::new(side * eye_r * 0.2, eye_r * 0.45, -eye_r * 1.7), side, 7.0), s.y * 0.1, brow);
+            let plug = PrimShape::Sphere { r: 0.0065 * scale };
+            b.base(bone, plug, in_skull(point(Vec3::new(side * sculpt.nostril.x, sculpt.nostril.y, sculpt.nostril.z))), 0.004 * scale, face);
+        }
+        // A thin pad over the mesh's lips, so coats can paint them (`Lip`); it barely changes the shape.
+        let lip = b.region(RegionKind::Lip, cx.side)?;
+        let pad = PrimShape::Ellipsoid { radii: Vec3::new(0.024, 0.006, 0.011) * scale };
+        b.base(bone, pad, in_skull(point(sculpt.mouth - Vec3::Z * 0.004)), 0.003 * scale, lip);
+        let place = |m: Vec3, dir: Vec3, hint: Vec3| skull * Transform::from_translation(point(m)).with_rotation(frame_y_z(dir, hint));
+        let eye_dir = Vec3::Y.lerp(Vec3::X, self.eye_lateral.clamp(0.0, 1.0));
+        // The eyeball sits 0.2 radii behind the mesh's eye centre, under lids thick enough to
+        // survive the voxels.
+        let eye = place(sculpt.eye - Vec3::Z * sculpt.eye_radius * 0.2, eye_dir, Vec3::Z);
+        let ear = place(sculpt.ear, Vec3::new(0.25, -0.3, -1.0), Vec3::X);
+        let nose = place(sculpt.nose, Vec3::Y, Vec3::Z);
+        let mouth = place(sculpt.mouth, Vec3::Y, Vec3::Z);
+        let crown = place(sculpt.crown, Vec3::NEG_Z, Vec3::Y);
+        let horn = place(Vec3::new(sculpt.ear.x * 0.5, sculpt.crown.y * 0.95, sculpt.crown.z), Vec3::new(0.3, 0.4, -1.0), Vec3::Y);
+        let fixed: SmallVec<[(AttachSlot, AttachPoint); 6]> = [
+            (AttachSlot::Eye, eye),
+            (AttachSlot::Ear, ear),
+            (AttachSlot::Horn, horn),
+            (AttachSlot::Crown, crown),
+            (AttachSlot::Nose, nose),
+            (AttachSlot::Mouth, mouth),
+            (AttachSlot::End, nose),
+        ]
+        .into_iter()
+        .map(|(sl, m)| slot(sl, bone, m))
+        .collect();
+        b.socket("head", SocketKind::Head, cx.side, bone, crown, s.x * 2.0);
+        b.socket("mouth", SocketKind::Mouth, cx.side, bone, mouth, s.y);
+        let mut look: Vec<BoneId> = at.bone.map_or_default(|p| b.ancestor_bones(p, RegionKind::Neck).into_vec());
+        look.reverse();
+        look.push(bone);
+        let share = 1.0 / look.len().to_f32();
+        b.look(LookDef { bones: look.into_iter().map(|b| (b, share)).collect(), limit_deg: 70.0 });
+        let centre = point((lo + hi) * 0.5);
+        let radii = Vec3::new(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z) * 0.5 * scale;
+        let axis = [0.0, 1.0]
+            .into_iter()
+            .map(|t| AxisSample { t, bone, model: moved(skull, Vec3::new(0.0, centre.y, 0.0) + Vec3::Y * radii.z * 1.6 * t), radii: Vec2::new(radii.x, radii.y), drop: 0.0 })
+            .collect();
+        let skull_frame = SkullFrame { bone, model: moved(skull, centre), radii: Vec3::new(radii.x, radii.z, radii.y) };
+        Ok(PartSlots { fixed, axis, skull: Some(skull_frame) })
+    }
+}
+
 impl PartBuild for HeadParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let base = with_offset(&at, cx);
@@ -838,6 +933,9 @@ impl PartBuild for HeadParams {
         let skull_region = b.region(RegionKind::Skull, cx.side)?;
         let snout_region = b.region(RegionKind::Snout, cx.side)?;
         let bone = b.bone(at.bone, "skull", skull, s.z.mul_add(2.0, self.snout), skull_region)?;
+        if let Some(sculpt) = &self.sculpt {
+            return self.build_sculpt(b, sculpt, at, cx, skull, bone, skull_region);
+        }
         // A face sits upright on its neck: the neck enters the skull's base from below, with the
         // braincase over it and the back of the head overhanging the nape. An animal's head hangs
         // forward of its neck. The bone still pivots at the neck's top.
@@ -1439,3 +1537,4 @@ mod arm_clearance {
         assert!(curvy >= biped && thick > curvy + 4.0, "biped {biped}°, curvy {curvy}°, thick {thick}°");
     }
 }
+

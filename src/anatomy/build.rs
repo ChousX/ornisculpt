@@ -160,6 +160,7 @@ pub fn referenced_assets(plan: &BodyPlan) -> Vec<String> {
     plan.visit(|_, node| {
         let path = match &node.kind {
             super::PartKind::Sculpt(s) => Some(s.mesh.clone()),
+            super::PartKind::Head(h) => h.sculpt.as_ref().map(|s| s.mesh.clone()),
             super::PartKind::Hard(h) => mesh_path(h),
             super::PartKind::Digits(d) => d.tip.as_ref().and_then(mesh_path),
             _ => None,
