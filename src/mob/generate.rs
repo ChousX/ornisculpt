@@ -16,7 +16,7 @@ use crate::num::Clamp;
 use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
-use crate::clothing::{MobOutfit, Outfit, cover_skin, fit_outfit, garment_lods};
+use crate::clothing::{GarmentCover, MobOutfit, Outfit, cover_skin, fit_outfit, garment_lods};
 use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
@@ -418,8 +418,9 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
     // the stages above, before the coat copies the skin onto shells and cards).
     if cloth.is_some() {
         times.stage("cover_skin", || {
+            let design = GarmentCover::new(&anatomy, &outfit);
             for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
-                cover_skin(lod, settings.get(level).mesh.voxel_size);
+                cover_skin(lod, settings.get(level).mesh.voxel_size, &design);
             }
         });
     }

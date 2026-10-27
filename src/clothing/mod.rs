@@ -29,7 +29,7 @@
 mod cover;
 mod fit;
 
-pub use cover::cover_skin;
+pub use cover::{GarmentCover, cover_skin};
 pub use fit::{fit_outfit, garment_lods};
 
 use bevy::prelude::*;

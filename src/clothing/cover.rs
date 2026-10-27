@@ -6,7 +6,8 @@
 //! and the skin never swells or swings through; cloth standing clear of the body (hanging, or
 //! bridging a gap) fades to its bones alone. Skin under close-fitting cloth then can't be seen, so
 //! it is dropped: it neither shows nor needs to move. A band of it stays at every hem and opening,
-//! so the cloth's edge never shows a hole.
+//! so the cloth's edge never shows a hole. So does skin a garment is meant to cover
+//! ([`GarmentCover`]) where the fit left that garment's cloth under it: the cloth shows instead.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -16,8 +17,10 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use smallvec::SmallVec;
 
+use super::{MAX_GARMENTS, Outfit};
+use crate::anatomy::{Anatomy, BuiltPart, PartPath, mirror_point, path_matches, sample_axis};
 use crate::num::{Clamp, Idx, ToF32, smoothstep};
-use crate::surface::{BodyMeshData, MaterialSlot, MuscleFlex, NOT_CLOTH, SoftVertex, Submesh};
+use crate::surface::{BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex, NOT_CLOTH, SoftVertex, Submesh};
 
 /// Furthest (metres) close-fitting cloth stands off the skin: ease, cloth thickness, hems and the
 /// fit's rise over bulges. Each level adds its voxel size: coarser skin is rounder, and coarser
@@ -28,6 +31,13 @@ const TIGHT: f32 = 0.02;
 const LOOSE: f32 = 0.05;
 /// How far under the skin cloth may lie and still cover it (the fit's rounding).
 const BURIED: f32 = 0.004;
+/// How far under the skin (plus half the voxel size) cloth may lie and still cover skin its
+/// garment is meant to cover (see [`GarmentCover`]): where the fit leaves cloth under a bulge it
+/// doesn't rise over (a thick thigh's root, under a tunic), that skin goes and the cloth shows.
+const DEEP: f32 = 0.04;
+/// A limb leaves through a garment's open end, not its side, when its root points within 60° of
+/// straight out of that end.
+const END_EXIT: f32 = 0.5;
 /// Skin is out of sight when cloth meets every sightline to it steeper than 1 in `SIGHTLINE` to
 /// the skin (within about 63° of its normal): near a hem, sightlines slip under.
 const SIGHTLINE: f32 = 2.0;
@@ -41,9 +51,79 @@ const EDGE: f32 = 1e-5;
 /// A triangle spanning more grid cells than this on an axis is broken (a collapsed vertex).
 const MAX_SPAN: i32 = 16;
 
+/// The body regions each garment is meant to cover, by its palette slot.
+///
+/// That is the skin of the parts it is worn on, and of limbs that leave through its open ends
+/// (legs out of a tunic's hem, a neck out of its collar), but not of limbs that pass out through
+/// its side (arms out of armholes).
+#[derive(Clone, Debug, Default)]
+pub struct GarmentCover {
+    /// One bit per [`RegionId`](crate::anatomy::RegionId).
+    regions: [u64; MAX_GARMENTS],
+    /// Each garment on each part it is worn on: the regions it covers there, and the part's axis
+    /// (stored model space), which the garment was fitted out from.
+    pieces: Vec<(u64, Vec<Vec3>)>,
+}
+
+impl GarmentCover {
+    #[must_use]
+    pub fn new(anatomy: &Anatomy, outfit: &Outfit) -> Self {
+        let mut regions = [0u64; MAX_GARMENTS];
+        let mut pieces = Vec::new();
+        for (index, garment) in outfit.garments.iter().enumerate() {
+            // Garments past the last palette slot share it (as in `fit_outfit`).
+            let Some(slot) = regions.get_mut(index.min(MAX_GARMENTS - 1)) else { continue };
+            let pattern = PartPath(garment.on.clone());
+            for (part_index, part) in (0u16..).zip(&anatomy.parts).filter(|(_, p)| !p.axis.is_empty() && path_matches(&pattern, &p.path)) {
+                let bits = anatomy
+                    .parts
+                    .iter()
+                    .filter(|c| c.parent == Some(part_index) && leaves_through_end(part, c, garment.span))
+                    .fold(region_bits(part), |bits, child| bits | region_bits(child));
+                *slot |= bits;
+                let stored = |p: Vec3| if part.mirrored { mirror_point(p) } else { p };
+                pieces.push((bits, part.axis.iter().map(|a| stored(a.centre())).collect()));
+            }
+        }
+        Self { regions, pieces }
+    }
+
+    /// Whether the garment in palette slot `slot` is meant to cover a region among `bits`.
+    fn covers(&self, slot: u8, bits: u64) -> bool {
+        self.regions.get(usize::from(slot)).is_some_and(|m| m & bits != 0)
+    }
+
+    /// The nearest point to `p` on the axis of each part a garment covering a region among `bits`
+    /// is worn on.
+    fn axes_toward(&self, p: Vec3, bits: u64) -> impl Iterator<Item = Vec3> + '_ {
+        self.pieces.iter().filter(move |(covered, _)| covered & bits != 0).filter_map(move |(_, axis)| {
+            axis.array_windows::<2>()
+                .map(|&[a, b]| a.lerp(b, ((p - a).dot(b - a) / (b - a).length_squared().max(1e-12)).clamp(0.0, 1.0)))
+                .min_by(|q, r| p.distance_squared(*q).total_cmp(&p.distance_squared(*r)))
+        })
+    }
+}
+
+fn region_bits(part: &BuiltPart) -> u64 {
+    part.regions.clone().filter(|&r| r < 64).fold(0, |bits, r| bits | 1 << r)
+}
+
+/// Whether `child`'s root points out through an end of `span` on `part` rather than its side.
+fn leaves_through_end(part: &BuiltPart, child: &BuiltPart, span: (f32, f32)) -> bool {
+    let (Some(root), Some(start), Some(end)) = (child.axis.first(), sample_axis(&part.axis, span.0), sample_axis(&part.axis, span.1)) else {
+        return false;
+    };
+    let at = root.centre();
+    let out = if at.distance(start.centre()) <= at.distance(end.centre()) { start.model.rotation * Vec3::NEG_Y } else { end.model.rotation * Vec3::Y };
+    (root.model.rotation * Vec3::Y).dot(out) > END_EXIT
+}
+
 /// Moves the muscle flex and soft-tissue weights of `lod`'s skin onto the cloth over it, then
-/// drops the skin triangles close-fitting cloth hides. `voxel` is the level's voxel size.
-pub fn cover_skin(lod: &mut BodyMeshData, voxel: f32) {
+/// drops the skin no one can see.
+///
+/// That is skin close-fitting cloth hides, and skin over cloth of a garment meant to cover it
+/// (`design`). `voxel` is the level's voxel size.
+pub fn cover_skin(lod: &mut BodyMeshData, voxel: f32, design: &GarmentCover) {
     let n = lod.positions.len();
     if lod.cloth.len() != n || lod.cloth.iter().all(|&c| c == NOT_CLOTH) {
         return;
@@ -52,8 +132,13 @@ pub fn cover_skin(lod: &mut BodyMeshData, voxel: f32) {
     let skin: Vec<[u32; 3]> = lod.slot_triangles(MaterialSlot::Skin).copied().collect();
     let cloth: Vec<[u32; 3]> = lod.slot_triangles(MaterialSlot::Cloth).copied().collect();
     carry_motion(lod, &skin, &TriGrid::new(&lod.positions, &skin, tight), tight, loose);
-    let cover = Cover { under: f32::mul_add(voxel, 0.5, BURIED), over: loose, slide: f32::mul_add(voxel, 0.5, SLIDE) };
-    let hidden = hidden_skin(lod, &skin, &cloth, &TriGrid::new(&lod.positions, &cloth, tight), &cover);
+    let cover = Cover {
+        under: f32::mul_add(voxel, 0.5, BURIED),
+        deep: f32::mul_add(voxel, 0.5, DEEP),
+        over: loose,
+        slide: f32::mul_add(voxel, 0.5, SLIDE),
+    };
+    let hidden = hidden_skin(lod, &skin, &cloth, &TriGrid::new(&lod.positions, &cloth, tight), &cover, design);
     drop_skin(lod, &hidden);
 }
 
@@ -62,6 +147,8 @@ pub fn cover_skin(lod: &mut BodyMeshData, voxel: f32) {
 struct Cover {
     /// Cloth this far under the skin still covers it.
     under: f32,
+    /// Cloth of a garment meant to cover the skin covers it this far under.
+    deep: f32,
     /// Furthest off the skin cloth still covers it.
     over: f32,
     /// Hidden skin stays this far from skin in sight (along the skin).
@@ -145,39 +232,63 @@ fn blend_soft(corners: [SoftVertex; 3], bary: [f32; 3], contact: f32) -> SoftVer
 }
 
 /// Per vertex, whether it is skin out of sight under cloth (see [`Cover`]).
-fn hidden_skin(lod: &BodyMeshData, skin: &[[u32; 3]], cloth: &[[u32; 3]], grid: &TriGrid, cover: &Cover) -> Vec<bool> {
+fn hidden_skin(lod: &BodyMeshData, skin: &[[u32; 3]], cloth: &[[u32; 3]], grid: &TriGrid, cover: &Cover, design: &GarmentCover) -> Vec<bool> {
     let count = lod.positions.len();
     let pos = |i: u32| lod.positions.get(i.idx()).copied().unwrap_or_default();
     let normal = |i: u32| lod.normals.get(i.idx()).copied().unwrap_or_default();
     let is_skin = lod.skin_vertex_mask();
-    let Cover { under, over, slide } = *cover;
+    let Cover { under, deep, over, slide } = *cover;
+    let region = |i: usize| lod.mob_data.get(i).map_or(0, |d| 1u64 << (MobVertexData::unpack(*d).region.0 & 63));
+    let slot = |&[first, ..]: &[u32; 3]| lod.cloth.get(first.idx()).copied().unwrap_or(NOT_CLOTH);
+    let meant = |bits: u64| design.regions.iter().any(|m| m & bits != 0);
     // A sightline's share along the normal and across it.
     let (steep, wide) = (1.0 / SIGHTLINE.hypot(1.0), SIGHTLINE / SIGHTLINE.hypot(1.0));
     // In sight unless the cloth first along the normal (from a little under the skin) faces the
     // same way, close enough, and cloth also meets every sightline around the normal. Cloth
-    // facing back is another part's (the other thigh's trousers).
+    // facing back is another part's (the other thigh's trousers). Further under the skin, cloth
+    // counts only if its garment is meant to cover that skin: an arm lying on a tunic stays.
     let in_sight: Vec<bool> = lod
         .positions
         .iter()
         .zip(&lod.normals)
         .zip(&is_skin)
-        .map(|((&p, &nrm), &s)| {
+        .enumerate()
+        .map(|(i, ((&p, &nrm), &s))| {
             let dir = nrm.normalize_or_zero();
             if !s || dir == Vec3::ZERO {
                 return true;
             }
-            let Some((along, tri, bary)) = grid.cast(cloth, &pos, p - dir * under, dir, under + over) else { return true };
-            if at(tri.map(normal), bary).dot(dir) <= 0.0 {
-                return true;
-            }
-            // Sightlines from the skin, or from just under cloth that lies under it.
-            let eye = p + dir * (along - under - 1e-4).min(0.0);
-            let (side, lift) = dir.any_orthonormal_pair();
-            (0..SIGHTLINES).any(|k| {
-                let turn = f32::from(k) * TAU / f32::from(SIGHTLINES);
-                let look = dir * steep + (side * turn.cos() + lift * turn.sin()) * wide;
-                grid.cast(cloth, &pos, eye, look, (under + over) / steep).is_none()
-            })
+            // Out of sight from `eye` (just under cloth) if cloth meets every sightline around `up`.
+            let enclosed = |eye: Vec3, up: Vec3| {
+                let (side, lift) = up.any_orthonormal_pair();
+                (0..SIGHTLINES).all(|k| {
+                    let turn = f32::from(k) * TAU / f32::from(SIGHTLINES);
+                    let look = up * steep + (side * turn.cos() + lift * turn.sin()) * wide;
+                    grid.cast(cloth, &pos, eye, look, (under + over) / steep).is_some()
+                })
+            };
+            // Behind cloth `along` from just under the skin (negative: cloth under it) facing the
+            // same way, from the skin or from just under that cloth.
+            let behind = |(along, tri, bary): (f32, [u32; 3], [f32; 3])| {
+                at(tri.map(normal), bary).dot(dir) > 0.0 && enclosed(p + dir * (along - under - 1e-4).min(0.0), dir)
+            };
+            let hidden = grid.cast(cloth, &pos, p - dir * under, dir, under + over).is_some_and(behind) || {
+                // Over cloth of a garment meant to cover it: along the normal, or toward the axis
+                // the garment was fitted out from (the top of a bulge faces away from cloth inside
+                // it, a thick thigh's root under a tunic).
+                let bits = region(i);
+                let meant_cloth = |hit: &(f32, [u32; 3], [f32; 3])| design.covers(slot(&hit.1), bits);
+                meant(bits)
+                    && (grid.cast(cloth, &pos, p, -dir, deep).filter(meant_cloth).is_some_and(|(depth, tri, bary)| behind((under - depth, tri, bary)))
+                        || design.axes_toward(p, bits).any(|q| {
+                            let inward = (q - p).normalize_or_zero();
+                            grid.cast(cloth, &pos, p, inward, deep.min(p.distance(q))).filter(meant_cloth).is_some_and(|(depth, tri, bary)| {
+                                let up = at(tri.map(normal), bary).normalize_or_zero();
+                                up.dot(inward) < 0.0 && enclosed(p + inward * (depth + 1e-4), up)
+                            })
+                        }))
+            };
+            !hidden
         })
         .collect();
     // Distance along the skin from skin in sight, out to `slide`.
@@ -388,9 +499,27 @@ fn cells_between(lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVec3> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::anatomy::{BoneId, PrimLayer, RegionId};
-    use crate::surface::MobVertexData;
+    use crate::anatomy::{BoneId, LodLevel, PartAssets, PrimLayer, RegionId, RegionKind, TriMesh, build_src};
+    use crate::clothing::{Garment, fit_outfit, garment_lods};
+    use crate::surface::{AdaptiveContour, SurfaceSettings, merge, mesh_lod, muscle_flex};
+
+    /// A ring of 40 columns from `y = lo` to `y = hi` in 24 rows, `radius` out in wrap space.
+    fn tube(lo: f32, hi: f32, radius: f32) -> TriMesh {
+        let (rows, cols) = (24u32, 40u32);
+        let positions = (0..=rows)
+            .flat_map(|i| (0..cols).map(move |j| (i, j)))
+            .map(|(i, j)| {
+                let t = j.to_f32() / cols.to_f32() * TAU;
+                Vec3::new(t.sin() * radius, f32::mul_add(hi - lo, i.to_f32() / rows.to_f32(), lo), -t.cos() * radius)
+            })
+            .collect();
+        let v = |i: u32, j: u32| i * cols + j % cols;
+        let indices = (0..rows).flat_map(|i| (0..cols).flat_map(move |j| [v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j), v(i + 1, j + 1), v(i, j + 1)])).collect();
+        TriMesh::new(positions, Vec::new(), indices)
+    }
 
     /// A square sheet of `cells` × `cells` quads, `size` across, at height `z`, facing `facing`
     /// (+1 = +Z).
@@ -438,7 +567,7 @@ mod tests {
         sheet(&mut lod, 0.2, 10, 0.01, 1.0, MaterialSlot::Cloth);
         let loose = lod.positions.len();
         sheet(&mut lod, 0.2, 10, 0.09, 1.0, MaterialSlot::Cloth);
-        cover_skin(&mut lod, 0.008);
+        cover_skin(&mut lod, 0.008, &GarmentCover::default());
         for (i, p) in lod.positions.iter().enumerate().skip(tight) {
             let (flex, soft) = (lod.muscle.get(i).copied().unwrap_or_default(), lod.soft.get(i).copied().unwrap_or_default());
             if i < loose {
@@ -456,7 +585,7 @@ mod tests {
         sheet(&mut lod, 0.4, 40, 0.0, 1.0, MaterialSlot::Skin);
         sheet(&mut lod, 0.2, 10, 0.01, 1.0, MaterialSlot::Cloth);
         let before = skin_left(&lod, 0.1);
-        cover_skin(&mut lod, 0.008);
+        cover_skin(&mut lod, 0.008, &GarmentCover::default());
         // Inside the margin from the hem the skin stays; well under the cloth it goes.
         let (band, outside) = skin_left(&lod, 0.1);
         assert_eq!(outside, before.1, "skin beyond the cloth stays");
@@ -471,7 +600,7 @@ mod tests {
         sheet(&mut lod, 0.4, 40, 0.0, 1.0, MaterialSlot::Skin);
         sheet(&mut lod, 0.2, 10, 0.01, -1.0, MaterialSlot::Cloth);
         let before = lod.slot_triangles(MaterialSlot::Skin).count();
-        cover_skin(&mut lod, 0.008);
+        cover_skin(&mut lod, 0.008, &GarmentCover::default());
         assert_eq!(lod.slot_triangles(MaterialSlot::Skin).count(), before);
     }
 
@@ -479,27 +608,11 @@ mod tests {
     /// with the muscles under it.
     #[test]
     fn a_tunic_hides_the_torso_and_flexes_with_it() {
-        use std::f32::consts::TAU;
-        use std::sync::Arc;
-
-        use crate::anatomy::{LodLevel, PartAssets, TriMesh, build_src, sample_axis};
-        use crate::clothing::{Garment, Outfit, fit_outfit, garment_lods};
-        use crate::surface::{AdaptiveContour, SurfaceSettings, merge, mesh_lod, muscle_flex};
-
-        let (rows, cols) = (24u32, 40u32);
-        let positions = (0..=rows)
-            .flat_map(|i| (0..cols).map(move |j| (i, j)))
-            .map(|(i, j)| {
-                let t = j.to_f32() / cols.to_f32() * TAU;
-                Vec3::new(t.sin(), i.to_f32() / rows.to_f32(), -t.cos())
-            })
-            .collect();
-        let v = |i: u32, j: u32| i * cols + j % cols;
-        let indices = (0..rows).flat_map(|i| (0..cols).flat_map(move |j| [v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j), v(i + 1, j + 1), v(i, j + 1)])).collect();
         let mut assets = PartAssets::default();
-        assets.insert("tube", Arc::new(TriMesh::new(positions, Vec::new(), indices)));
+        assets.insert("tube", Arc::new(tube(0.0, 1.0, 1.0)));
         let tunic = Garment { name: "tunic".into(), on: "torso".into(), span: (0.0, 0.93), mesh: "tube".into(), ease: 0.008, ..default() };
-        let (anatomy, cloth) = fit_outfit(build_src(include_str!("../../assets/mobs/biped.body.ron")), &Outfit { garments: vec![tunic] }, &assets);
+        let outfit = Outfit { garments: vec![tunic] };
+        let (anatomy, cloth) = fit_outfit(build_src(include_str!("../../assets/mobs/biped.body.ron")), &outfit, &assets);
         let settings = SurfaceSettings::default();
         let level = LodLevel::Near;
         let mut lod = mesh_lod(&AdaptiveContour, &anatomy, level, settings.get(level), 0).unwrap();
@@ -507,7 +620,7 @@ mod tests {
         merge(&mut lod, &near);
         lod.muscle = muscle_flex(&lod, &anatomy, level);
         let before: Vec<[u32; 3]> = lod.slot_triangles(MaterialSlot::Skin).copied().collect();
-        cover_skin(&mut lod, settings.get(level).mesh.voxel_size);
+        cover_skin(&mut lod, settings.get(level).mesh.voxel_size, &GarmentCover::new(&anatomy, &outfit));
         let after: Vec<[u32; 3]> = lod.slot_triangles(MaterialSlot::Skin).copied().collect();
         let pos = |i: u32| lod.positions.get(i.idx()).copied().unwrap_or_default();
         let gone: Vec<Vec3> = before.iter().filter(|t| !after.contains(t)).map(|t| at(t.map(pos), [1.0 / 3.0; 3])).collect();
@@ -530,5 +643,88 @@ mod tests {
         let cloth = lod.cloth.iter().filter(|c| **c != NOT_CLOTH).count();
         println!("{flexing} of {cloth} tunic vertices flex");
         assert!(flexing * 4 > cloth, "only {flexing} of {cloth} tunic vertices flex");
+    }
+
+    #[test]
+    fn buried_cloth_hides_only_skin_it_is_meant_to_cover() {
+        for (design, meant) in [(GarmentCover::default(), false), (GarmentCover { regions: [1, 0, 0, 0, 0, 0, 0, 0], pieces: Vec::new() }, true)] {
+            let mut lod = BodyMeshData::default();
+            sheet(&mut lod, 0.4, 40, 0.0, 1.0, MaterialSlot::Skin);
+            // 2 cm under the skin: deeper than the fit's rounding.
+            sheet(&mut lod, 0.2, 10, -0.02, 1.0, MaterialSlot::Cloth);
+            let before = skin_left(&lod, 0.1);
+            cover_skin(&mut lod, 0.008, &design);
+            let after = skin_left(&lod, 0.1);
+            assert_eq!(after.1, before.1, "skin beyond the cloth stays");
+            if meant {
+                assert_eq!(skin_left(&lod, 0.05).0, 0, "skin over the middle of buried cloth its garment covers goes");
+            } else {
+                assert_eq!(after.0, before.0, "skin over buried cloth no garment is meant to cover stays");
+            }
+        }
+    }
+
+    /// The thick body in the peasant outfit: where the fit leaves cloth under the thighs' roots,
+    /// most of the skin there goes; the head, hands and feet keep all theirs.
+    #[test]
+    fn skin_over_buried_garments_goes_on_a_thick_body() {
+        let outfit: Outfit = ron::from_str(include_str!("../../assets/outfits/peasant.outfit.ron")).unwrap();
+        let mut assets = PartAssets::default();
+        assets.insert("garments/garments.gltf#Mesh0/Primitive0", Arc::new(tube(0.0, 1.0, 1.0)));
+        assets.insert("garments/garments.gltf#Mesh2/Primitive0", Arc::new(tube(0.0, 1.0, 1.005)));
+        assets.insert("garments/garments.gltf#Mesh5/Primitive0", Arc::new(tube(-1.0, 1.0, 1.0)));
+        let (anatomy, cloth) = fit_outfit(build_src(include_str!("../../assets/mobs/thick.body.ron")), &outfit, &assets);
+        let settings = SurfaceSettings::default();
+        let level = LodLevel::Hero;
+        let voxel = settings.get(level).mesh.voxel_size;
+        let mut lod = mesh_lod(&AdaptiveContour, &anatomy, level, settings.get(level), 0).unwrap();
+        let [hero, _, _] = garment_lods(&cloth.unwrap(), &anatomy, &settings);
+        merge(&mut lod, &hero);
+        // Skin triangles with cloth facing the same way a little under them, past the fit's
+        // rounding, of a garment meant to cover them (not an arm lying on a tunic).
+        let design = GarmentCover::new(&anatomy, &outfit);
+        let over_buried = |lod: &BodyMeshData| {
+            let cloth: Vec<[u32; 3]> = lod.slot_triangles(MaterialSlot::Cloth).copied().collect();
+            let grid = TriGrid::new(&lod.positions, &cloth, TIGHT + voxel);
+            let pos = |i: u32| lod.positions.get(i.idx()).copied().unwrap_or_default();
+            let normal = |i: u32| lod.normals.get(i.idx()).copied().unwrap_or_default();
+            lod.slot_triangles(MaterialSlot::Skin)
+                .filter(|t| {
+                    let (c, n) = (at(t.map(pos), [1.0 / 3.0; 3]), at(t.map(normal), [1.0 / 3.0; 3]).normalize_or_zero());
+                    let outside = grid.cast(&cloth, &pos, c, n, LOOSE + voxel).is_some();
+                    let under = grid.cast(&cloth, &pos, c, -n, DEEP).filter(|(d, ..)| *d > f32::mul_add(voxel, 0.5, BURIED));
+                    let region = lod.mob_data.get(t[0].idx()).map_or(0, |d| 1u64 << (MobVertexData::unpack(*d).region.0 & 63));
+                    let slot = |tri: &[u32; 3]| lod.cloth.get(tri[0].idx()).copied().unwrap_or(NOT_CLOTH);
+                    let meant = |&(_, tri, bary): &(f32, [u32; 3], [f32; 3])| design.covers(slot(&tri), region) && at(tri.map(normal), bary).dot(n) > 0.0;
+                    // Or toward the axis the garment was fitted from, facing back along it.
+                    let inward = design.axes_toward(c, region).any(|q| {
+                        let toward = (q - c).normalize_or_zero();
+                        grid.cast(&cloth, &pos, c, toward, DEEP.min(c.distance(q)))
+                            .filter(|(d, ..)| *d > f32::mul_add(voxel, 0.5, BURIED))
+                            .is_some_and(|(_, tri, bary)| design.covers(slot(&tri), region) && at(tri.map(normal), bary).dot(toward) < 0.0)
+                    });
+                    !outside && (under.as_ref().is_some_and(meant) || inward)
+                })
+                .count()
+        };
+        // Skin triangles of the head, hands and feet.
+        let ends = |lod: &BodyMeshData| {
+            let kind = |t: &[u32; 3]| {
+                let region = lod.mob_data.get(t[0].idx()).map_or(RegionId(0), |d| MobVertexData::unpack(*d).region);
+                anatomy.regions.regions.get(usize::from(region.0)).map(|r| r.kind)
+            };
+            let end = |t: &&[u32; 3]| matches!(kind(t), Some(RegionKind::Skull | RegionKind::Face | RegionKind::Jaw | RegionKind::LimbEnd | RegionKind::Digit));
+            lod.slot_triangles(MaterialSlot::Skin).filter(end).count()
+        };
+        let ends_before = ends(&lod);
+        let bare_before = over_buried(&lod);
+        cover_skin(&mut lod, voxel, &design);
+        let ends_after = ends(&lod);
+        let bare_after = over_buried(&lod);
+        println!("skin over buried cloth: {bare_before} triangles before, {bare_after} after; head, hands and feet {ends_before} -> {ends_after}");
+        assert!(bare_before > 0, "the fit leaves no cloth under the thick body's skin");
+        // Some stays: where a hanging belly faces down over cloth inside it, and near skin in sight.
+        assert!(bare_after * 10 <= bare_before * 6, "{bare_after} of {bare_before} skin triangles over buried cloth left");
+        assert_eq!(ends_after, ends_before, "head, hand or foot skin hidden");
     }
 }
