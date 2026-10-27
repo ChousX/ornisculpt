@@ -159,7 +159,7 @@ pub struct CoatUniform {
     pub feather_mask: UVec2,
     /// Muscle flex gain (x; 0 = muscles stay still, 1 = as baked), soft-tissue gain (y; 0 = still).
     pub muscle: Vec2,
-    /// size, relief, contrast, _
+    /// size, relief, contrast, fur shell count
     pub scales: Vec4,
     /// length, density, thickness, tip
     pub fur: Vec4,
@@ -250,7 +250,7 @@ impl Coat {
             fur_mask: split(masks.fur),
             feather_mask: split(masks.feathers),
             muscle: Vec2::new(1.0, 1.0),
-            scales: Vec4::new(s.size, s.relief, s.contrast, 0.0),
+            scales: Vec4::new(s.size, s.relief, s.contrast, f32::from(f.shells)),
             fur: Vec4::new(f.length, f.density, f.thickness, f.tip),
             feathers: Vec4::new(fe.length, fe.width, fe.tip, 0.0),
             cloth: crate::clothing::DEFAULT_PALETTE,

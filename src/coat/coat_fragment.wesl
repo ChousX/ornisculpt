@@ -304,14 +304,22 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
 }
 
 @if(COAT_SHELL) {
+    // uv = (shell height, the fur's length here in metres).
     var h = 0.0;
-@if(VERTEX_UVS_A) {
     var fur_length = coat.fur.x;
+@if(VERTEX_UVS_A) {
     h = in.uv.x;
-}
     fur_length = in.uv.y;
-    // One strand per cell, thinning to a point at full length.
-    let c = cellular(rest * coat.fur.y);
+}
+    // One strand per cell, thinning to a point at full length. Strands need a few pixels per cell
+    // to resolve; finer than that they alias into salt-and-pepper. So the strands gather into
+    // clumps as they get small: the cells double (level by level, each level fading into the
+    // next with the clumps' area kept) until a clump spans about four pixels. Clumps wider than
+    // the fur is long would read as dapple, and a coat only a dozen pixels deep shows its shells
+    // as layers of specks, so past either the shells go over to a smooth pelt: the shell halfway
+    // up stays whole in the fur's average colour (clear of the skin, which the lowest shells dip
+    // under where their simplified source strays), the rest go.
+    let cell = 1.0 / max(coat.fur.y, 1.0);
     let radius = 0.5 * coat.fur.z * (1.0 - h);
     let level = max(0.0, log2(4.0 * pixel / cell));
     let top = log2(max(2.0 * fur_length / cell, 1.0));
@@ -335,8 +343,8 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
             discard;
         }
     }
-    let root = mix(0.35, 1.0, h);
-    color = mix(base, accent, h * coat.fur.w) * root;
+    let root = mix(mix(0.35, 1.0, h), 0.72, pelt);
+    color = mix(base, accent, mix(h, 0.5, pelt) * coat.fur.w) * root;
 }
 
 @if(COAT_FEATHER) {
