@@ -23,8 +23,8 @@ bevy = { version = "0.20", default-features = false, features = ["3d", "serializ
 bytemuck = { version = "1", features = ["derive"] }
 fast-surface-nets = "0.2"
 fastnoise-lite = "1.1"
-# Local until its `traits` branch is pushed.
-genetics = { path = "../genetics", optional = true }
+# The `traits` branch, until it lands on master.
+genetics = { git = "https://github.com/ChousX/genetics", branch = "traits", optional = true }
 mesh_to_sdf = "0.4"
 meshopt = "0.6"
 rand = "0.10"
