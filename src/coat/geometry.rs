@@ -229,6 +229,9 @@ const fn flows_backward(kind: RegionKind) -> bool {
             | RegionKind::Neck
             | RegionKind::Skull
             | RegionKind::Face
+            | RegionKind::Brow
+            | RegionKind::Eyelid
+            | RegionKind::Lip
             | RegionKind::Snout
             | RegionKind::Jaw
             | RegionKind::Mass

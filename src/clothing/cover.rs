@@ -713,7 +713,7 @@ mod tests {
                 let region = lod.mob_data.get(t[0].idx()).map_or(RegionId(0), |d| MobVertexData::unpack(*d).region);
                 anatomy.regions.regions.get(usize::from(region.0)).map(|r| r.kind)
             };
-            let end = |t: &&[u32; 3]| matches!(kind(t), Some(RegionKind::Skull | RegionKind::Face | RegionKind::Jaw | RegionKind::LimbEnd | RegionKind::Digit));
+            let end = |t: &&[u32; 3]| matches!(kind(t), Some(RegionKind::Skull | RegionKind::Face | RegionKind::Brow | RegionKind::Eyelid | RegionKind::Lip | RegionKind::Jaw | RegionKind::LimbEnd | RegionKind::Digit));
             lod.slot_triangles(MaterialSlot::Skin).filter(end).count()
         };
         let ends_before = ends(&lod);

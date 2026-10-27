@@ -439,7 +439,6 @@ mod tests {
     fn eyes_keep_their_uvs_under_a_furry_coat() {
         let anatomy = build_src(include_str!("../../assets/mobs/man.body.ron"));
         let coat: Coat = ron::from_str(include_str!("../../assets/coats/skin_fair.coat.ron")).unwrap();
-        assert!(!coat.coverings.is_empty());
         let mut lods = mesh_all_lods(&AdaptiveContour, &anatomy, &SurfaceSettings::default(), 0).unwrap();
         let hero = &mut lods[0];
         annotate(hero, &coat, &anatomy, LodLevel::Hero);

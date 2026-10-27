@@ -859,7 +859,14 @@ impl PartBuild for HeadParams {
             }
             let jaw_region = if self.jaw.is_some() { Some(b.region(RegionKind::Jaw, cx.side)?) } else { None };
             let eye = (self.face_eye(), self.eye_radius());
-            let jaw = build_face(b, face, skull, s, eye, bone, skull_region, snout_region, jaw_region)?;
+            let regions = FaceRegions {
+                face: b.region(RegionKind::Face, cx.side)?,
+                brow: b.region(RegionKind::Brow, cx.side)?,
+                eyelid: b.region(RegionKind::Eyelid, cx.side)?,
+                lip: b.region(RegionKind::Lip, cx.side)?,
+                jaw: jaw_region,
+            };
+            let jaw = build_face(b, face, skull, s, eye, bone, &regions)?;
             if let Some((jaw, chin)) = jaw {
                 fixed.push(slot(AttachSlot::Jaw, jaw, chin));
             }
@@ -1025,15 +1032,25 @@ impl Muzzle<'_> {
     }
 }
 
+/// The regions a face is built from: `Face` for the midface, cheeks and nose, `Brow`, `Eyelid`
+/// and `Lip` for what coats dress with brows, lashes and lip colour, and the jaw's for the
+/// mandible (`None`: no jaw).
+struct FaceRegions {
+    face: RegionId,
+    brow: RegionId,
+    eyelid: RegionId,
+    lip: RegionId,
+    jaw: Option<RegionId>,
+}
+
 /// A primate face on the skull (`skull` frame: X left, Y forward, Z down; `s` = skull half
-/// extents: x width, y height, z depth): midface, brow, cheekbones, eyelids, nose and upper lip
+/// extents: x width, y height, z depth): midface, brows, cheekbones, eyelids, nose and upper lip
 /// on the skull bone; mandible, chin and lower lip on a jaw bone hinged in front of the ears.
 /// `eye` is the left eye's centre in the skull frame and the eyeball's radius. Returns the jaw
 /// bone and its chin frame.
 ///
 /// Layout, in skull radii down from the skull centre (crown at -1): brow -0.22, eyes -0.05
 /// (halfway from crown to chin), nose base 0.32, mouth 0.55, chin 0.95 — the facial thirds.
-#[allow(clippy::too_many_arguments)]
 fn build_face(
     b: &mut AnatomyBuilder,
     face: &FaceParams,
@@ -1041,10 +1058,9 @@ fn build_face(
     s: Vec3,
     eye: (Vec3, f32),
     bone: BoneId,
-    skull_region: RegionId,
-    face_region: RegionId,
-    jaw_region: Option<RegionId>,
+    regions: &FaceRegions,
 ) -> Result<Option<(BoneId, Transform)>, AnatomyError> {
+    let face_region = regions.face;
     let (rx, ry, rz) = (s.x, s.z, s.y);
     let cy = ry * 0.8; // skull centre, forward of the head's root
     // A point on the face: (across, forward from the skull centre, down), in skull radii.
@@ -1059,8 +1075,11 @@ fn build_face(
 
     // Midface (upper jaw and cheeks): the front of the face from under the eyes to the mouth.
     b.base(bone, ellipsoid(0.56, 0.38, 0.4), at(p(0.0, 0.5, 0.3)), rz * 0.3, face_region);
+    // Brow ridges: one over each eye, meeting over the nose bridge where the blend joins them.
     if face.brow > 0.0 {
-        b.base(bone, ellipsoid(0.6 * face.brow.sqrt(), 0.13, 0.07), at(p(0.0, 0.84, -0.22)), rz * 0.12, skull_region);
+        for x in [0.3, -0.3] {
+            b.base(bone, ellipsoid(0.32 * face.brow.sqrt(), 0.13, 0.07), at(p(x, 0.84, -0.22)), rz * 0.12, regions.brow);
+        }
     }
     if face.cheekbones > 0.0 {
         let scale = face.cheekbones.sqrt();
@@ -1073,12 +1092,13 @@ fn build_face(
         let tip = p(0.0, 0.25f32.mul_add(face.nose, 0.9), 0.27);
         let (model, len) = span(p(0.0, 0.86, -0.1), tip);
         b.base(bone, PrimShape::RoundCone { r0: rz * 0.05, r1: rz * 0.085, len }, model, rz * 0.04, face_region);
-        for x in [0.15, -0.15] {
-            b.base(bone, PrimShape::Sphere { r: rz * 0.06 }, at(tip + Vec3::new(x * rx, -ry * 0.16, rz * 0.03)), rz * 0.07, face_region);
+        for x in [0.14, -0.14] {
+            let wing = PrimShape::Ellipsoid { radii: Vec3::new(rz * 0.045, rz * 0.055, rz * 0.045) };
+            b.base(bone, wing, at(tip + Vec3::new(x * rx, -ry * 0.17, rz * 0.03)), rz * 0.08, face_region);
         }
     }
     if face.lips > 0.0 {
-        b.base(bone, ellipsoid(0.28, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.46)), rz * 0.06, face_region);
+        b.base(bone, ellipsoid(0.28, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.46)), rz * 0.06, regions.lip);
     }
     // Cheeks: the soft fill under each cheekbone, out to the jaw.
     if face.cheeks > 0.0 {
@@ -1096,14 +1116,20 @@ fn build_face(
             let centre = Vec3::new(x * eye_at.x, eye_at.y, eye_at.z);
             // A small blend: a wide one would swell the lids a few millimetres clear of the ball.
             let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.25, eye_r * 1.05, eye_r * 1.2) };
-            b.base(bone, lids, at(centre), rz * 0.06, face_region);
-            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.55 * face.eyelids.min(2.0)) };
+            b.base(bone, lids, at(centre), rz * 0.06, regions.eyelid);
+            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.5 * face.eyelids.min(2.0)) };
             let model = at(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05));
-            b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, face_region);
+            b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, regions.eyelid);
         }
     }
 
-    let Some(jaw_region) = jaw_region else { return Ok(None) };
+    // The mouth: a thin cut along the line where the lips meet.
+    if face.lips > 0.0 {
+        let seam = ellipsoid(0.24, 0.1, 0.016);
+        b.primitive(bone, seam, at(p(0.0, 0.9, 0.515)), rz * 0.02, PrimOp::Subtract, PrimLayer::Base, regions.lip);
+    }
+
+    let Some(jaw_region) = regions.jaw else { return Ok(None) };
     // Mandible: hinged in front of the ears, running down and forward to the chin.
     let chin = p(0.0, 0.08f32.mul_add(face.chin, 0.8), 0.95);
     let (jaw_model, jaw_len) = span(p(0.0, 0.0, 0.15), chin);
@@ -1123,7 +1149,7 @@ fn build_face(
         add(ellipsoid(0.27 * scale, 0.12 * scale, 0.11), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.08)), rz * 0.1);
     }
     if face.lips > 0.0 {
-        add(ellipsoid(0.25, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.83, 0.57)), rz * 0.06);
+        b.base(jaw, ellipsoid(0.25, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.83, 0.57)), rz * 0.06, regions.lip);
     }
     Ok(Some((jaw, moved(jaw_model, Vec3::Y * jaw_len))))
 }

@@ -28,7 +28,15 @@ pub enum RegionKind {
     Belly,
     Neck,
     Skull,
+    /// A primate face's midface, cheeks, nose and upper lip (`FaceParams`).
     Face,
+    /// A face's brow ridges (one each side), for eyebrows.
+    Brow,
+    /// A face's eyelids, for lashes and lid colour.
+    Eyelid,
+    /// A face's lips.
+    Lip,
+    /// An animal's muzzle.
     Snout,
     Jaw,
     LimbUpper,
