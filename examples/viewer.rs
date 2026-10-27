@@ -37,7 +37,7 @@ fn main() {
             OrnisculptPlugin,
         ))
         .insert_resource(Viewer::new(path, coat))
-        .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+        .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
         .insert_resource(Orbit::from_env(0.9, 0.35, 3.0, Vec3::new(0.0, 0.5, 0.0), (0.3, 30.0)))
         .init_resource::<Focus>()
         .add_observer(on_ready)

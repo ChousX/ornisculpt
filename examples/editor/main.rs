@@ -79,7 +79,7 @@ fn main() {
     // One body at a time: the meshing stages get every core but one (the main and render
     // threads share it; the default keeps two for a crowd's worth of bodies).
     .insert_resource(GenBudget { reserved_threads: 1, ..default() })
-    .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+    .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
     .init_resource::<Orbit>()
     .init_resource::<KeyRepeat>()
     .add_observer(on_ready)

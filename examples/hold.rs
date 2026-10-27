@@ -35,7 +35,7 @@ fn main() {
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ))
-        .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+        .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
         .insert_resource(Count(count))
         .insert_resource(Orbit::from_env(0.5, 0.35, 8.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 200.0)))
         .add_systems(Startup, setup)

@@ -77,15 +77,23 @@ pub fn orbit_camera(
     }
 }
 
-/// A shadowed sun at `light` looking at the origin, and a square of ground `ground` metres across.
+/// A shadowed, slightly warm sun at `light` looking at the origin, a cool unshadowed fill from the
+/// sun's other side, lower, so shaded sides, eyes under their lids and the underside keep their
+/// shape, an overcast backdrop, and a square of ground `ground` metres across.
 pub fn spawn_stage(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, ground: f32, light: Vec3) {
     commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 8000.0, ..default() },
+        DirectionalLight { shadow_maps_enabled: true, illuminance: 9000.0, color: Color::srgb(1.0, 0.96, 0.9), ..default() },
         Transform::from_translation(light).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    let fill = Vec3::new(-light.x, light.y * 0.35, light.z);
+    commands.spawn((
+        DirectionalLight { shadow_maps_enabled: false, illuminance: 2600.0, color: Color::srgb(0.78, 0.86, 1.0), ..default() },
+        Transform::from_translation(fill).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.insert_resource(ClearColor(Color::srgb(0.46, 0.5, 0.55)));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(ground, ground))),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.32, 0.36, 0.3), perceptual_roughness: 1.0, ..default() })),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.36, 0.37, 0.33), perceptual_roughness: 1.0, ..default() })),
     ));
 }
 

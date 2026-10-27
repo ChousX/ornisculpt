@@ -38,7 +38,7 @@ const BODIES: [&str; 7] = [
 fn main() {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
-        .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
+        .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
         .insert_resource(Orbit::from_env(0.5, 0.4, 9.0, Vec3::new(0.0, 0.4, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
