@@ -109,6 +109,18 @@ fn value3(p: vec3<f32>) -> f32 {
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
+// Smooth 2D value noise in 0..1 (half the cost of `value3`, for patterns that only need a slice).
+fn value2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash1(vec3<f32>(i, 7.0));
+    let b = hash1(vec3<f32>(i + vec2<f32>(1.0, 0.0), 7.0));
+    let c = hash1(vec3<f32>(i + vec2<f32>(0.0, 1.0), 7.0));
+    let d = hash1(vec3<f32>(i + vec2<f32>(1.0, 1.0), 7.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 // World size of one pixel at `world` (no derivatives, so it is safe in any control flow).
 fn pixel_size(world: vec3<f32>) -> f32 {
     let d = length(world - view.world_position);
@@ -223,7 +235,7 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
     let mottle_size = 0.004;
     let mottle = detail(mottle_size, pixel) * bare;
     if mottle > 0.0 {
-        roughness = clamp(roughness + (value3(rest / mottle_size) - 0.5) * 0.2 * mottle, 0.05, 1.0);
+        roughness = clamp(roughness + (value2((rest.xy + rest.zx * 0.7) / mottle_size) - 0.5) * 0.2 * mottle, 0.05, 1.0);
     }
 }
 
@@ -347,12 +359,18 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
         }
         pelt = 1.0;
     } else {
+        // Single strands get the full search; clumps are blurred anyway and take the cheap one.
         let l0 = floor(level);
         let f = level - l0;
         let k0 = exp2(l0);
-        let fine = cellular(rest * coat.fur.y / k0).x <= radius * sqrt(1.0 - f);
+        var fine = false;
+        if l0 < 0.5 {
+            fine = cellular(rest * coat.fur.y).x <= radius * sqrt(1.0 - f);
+        } else {
+            fine = cellular_fast(rest * coat.fur.y / k0).x <= radius * sqrt(1.0 - f);
+        }
         var coarse = false;
-        if f > 0.0 {
+        if f > 0.02 {
             coarse = cellular_fast(rest * coat.fur.y / (k0 * 2.0)).x <= radius * sqrt(f);
         }
         if !(fine || coarse) {
