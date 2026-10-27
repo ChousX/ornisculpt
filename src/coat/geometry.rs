@@ -147,6 +147,12 @@ fn hair_cards(body: &BodyMeshData, anatomy: &Anatomy, level: LodLevel, coat: &Co
             if facing > 0.3 {
                 continue;
             }
+            // Skin facing back toward its own bone is the inside of a pocket (a mouth cavity that
+            // the void fill couldn't close): nothing grows there.
+            let origin = model.get(va.joints[0].idx()).map_or(root, |m| Vec3::from(m.translation));
+            if normal.dot((root - origin).normalize_or(normal)) < -0.3 {
+                continue;
+            }
             let comb = Vec3::NEG_Y + Vec3::NEG_Z * facing * 1.5;
             let down = comb - normal * comb.dot(normal);
             let along = if down.length() > 0.3 {
@@ -158,7 +164,7 @@ fn hair_cards(body: &BodyMeshData, anatomy: &Anatomy, level: LodLevel, coat: &Co
             let length = cards.length * 0.4f32.mul_add(rng.random::<f32>(), 0.8);
             let half = cards.width * 0.5;
             let yaw = Quat::from_axis_angle(normal, 0.3f32.mul_add(-rng.random::<f32>(), 0.15));
-            let start = yaw * (along * lift.cos() + normal * lift.sin());
+            let start = (yaw * (along * lift.cos() + normal * lift.sin())).lerp(Vec3::NEG_Y, cards.droop.clamp(0.0, 1.0) * 0.3).normalize_or(along);
             let base = out.positions.len().clamp_u32();
             let mut at = root - normal * 0.002;
             let mut dir = start;
