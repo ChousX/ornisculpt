@@ -20,7 +20,7 @@
         // A little colour in the cheeks.
         (color: (0.82, 0.52, 0.46), regions: Kind(Face), patches: Some((size: 0.03, cover: 0.5, soft: 0.3, seed: 2)), strength: 0.25),
         // Lips.
-        (color: (0.64, 0.32, 0.3), regions: Kind(Lip), strength: 0.6),
+        (color: (0.64, 0.32, 0.3), regions: Kind(Lip), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.5, to: 0.8)), strength: 0.6),
         // Auburn hair over the crown, back of the head and the ponytail.
         // Lids a little darker and warmer; brows and lashes the hair's auburn, lashes darker.
         (color: (0.7, 0.44, 0.4), regions: Kind(Eyelid), strength: 0.5),

@@ -1098,7 +1098,8 @@ fn build_face(
         }
     }
     if face.lips > 0.0 {
-        b.base(bone, ellipsoid(0.28, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.86, 0.46)), rz * 0.06, regions.lip);
+        // Small blends: the lips' region (and so their colour) stays on the lips.
+        b.base(bone, ellipsoid(0.27, 0.06 * face.lips.sqrt(), 0.045), at(p(0.0, 0.86, 0.465)), rz * 0.03, regions.lip);
     }
     // Cheeks: the soft fill under each cheekbone, out to the jaw.
     if face.cheeks > 0.0 {
@@ -1149,7 +1150,7 @@ fn build_face(
         add(ellipsoid(0.27 * scale, 0.12 * scale, 0.11), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.08)), rz * 0.1);
     }
     if face.lips > 0.0 {
-        b.base(jaw, ellipsoid(0.25, 0.06 * face.lips.sqrt(), 0.05), at(p(0.0, 0.83, 0.57)), rz * 0.06, regions.lip);
+        b.base(jaw, ellipsoid(0.24, 0.06 * face.lips.sqrt(), 0.045), at(p(0.0, 0.83, 0.565)), rz * 0.03, regions.lip);
     }
     Ok(Some((jaw, moved(jaw_model, Vec3::Y * jaw_len))))
 }

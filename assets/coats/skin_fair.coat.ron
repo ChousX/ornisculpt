@@ -20,7 +20,7 @@
         // Hands and feet slightly redder.
         (color: (0.76, 0.52, 0.44), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
         // Lips and the mouth: rosy at the front of the face's lower part.
-        (color: (0.66, 0.38, 0.34), regions: Kind(Lip), strength: 0.5),
+        (color: (0.66, 0.38, 0.34), regions: Kind(Lip), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.5, to: 0.8)), strength: 0.5),
         // Lids a little darker and warmer; brows and lashes the hair's dark brown.
         (color: (0.68, 0.44, 0.38), regions: Kind(Eyelid), strength: 0.5),
         (color: (0.16, 0.1, 0.06), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
