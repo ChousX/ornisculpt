@@ -10,6 +10,8 @@
     coverings: [
         // Short hair: fine, dense strands over the sculpted cap.
         (regions: Part("torso/neck/head/hair"), kind: Fur((length: 0.022, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
+        // ... and over the top and back of the skull itself, to the hairline.
+        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.022))),
     ],
     markings: [
         // Hands and feet slightly redder.

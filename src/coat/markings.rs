@@ -74,6 +74,14 @@ impl Default for Facing {
     }
 }
 
+impl Facing {
+    /// The mask at a vertex whose rest-pose normal is `normal`.
+    #[must_use]
+    pub fn weight(&self, normal: Vec3) -> f32 {
+        ramp(self.from, self.to, normal.dot(self.dir.normalize_or(Vec3::NEG_Y)))
+    }
+}
+
 /// A [`Marking`] mask of `count` rings along each part, each `width` of its period wide (0..1),
 /// edges blurred over `soft` of a period; `offset` shifts them along (periods).
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -224,7 +232,7 @@ impl Marking {
         let At { pos, normal, height, along, tip } = *at;
         let mut w = 1.0;
         if let Some(facing) = self.facing {
-            w *= ramp(facing.from, facing.to, normal.dot(facing.dir.normalize_or(Vec3::NEG_Y)));
+            w *= facing.weight(normal);
         }
         if let Some((from, to)) = self.height {
             w *= ramp(from, to, height);

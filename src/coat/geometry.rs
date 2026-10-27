@@ -27,7 +27,6 @@ pub struct CoatMeshes {
 /// across thousands of mobs).
 #[must_use]
 pub fn build_coat_meshes(coat: &Coat, anatomy: &Anatomy, body: &BodyMeshData, level: LodLevel) -> CoatMeshes {
-    let masks = coat.coverage(anatomy);
     let detail = match level {
         LodLevel::Hero => 1.0,
         LodLevel::Near | LodLevel::Far => 0.0,
@@ -37,12 +36,12 @@ pub fn build_coat_meshes(coat: &Coat, anatomy: &Anatomy, body: &BodyMeshData, le
     // Fur hides fine surface detail, so shells use a simplified copy of the skin: every shell
     // multiplies its triangle count and they are alpha-tested.
     let shell_source = (shells > 0).then(|| simplify(body, SHELL_SOURCE_RATIO, 0.01));
-    let lengths = coat.fur_lengths(anatomy);
+    let masks = coat.covering_masks(anatomy);
     CoatMeshes {
-        shells: shell_source.and_then(|s| fur_shells(&s, masks.fur, shells, &lengths)),
+        shells: shell_source.and_then(|s| fur_shells(&s, coat, &masks, shells)),
         feathers: feathers
             .filter(|_| detail > 0.0)
-            .and_then(|f| feather_cards(body, anatomy, level, masks.feathers, &f, f.density * detail)),
+            .and_then(|f| feather_cards(body, anatomy, level, &f, f.density * detail)),
     }
 }
 
@@ -59,18 +58,18 @@ fn full_bone(anatomy: &Anatomy, level: LodLevel, j: u16) -> Option<BoneId> {
     }
 }
 
-/// Skin triangles whose vertices are all complete and in `mask`.
-fn covered_triangles(body: &BodyMeshData, mask: RegionMask) -> impl Iterator<Item = [u32; 3]> + '_ {
-    body.slot_triangles(MaterialSlot::Skin).copied().filter(move |t| {
-        t.iter().all(|v| body.vertex(v.idx()).is_some() && region_of(body, v.idx()).is_some_and(|r| mask.contains(r)))
-    })
+/// Skin triangles whose vertices are all complete and mostly covered by covering `kind`
+/// (0 scales, 1 fur, 2 feathers: the [`annotate`]d coverage weights).
+fn covered_triangles(body: &BodyMeshData, kind: usize) -> impl Iterator<Item = [u32; 3]> + '_ {
+    let covered = move |v: u32| body.coverage.get(v.idx()).and_then(|c| c.get(kind)).is_some_and(|w| *w > 0.5);
+    body.slot_triangles(MaterialSlot::Skin).copied().filter(move |t| t.iter().all(|v| body.vertex(v.idx()).is_some() && covered(*v)))
 }
 
-/// `shells` offset copies of the covered skin; `uvs` = (shell height (0..1], the fur's length at
-/// the vertex in metres, by its region from `lengths`).
+/// `shells` offset copies of the fur-covered skin; `uvs` = (shell height (0..1], the fur's length
+/// at the vertex in metres).
 #[must_use]
-fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32, lengths: &[f32; RegionId::MAX]) -> Option<BodyMeshData> {
-    let tris: Vec<[u32; 3]> = covered_triangles(body, mask).collect();
+fn fur_shells(body: &BodyMeshData, coat: &Coat, masks: &[RegionMask], shells: u32) -> Option<BodyMeshData> {
+    let tris: Vec<[u32; 3]> = covered_triangles(body, 1).collect();
     if tris.is_empty() {
         return None;
     }
@@ -94,7 +93,7 @@ fn fur_shells(body: &BodyMeshData, mask: RegionMask, shells: u32, lengths: &[f32
             out.push_vertex(v);
             // No coverage on shells or cards: a skin mesh with coverage puts coat weights in UV0
             // in place of these coordinates (see `BodyMeshData::build_mesh`).
-            let length = region_of(body, i).and_then(|r| lengths.get(usize::from(r.0))).copied().unwrap_or(0.0);
+            let length = region_of(body, i).map_or(0.0, |r| coat.cover_at(masks, r, v.normal).fur_length);
             out.uvs.push([h, length]);
             out.flow.push(body.flow.get(i).copied().unwrap_or([0.0, 0.0, 1.0, 0.0]));
             out.push_from(body, i, &[VertexChannel::Paint, VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
@@ -124,16 +123,12 @@ pub fn annotate(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: 
         body.flow = prior_flow;
         return;
     }
-    let masks = coat.coverage(anatomy);
+    let masks = coat.covering_masks(anatomy);
     let model = anatomy.skeleton.rest_model();
     let skin = body.skin_vertex_mask();
     let vertex_coat = |i: usize| -> Option<(Vec3, Vec3)> {
         let region = region_of(body, i)?;
-        let cover = Vec3::new(
-            f32::from(u8::from(masks.scales.contains(region))),
-            f32::from(u8::from(masks.fur.contains(region))),
-            f32::from(u8::from(masks.feathers.contains(region))),
-        );
+        let cover = coat.cover_at(&masks, region, *body.normals.get(i)?).weights;
         Some((cover, flow_axis(anatomy, &model, level, region, body.joints.get(i)?[0])))
     };
     let (mut cover, mut flow): (Vec<Vec3>, Vec<Vec3>) = skin
@@ -246,7 +241,6 @@ fn feather_cards(
     body: &BodyMeshData,
     anatomy: &Anatomy,
     level: LodLevel,
-    mask: RegionMask,
     feathers: &Feathers,
     density: f32,
 ) -> Option<BodyMeshData> {
@@ -254,7 +248,7 @@ fn feather_cards(
     let mut rng = fork(0, "feathers");
     let lift = feathers.lift_deg.to_radians();
     let mut out = BodyMeshData::default();
-    for [a, b, c] in covered_triangles(body, mask) {
+    for [a, b, c] in covered_triangles(body, 2) {
         let (Some(va), Some(vb), Some(vc)) = (body.vertex(a.idx()), body.vertex(b.idx()), body.vertex(c.idx())) else {
             continue;
         };

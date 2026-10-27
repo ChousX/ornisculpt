@@ -9,6 +9,8 @@
     coverings: [
         // Hair: fine, dense strands over the sculpted cap and ponytail.
         (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/ponytail")]), kind: Fur((length: 0.03, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
+        // ... and over the top and back of the skull itself, to the hairline.
+        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.03))),
     ],
     markings: [
         (color: (0.78, 0.54, 0.46), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),

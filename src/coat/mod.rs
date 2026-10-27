@@ -63,6 +63,19 @@ impl Default for Coat {
 pub struct Covering {
     pub regions: RegionSelector,
     pub kind: CoveringKind,
+    /// Only the parts of its regions facing a direction (rest pose), faded like a marking's: a
+    /// hairline over the top and back of a skull, a pale belly's fur under a dark back's. Where
+    /// it fades out, whatever covered the surface before shows.
+    #[serde(default)]
+    pub facing: Option<Facing>,
+}
+
+/// What covers one vertex: the weights of scales, fur and feathers (0..1 each) and the fur's
+/// length there.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cover {
+    pub weights: Vec3,
+    pub fur_length: f32,
 }
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -216,23 +229,39 @@ impl Coat {
         self.first(|k| if let CoveringKind::Feathers(f) = k { Some(*f) } else { None })
     }
 
-    /// Each region's fur length in metres: the last fur covering that takes the region, or the
-    /// first fur covering's length where none does. Fur coverings differ in length only; density,
-    /// thickness, tip colour and shell count come from the first (one shell set per mob).
+    /// Each covering's region mask on `anatomy`, for [`cover_at`](Self::cover_at).
     #[must_use]
-    pub fn fur_lengths(&self, anatomy: &Anatomy) -> [f32; RegionId::MAX] {
-        let mut lengths = [self.fur().map_or(0.0, |f| f.length); RegionId::MAX];
-        for c in &self.coverings {
-            if let CoveringKind::Fur(f) = c.kind {
-                let mask = c.regions.mask(anatomy);
-                for (id, l) in (0u8..).zip(lengths.iter_mut()) {
-                    if mask.contains(RegionId(id)) {
-                        *l = f.length;
-                    }
-                }
+    pub fn covering_masks(&self, anatomy: &Anatomy) -> Vec<RegionMask> {
+        self.coverings.iter().map(|c| c.regions.mask(anatomy)).collect()
+    }
+
+    /// What covers a vertex of `region` whose rest-pose normal is `normal`: the coverings in
+    /// order, each taking the surface where its regions and facing hold (a later one over an
+    /// earlier one where it fades). Fur coverings differ in length only; density, thickness, tip
+    /// colour and shell count come from the first (one shell set per mob), which also gives the
+    /// length where no fur covering holds.
+    #[must_use]
+    pub fn cover_at(&self, masks: &[RegionMask], region: RegionId, normal: Vec3) -> Cover {
+        let mut cover = Cover { weights: Vec3::ZERO, fur_length: self.fur().map_or(0.0, |f| f.length) };
+        for (c, mask) in self.coverings.iter().zip(masks) {
+            if !mask.contains(region) {
+                continue;
             }
+            let w = c.facing.map_or(1.0, |f| f.weight(normal));
+            if w <= 0.0 {
+                continue;
+            }
+            let own = match c.kind {
+                CoveringKind::Scales(_) => Vec3::X,
+                CoveringKind::Fur(f) => {
+                    cover.fur_length = (f.length - cover.fur_length).mul_add(w, cover.fur_length);
+                    Vec3::Y
+                }
+                CoveringKind::Feathers(_) => Vec3::Z,
+            };
+            cover.weights = cover.weights.lerp(own, w);
         }
-        lengths
+        cover
     }
 
     /// The shader uniform for this coat on `anatomy`.
@@ -320,9 +349,9 @@ mod tests {
     fn mixed() -> Coat {
         Coat {
             coverings: vec![
-                Covering { regions: kinds(&[RegionKind::Neck, RegionKind::Skull, RegionKind::Jaw, RegionKind::TailBase, RegionKind::TailTip]), kind: CoveringKind::Fur(Fur::default()) },
-                Covering { regions: kinds(&[RegionKind::TorsoFront, RegionKind::TorsoMid, RegionKind::TorsoRear, RegionKind::Belly]), kind: CoveringKind::Feathers(Feathers::default()) },
-                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()) },
+                Covering { regions: kinds(&[RegionKind::Neck, RegionKind::Skull, RegionKind::Jaw, RegionKind::TailBase, RegionKind::TailTip]), kind: CoveringKind::Fur(Fur::default()), facing: None },
+                Covering { regions: kinds(&[RegionKind::TorsoFront, RegionKind::TorsoMid, RegionKind::TorsoRear, RegionKind::Belly]), kind: CoveringKind::Feathers(Feathers::default()), facing: None },
+                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()), facing: None },
             ],
             ..Coat::default()
         }
@@ -427,8 +456,8 @@ mod tests {
         let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
         let coat = Coat {
             coverings: vec![
-                Covering { regions: RegionSelector::All, kind: CoveringKind::Fur(Fur::default()) },
-                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()) },
+                Covering { regions: RegionSelector::All, kind: CoveringKind::Fur(Fur::default()), facing: None },
+                Covering { regions: RegionSelector::Role(LimbRole::Locomotor), kind: CoveringKind::Scales(Scales::default()), facing: None },
             ],
             ..Coat::default()
         };
