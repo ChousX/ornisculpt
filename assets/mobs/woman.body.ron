@@ -11,13 +11,13 @@
         name: "torso",
         kind: Torso((
             // Pelvis → waist → ribcage → shoulders: an hourglass, the hips as wide as the shoulders.
-            chain: (segments: 3, length: 0.5, radius: (curve: [(0.0, 0.84), (0.12, 1.1), (0.26, 1.02), (0.44, 0.74), (0.62, 0.86), (0.8, 0.94), (0.92, 0.88), (1.0, 0.5)], scale: 0.125, cross: Ellipse(aspect: 1.55))),
+            chain: (segments: 3, length: 0.5, radius: (curve: [(0.0, 0.84), (0.12, 1.12), (0.26, 1.02), (0.44, 0.7), (0.62, 0.84), (0.8, 0.94), (0.92, 0.88), (1.0, 0.5)], scale: 0.125, cross: Ellipse(aspect: 1.55))),
             belly: 0.08,
         )),
         offset: (rotate_deg: (-90.0, 0.0, 0.0)),
         detail: Always,
         stamps: Custom([
-            (at: Surface(t: 0.72, around_deg: 148.0), kind: Fat, size: (0.5, 0.56, 0.4), depth: 0.05, mirror: true, form: Drop, hang: 0.15, soft: (firmness: 0.9)), // breast
+            (at: Surface(t: 0.72, around_deg: 148.0), kind: Fat, size: (0.54, 0.6, 0.42), depth: 0.06, mirror: true, form: Drop, hang: 0.15, soft: (firmness: 0.9)), // breast
             (at: Surface(t: 0.85, around_deg: 150.0), kind: Muscle, size: (0.6, 0.4, 0.35), depth: 0.03, mirror: true), // pectoral above it
             (at: Surface(t: 0.93, around_deg: 100.0), kind: Muscle, size: (0.3, 0.3, 0.3), depth: 0.035, mirror: true), // top of the shoulder
             (at: Surface(t: 0.97, around_deg: 30.0), kind: Muscle, size: (0.5, 0.35, 0.3), depth: 0.05, mirror: true),  // trapezius
@@ -31,7 +31,7 @@
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 2, length: 0.11, radius: (curve: [(0.0, 1.2), (0.4, 0.95), (1.0, 0.9)], scale: 0.046, cross: Ellipse(aspect: 1.05))))),
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.115, radius: (curve: [(0.0, 1.2), (0.4, 0.95), (1.0, 0.9)], scale: 0.043, cross: Ellipse(aspect: 1.05))))),
                 attach: End,
                 offset: (rotate_deg: (8.0, 0.0, 0.0)),
                 detail: Always,
@@ -42,21 +42,22 @@
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.073, 0.102, 0.093)),
+                            skull: (shape: Ellipsoid, size: (0.073, 0.099, 0.093)),
                             snout: 0.0,
                             jaw: Some((segments: 1, length: 0.085)),
                             eye_spacing: 0.42,
-                            face: Some((nose: 0.8, brow: 0.55, cheekbones: 1.0, lips: 0.9, chin: 0.95, jaw_width: 0.9, cheeks: 1.1)),
+                            face: Some((nose: 0.75, brow: 0.6, cheekbones: 1.2, lips: 1.0, chin: 0.8, jaw_width: 0.72, cheeks: 1.0)),
                         )),
                         offset: (rotate_deg: (-6.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.0125, sclera: 1.0)), attach: Eye, mirror: true),
                             (name: "ear", kind: Mass((shape: Flap, size: (0.017, 0.03, 0.032), blend: 0.004)), attach: Ear, mirror: true),
-                            // Short hair: a cap over the crown and back of the skull.
-                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.078, 0.09, 0.096), blend: 0.008)), attach: Crown, offset: (translate: (0.0, -0.124, -0.016))),
-                            // Hair gathered at the back of the head into a ponytail; it swings.
-                            (name: "ponytail", kind: Chain((role: Tail, chain: (segments: 3, length: 0.32, radius: (curve: [(0.0, 0.9), (0.2, 1.0), (1.0, 0.35)], scale: 0.026), curl: 40.0, blend: 0.012))), attach: Crown, offset: (translate: (0.0, -0.04, -0.085), rotate_deg: (-168.0, 0.0, 0.0))),
+                            // Long hair: a cap over the crown, sides and back of the skull, and the
+                            // fall behind the shoulders to the middle of the back.
+                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.08, 0.1, 0.098), blend: 0.01)), attach: Crown, offset: (translate: (0.0, -0.128, -0.026))),
+                            // A broad, flat sheet hanging from the back of the head; it swings.
+                            (name: "fall", kind: Chain((role: Tail, chain: (segments: 3, length: 0.36, radius: (curve: [(0.0, 1.0), (0.3, 1.1), (1.0, 0.7)], scale: 0.055, cross: Ellipse(aspect: 3.0)), curl: 30.0, blend: 0.02))), attach: Crown, offset: (translate: (0.0, -0.05, -0.09), rotate_deg: (-168.0, 0.0, 0.0))),
                         ],
                     ),
                 ],
@@ -90,8 +91,8 @@
                     chain: (segments: 2, length: 0.55, ratios: [1.0, 0.78], radius: (curve: [(0.0, 1.15), (0.3, 0.92), (0.5, 0.72), (0.62, 0.78), (1.0, 0.5)], scale: 0.046)),
                     role: Manipulator,
                     end: Hand(palm: 0.088),
-                    joints: Some((plan: Arm, swing: 0.0, flex: [12.0])),
-                    splay_deg: 6.0,
+                    joints: Some((plan: Arm, swing: 3.0, flex: [20.0])),
+                    splay_deg: 5.0,
                 )),
                 attach: Surface(t: 0.9, around_deg: 92.0),
                 // Turned so the palms face the thighs.
@@ -101,7 +102,7 @@
                 children: [
                     (
                         name: "fingers",
-                        kind: Digits((count: 5, chain: (segments: 3, length: 0.088, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0083), curl: 420.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.008)))),
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.088, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0083), curl: 600.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.008)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),

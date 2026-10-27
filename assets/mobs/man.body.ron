@@ -49,7 +49,7 @@
                             snout: 0.0,
                             jaw: Some((segments: 1, length: 0.085)),
                             eye_spacing: 0.42,
-                            face: Some((nose: 1.0, brow: 1.2, cheekbones: 0.8, lips: 0.55, chin: 1.25, jaw_width: 1.05, cheeks: 1.0)),
+                            face: Some((nose: 0.85, brow: 1.0, cheekbones: 1.05, lips: 0.7, chin: 1.1, jaw_width: 0.95, cheeks: 0.9)),
                         )),
                         offset: (rotate_deg: (-6.0, 0.0, 0.0)),
                         detail: Always,
@@ -82,8 +82,8 @@
                     chain: (segments: 2, length: 0.6, ratios: [1.0, 0.78], radius: (curve: [(0.0, 1.2), (0.25, 1.0), (0.5, 0.74), (0.62, 0.84), (1.0, 0.54)], scale: 0.052)),
                     role: Manipulator,
                     end: Hand(palm: 0.1),
-                    joints: Some((plan: Arm, swing: 0.0, flex: [12.0])),
-                    splay_deg: 6.0,
+                    joints: Some((plan: Arm, swing: 3.0, flex: [18.0])),
+                    splay_deg: 5.0,
                 )),
                 attach: Surface(t: 0.9, around_deg: 92.0),
                 // Turned so the palms face the thighs.
@@ -93,7 +93,7 @@
                 children: [
                     (
                         name: "fingers",
-                        kind: Digits((count: 5, chain: (segments: 3, length: 0.095, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0095), curl: 420.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.009)))),
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.095, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0095), curl: 600.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.009)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),

@@ -8,7 +8,7 @@
     iris: (0.3, 0.24, 0.1),
     coverings: [
         // Hair: fine, dense strands over the sculpted cap and ponytail.
-        (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/ponytail")]), kind: Fur((length: 0.03, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
+        (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/fall")]), kind: Fur((length: 0.03, density: 2400.0, thickness: 0.95, tip: 0.1, shells: 10))),
         // ... and over the top and back of the skull itself, to the hairline.
         (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.03))),
         // Eyebrows on the front of the brow ridges; lashes on the lid rims.
@@ -24,9 +24,9 @@
         // Auburn hair over the crown, back of the head and the ponytail.
         // Lids a little darker and warmer; brows and lashes the hair's auburn, lashes darker.
         (color: (0.7, 0.44, 0.4), regions: Kind(Eyelid), strength: 0.5),
-        (color: (0.3, 0.12, 0.05), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
+        (color: (0.42, 0.2, 0.08), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
         (color: (0.14, 0.07, 0.04), regions: Kind(Eyelid), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.55, to: 0.85)), strength: 0.85),
-        (color: (0.3, 0.12, 0.05), regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/ponytail")])),
-        (color: (0.3, 0.12, 0.05), regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2))),
+        (color: (0.42, 0.2, 0.08), regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/fall")])),
+        (color: (0.42, 0.2, 0.08), regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2))),
     ],
 )
