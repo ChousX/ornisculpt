@@ -1,8 +1,9 @@
-// A thick woman, for testing soft tissue (`soft-tissue` feature) at its extreme: very wide hips
-// and thighs that meet, a full belly, heavy breasts and buttocks on strong muscle (fat 1.3, muscle
-// 0.9). Silhouette after the references in research_notes/ (female base meshes). Built like the
-// curvy plan: the biped's proportions (stature 1.6 m), torso standing (t = 0 pelvis, 1 shoulders;
-// around 0 = back, 90 = left, 180 = front).
+// A thick woman, stature 1.6 m: very wide hips and thighs that meet, a full belly that hangs a
+// little, heavy breasts and buttocks on strong muscle (fat 1.3, muscle 0.9), full upper arms and
+// calves, a soft neck. Silhouette after the references in research_notes/ (female base meshes),
+// on the biped's segment fractions (docs/design/anatomy-reference.md); the woman's head, hair
+// and hands. Also the soft-tissue test body (`soft-tissue` feature) at its extreme. The torso
+// stands vertically (t = 0 pelvis, 1 shoulders; around 0 = back, 90 = left, 180 = front).
 //
 // Stamp heights stay under about half their footprint (fat tone scales height by 1.5·fat and the
 // footprint by 1 + fat/2, so depth ≤ ~0.47·size at this tone): steeper bulges break the mesh.
@@ -16,49 +17,58 @@
         kind: Torso((
             // Pelvis → waist → chest → shoulders: hips flaring wide from a narrow waist, a broad
             // ribcage. The pelvis end narrows so its cap tucks between the thighs.
-            chain: (segments: 3, length: 0.49, radius: (curve: [(0.0, 0.85), (0.12, 1.45), (0.26, 1.12), (0.44, 0.62), (0.56, 0.72), (0.72, 0.98), (0.88, 0.9), (1.0, 0.5)], scale: 0.13, cross: Ellipse(aspect: 1.7))),
-            belly: 0.22,
+            chain: (segments: 3, length: 0.49, radius: (curve: [(0.0, 0.88), (0.12, 1.55), (0.26, 1.18), (0.44, 0.64), (0.56, 0.76), (0.72, 1.0), (0.88, 0.92), (1.0, 0.5)], scale: 0.13, cross: Ellipse(aspect: 1.7))),
+            belly: 0.24,
         )),
         offset: (rotate_deg: (-90.0, 0.0, 0.0)),
         detail: Always,
         // Upright torso stamps (`tone::upright_torso_stamps`) with softer muscle, plus breasts and
         // the fat of the hips and buttocks. Around 0 = back, 90 = left, 180 = front.
         stamps: Custom([
-            (at: Surface(t: 0.7, around_deg: 146.0), kind: Fat, size: (0.58, 0.72, 0.47), depth: 0.06, mirror: true, form: Drop, hang: 0.25, soft: (firmness: 0.8, damping: 0.7)), // breast: a hanging teardrop, soft
+            (at: Surface(t: 0.7, around_deg: 146.0), kind: Fat, size: (0.6, 0.74, 0.48), depth: 0.07, mirror: true, form: Drop, hang: 0.25, soft: (firmness: 0.8, damping: 0.7)), // breast: a hanging teardrop, soft
             (at: Surface(t: 0.82, around_deg: 150.0), kind: Muscle, size: (0.65, 0.42, 0.35), depth: 0.06, mirror: true), // pectoral above it
             (at: Surface(t: 0.93, around_deg: 100.0), kind: Muscle, size: (0.34, 0.32, 0.3), depth: 0.06, mirror: true),  // top of the shoulder
+            (at: Surface(t: 0.97, around_deg: 30.0), kind: Muscle, size: (0.5, 0.35, 0.3), depth: 0.04, mirror: true),    // trapezius
             (at: Surface(t: 0.55, around_deg: 15.0), kind: Muscle, size: (0.18, 1.5, 0.22), depth: 0.05, mirror: true),   // ridges beside the spine
             (at: Surface(t: 0.8, around_deg: 35.0), kind: Landmark, size: (0.28, 0.4, 0.15), depth: 0.02, mirror: true),  // shoulder blade
-            (at: Surface(t: 0.1, around_deg: 40.0), kind: Fat, size: (0.56, 0.8, 0.52), depth: -0.08, mirror: true, form: Drop, hang: 0.25, soft: (firmness: 0.9)), // buttock: a broad teardrop sunk in the body, full at the fold
+            (at: Surface(t: 0.1, around_deg: 38.0), kind: Fat, size: (0.62, 0.85, 0.55), depth: -0.04, mirror: true, form: Drop, hang: 0.25, soft: (firmness: 0.9)), // buttock: a broad teardrop, full at the fold
             (at: Surface(t: 0.1, around_deg: 0.0), kind: Hollow, size: (0.07, 0.75, 0.3), depth: 1.2, mirror: false),   // the cleft between the cheeks
             (at: Surface(t: 0.14, around_deg: 30.0), kind: Muscle, size: (0.55, 0.5, 0.42), depth: 0.07, mirror: true), // glute under it
-            (at: Surface(t: 0.13, around_deg: 85.0), kind: Fat, size: (0.62, 0.8, 0.5), depth: 0.2, mirror: true),     // hip flare
-            (at: Surface(t: 0.3, around_deg: 180.0), kind: Fat, size: (0.62, 0.42, 0.36), depth: 0.08, mirror: false, form: Mass, hang: 0.3, soft: (firmness: 0.75, damping: 0.8)), // belly, hanging a little
-            (at: Surface(t: 0.32, around_deg: 105.0), kind: Fat, size: (0.36, 0.4, 0.34), depth: 0.03, mirror: true),  // love handle, slight
+            (at: Surface(t: 0.13, around_deg: 85.0), kind: Fat, size: (0.7, 0.85, 0.55), depth: 0.25, mirror: true),    // hip flare
+            (at: Surface(t: 0.3, around_deg: 180.0), kind: Fat, size: (0.66, 0.46, 0.38), depth: 0.1, mirror: false, form: Mass, hang: 0.3, soft: (firmness: 0.75, damping: 0.8)), // belly, hanging a little
+            (at: Surface(t: 0.32, around_deg: 105.0), kind: Fat, size: (0.4, 0.42, 0.36), depth: 0.05, mirror: true),   // love handle
+            (at: Surface(t: 0.5, around_deg: 60.0), kind: Fat, size: (0.4, 0.5, 0.3), depth: 0.03, mirror: true),      // soft back under the arm
         ]),
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 2, length: 0.12, radius: (curve: [(0.0, 1.15), (0.4, 0.9), (1.0, 0.85)], scale: 0.045)))),
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.1, radius: (curve: [(0.0, 1.25), (0.4, 1.0), (1.0, 0.92)], scale: 0.05, cross: Ellipse(aspect: 1.05))))),
                 attach: End,
+                offset: (rotate_deg: (8.0, 0.0, 0.0)),
                 detail: Always,
+                stamps: Custom([
+                    (at: Surface(t: 0.5, around_deg: 150.0), kind: Muscle, size: (0.25, 1.3, 0.25), depth: 0.03, mirror: true), // sternocleidomastoid
+                    (at: Surface(t: 0.85, around_deg: 180.0), kind: Fat, size: (0.5, 0.4, 0.3), depth: 0.03, mirror: false),    // soft under the chin
+                ]),
                 children: [
                     (
                         name: "head",
-                        // Head ≈ 1/7.5 of stature: ~0.21 tall, 0.15 wide, 0.19 deep.
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.075, 0.1, 0.09)),
+                            skull: (shape: Ellipsoid, size: (0.074, 0.102, 0.093)),
                             snout: 0.0,
-                            jaw: Some((segments: 1, length: 0.08)),
+                            jaw: Some((segments: 1, length: 0.085)),
                             eye_spacing: 0.42,
-                            // A modest nose: the default (1.0) reads as a beak in profile at this size.
-                            face: Some((nose: 0.7)),
+                            // Softer, rounder face than the woman's: fuller cheeks, a smaller chin.
+                            face: Some((nose: 0.8, brow: 0.55, cheekbones: 0.9, lips: 0.9, chin: 0.85, jaw_width: 0.95, cheeks: 1.2)),
                         )),
+                        offset: (rotate_deg: (-6.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.012, sclera: 1.0)), attach: Eye, mirror: true),
-                            // Ears: rigid flaps flat on the sides of the head, ~6 cm tall.
-                            (name: "ear", kind: Mass((shape: Flap, size: (0.016, 0.027, 0.03), blend: 0.004)), attach: Ear, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.0125, sclera: 1.0)), attach: Eye, mirror: true),
+                            (name: "ear", kind: Mass((shape: Flap, size: (0.017, 0.03, 0.032), blend: 0.004)), attach: Ear, mirror: true),
+                            // Hair: a cap over the crown and back of the skull, gathered into a ponytail.
+                            (name: "hair", kind: Mass((shape: Ellipsoid, size: (0.079, 0.09, 0.096), blend: 0.008)), attach: Crown, offset: (translate: (0.0, -0.124, -0.016))),
+                            (name: "ponytail", kind: Chain((role: Tail, chain: (segments: 3, length: 0.32, radius: (curve: [(0.0, 0.9), (0.2, 1.0), (1.0, 0.35)], scale: 0.026), curl: 40.0, blend: 0.012))), attach: Crown, offset: (translate: (0.0, -0.04, -0.085), rotate_deg: (-168.0, 0.0, 0.0))),
                         ],
                     ),
                 ],
@@ -68,7 +78,7 @@
                 // the hip's outer width. Knees softly bent at rest.
                 name: "leg",
                 kind: Limb((
-                    chain: (segments: 2, length: 0.8, ratios: [1.0, 1.0], radius: (curve: [(0.0, 1.25), (0.2, 1.1), (0.44, 0.7), (0.56, 0.66), (0.72, 0.64), (1.0, 0.38)], scale: 0.1)),
+                    chain: (segments: 2, length: 0.8, ratios: [1.0, 1.0], radius: (curve: [(0.0, 1.3), (0.2, 1.15), (0.44, 0.74), (0.56, 0.7), (0.72, 0.7), (1.0, 0.44)], scale: 0.105)),
                     role: Locomotor,
                     stance: Plantigrade,
                     end: Foot(length: 0.22),
@@ -79,9 +89,10 @@
                 stamps: Custom([
                     (at: Surface(t: 0.22, around_deg: 180.0), kind: Muscle, size: (0.62, 1.8, 0.32), depth: 0.07),  // front of thigh
                     (at: Surface(t: 0.22, around_deg: 0.0), kind: Muscle, size: (0.6, 1.8, 0.3), depth: 0.06),      // back of thigh
-                    (at: Surface(t: 0.16, around_deg: 260.0), kind: Fat, size: (0.6, 0.9, 0.45), depth: 0.16),     // outer thigh
-                    (at: Surface(t: 0.16, around_deg: 100.0), kind: Fat, size: (0.5, 0.9, 0.42), depth: 0.13),    // inner thigh
-                    (at: Surface(t: 0.66, around_deg: 0.0), kind: Muscle, size: (0.55, 1.3, 0.34), depth: 0.09),   // calf
+                    (at: Surface(t: 0.16, around_deg: 260.0), kind: Fat, size: (0.62, 0.9, 0.46), depth: 0.19),    // outer thigh
+                    (at: Surface(t: 0.16, around_deg: 100.0), kind: Fat, size: (0.52, 0.9, 0.42), depth: 0.15),    // inner thigh
+                    (at: Surface(t: 0.66, around_deg: 0.0), kind: Muscle, size: (0.55, 1.3, 0.34), depth: 0.1),    // calf
+                    (at: Surface(t: 0.6, around_deg: 90.0), kind: Fat, size: (0.45, 1.0, 0.34), depth: 0.06),      // inner calf
                     (at: Surface(t: 0.5, around_deg: 270.0), kind: Landmark, size: (0.3, 0.4, 0.2), depth: 0.015), // outer knee
                 ]),
                 attach: Surface(t: 0.05, around_deg: 112.0),
@@ -90,24 +101,27 @@
                 detail: Always,
             ),
             (
-                // Upper arm 0.186, forearm 0.146 of stature; hands reach mid-thigh.
+                // Upper arm 0.186, forearm 0.146 of stature; hands reach mid-thigh. Full upper arms.
                 name: "arm",
                 kind: Limb((
-                    chain: (segments: 2, length: 0.535, ratios: [1.0, 0.78], radius: (curve: [(0.0, 1.15), (0.45, 0.8), (1.0, 0.5)], scale: 0.05)),
+                    chain: (segments: 2, length: 0.535, ratios: [1.0, 0.78], radius: (curve: [(0.0, 1.25), (0.3, 1.05), (0.5, 0.74), (0.62, 0.78), (1.0, 0.5)], scale: 0.054)),
                     role: Manipulator,
-                    end: Hand(palm: 0.09),
+                    end: Hand(palm: 0.088),
                     joints: Some((plan: Arm, swing: 0.0, flex: [15.0])),
-                    splay_deg: 6.0,
+                    splay_deg: 8.0,
                 )),
+                stamps: Custom([
+                    (at: Surface(t: 0.2, around_deg: 0.0), kind: Fat, size: (0.6, 1.0, 0.4), depth: 0.08),   // the soft back of the upper arm
+                ]),
                 attach: Surface(t: 0.9, around_deg: 92.0),
-                offset: (translate: (0.0, 0.035, 0.0)),
+                // Turned so the palms face the thighs.
+                offset: (translate: (0.0, 0.04, 0.0), rotate_deg: (0.0, 75.0, 0.0)),
                 mirror: true,
                 detail: Always,
                 children: [
                     (
                         name: "fingers",
-                        // Three phalanges, shortening toward the tip (~0.45 / 0.3 / 0.25 of the finger).
-                        kind: Digits((count: 5, chain: (segments: 3, length: 0.085, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0085), curl: 160.0), spread_deg: 16.0, opposable: true)),
+                        kind: Digits((count: 5, chain: (segments: 3, length: 0.085, ratios: [1.0, 0.66, 0.55], radius: (curve: [(0.0, 1.0), (1.0, 0.8)], scale: 0.0088), curl: 420.0), spread_deg: 4.0, opposable: true, tip: Some((kind: Nail, size: 0.008)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),
@@ -115,5 +129,5 @@
             ),
         ],
     ),
-    tone: (muscle: 0.9, fat: 1.3),
+    tone: (muscle: 0.9, fat: 1.3, landmarks: 0.3),
 )
