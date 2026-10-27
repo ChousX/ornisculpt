@@ -770,6 +770,19 @@ impl HeadParams {
         MuzzleLine { start, dir, tip: start + dir * self.snout, base: m.base.max(min) * s.y, end: m.tip.max(min) * s.y }
     }
 
+    /// The eyeball radius a face's lids are built round: plans size their `Eye` hard parts to match.
+    fn eye_radius(&self) -> f32 {
+        self.skull.size.y * 0.11
+    }
+
+    /// A face's eye centre in the skull frame (X left, Y forward, Z down): halfway from crown to
+    /// chin, set back into the lids so the cornea stands about level with the brow and cheek.
+    fn face_eye(&self) -> Vec3 {
+        let s = self.skull.size;
+        let cy = s.z * 0.8;
+        Vec3::new(s.x * self.eye_spacing.max(0.2), self.eye_radius().mul_add(-0.3, s.z.mul_add(0.72, cy)), -s.y * 0.05)
+    }
+
     /// The head's fixed slots in model space, from its `skull` frame (Y forward, Z down, X left)
     /// and the snout's centre `line`.
     fn slots(&self, skull: Transform, line: &MuzzleLine) -> [(AttachSlot, Transform); 7] {
@@ -786,7 +799,7 @@ impl HeadParams {
         let (eye, ear, nose, mouth) = if self.face.is_some() {
             let cy = s.z * 0.8;
             (
-                place(Vec3::new(eye_x, s.z.mul_add(0.72, cy), -s.y * 0.05), eye_dir, Vec3::Z),
+                place(self.face_eye(), eye_dir, Vec3::Z),
                 place(Vec3::new(s.x * 0.92, s.z.mul_add(-0.1, cy), s.y * 0.2), Vec3::new(0.25, -0.3, -1.0), Vec3::X),
                 place(Vec3::new(0.0, s.z.mul_add(1.12, cy), s.y * 0.3), Vec3::Y, Vec3::Z),
                 place(Vec3::new(0.0, s.z.mul_add(0.95, cy), s.y * 0.55), Vec3::Y, Vec3::Z),
@@ -845,7 +858,8 @@ impl PartBuild for HeadParams {
                 b.base(bone, shape, moved(skull, Vec3::new(0.0, s.z * 1.2, s.y * 0.15)), s.y * 0.3, snout_region);
             }
             let jaw_region = if self.jaw.is_some() { Some(b.region(RegionKind::Jaw, cx.side)?) } else { None };
-            let jaw = build_face(b, face, skull, s, bone, skull_region, snout_region, jaw_region)?;
+            let eye = (self.face_eye(), self.eye_radius());
+            let jaw = build_face(b, face, skull, s, eye, bone, skull_region, snout_region, jaw_region)?;
             if let Some((jaw, chin)) = jaw {
                 fixed.push(slot(AttachSlot::Jaw, jaw, chin));
             }
@@ -1012,9 +1026,10 @@ impl Muzzle<'_> {
 }
 
 /// A primate face on the skull (`skull` frame: X left, Y forward, Z down; `s` = skull half
-/// extents: x width, y height, z depth): midface, brow, cheekbones, nose and upper lip on the
-/// skull bone; mandible, chin and lower lip on a jaw bone hinged in front of the ears. Returns
-/// the jaw bone and its chin frame.
+/// extents: x width, y height, z depth): midface, brow, cheekbones, eyelids, nose and upper lip
+/// on the skull bone; mandible, chin and lower lip on a jaw bone hinged in front of the ears.
+/// `eye` is the left eye's centre in the skull frame and the eyeball's radius. Returns the jaw
+/// bone and its chin frame.
 ///
 /// Layout, in skull radii down from the skull centre (crown at -1): brow -0.22, eyes -0.05
 /// (halfway from crown to chin), nose base 0.32, mouth 0.55, chin 0.95 — the facial thirds.
@@ -1024,6 +1039,7 @@ fn build_face(
     face: &FaceParams,
     skull: Transform,
     s: Vec3,
+    eye: (Vec3, f32),
     bone: BoneId,
     skull_region: RegionId,
     face_region: RegionId,
@@ -1069,6 +1085,20 @@ fn build_face(
         let scale = face.cheeks.sqrt();
         for x in [0.55, -0.55] {
             b.base(bone, ellipsoid(0.3 * scale, 0.34, 0.3 * scale), at(p(x, 0.44, 0.5)), rz * 0.25, face_region);
+        }
+    }
+    // Eyelids: a thin skin shell round each eyeball (a mound just bigger than the ball, blended
+    // into the face), then the almond opening cut through its front, a little below the ball's
+    // centre, that the cornea shows through. Last, so nothing fills the opening back in.
+    let (eye_at, eye_r) = eye;
+    if face.eyelids > 0.0 {
+        for x in [1.0, -1.0] {
+            let centre = Vec3::new(x * eye_at.x, eye_at.y, eye_at.z);
+            let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.3, eye_r * 1.1, eye_r * 1.25) };
+            b.base(bone, lids, at(centre), rz * 0.12, face_region);
+            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.55 * face.eyelids.min(2.0)) };
+            let model = at(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05));
+            b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, face_region);
         }
     }
 

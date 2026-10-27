@@ -349,11 +349,15 @@ pub struct FaceParams {
     /// Fullness of the cheeks (the buccal fat and masseter between cheekbone and jaw): `0.0` =
     /// none, leaving a hollow under each cheekbone; `1.0` = a typical adult's.
     pub cheeks: f32,
+    /// How far open the eyes are: the lids wrap each eyeball, split by an almond opening this tall
+    /// (`1.0` = a relaxed adult's, about 0.55 of the eyeball's radius; `0.0` = no lids, the bare
+    /// eyeball on the face). The lids are built for an eyeball 0.11 of the skull's height in radius.
+    pub eyelids: f32,
 }
 
 impl Default for FaceParams {
     fn default() -> Self {
-        Self { nose: 1.0, brow: 1.0, cheekbones: 1.0, lips: 1.0, chin: 1.0, jaw_width: 1.0, cheeks: 0.0 }
+        Self { nose: 1.0, brow: 1.0, cheekbones: 1.0, lips: 1.0, chin: 1.0, jaw_width: 1.0, cheeks: 0.0, eyelids: 1.0 }
     }
 }
 
