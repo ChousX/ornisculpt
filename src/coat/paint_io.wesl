@@ -1,6 +1,7 @@
 // The main pass's vertex output: Bevy's `VertexOutput` plus the coat markings' colour
-// (`COAT_PAINT`: linear RGB, and in w how much it replaces the coat's own colours). The fragment
-// stage hands Bevy its own struct back through `bevy_output`.
+// (`COAT_PAINT`: linear RGB, and in w how much it replaces the coat's own colours) and the
+// surface's baked data (`COAT_DATA`). The fragment stage hands Bevy its own struct back through
+// `bevy_output`.
 
 import bevy_pbr::render::forward_io::VertexOutput;
 
@@ -22,6 +23,11 @@ struct CoatOutput {
     @location(7) @interpolate(flat) visibility_range_dither: i32,
     @if(COAT_PAINT)
     @location(8) paint: vec4<f32>,
+    // The surface's baked data (COAT_DATA): cavity (0 open .. 1 deep crease), signed curvature
+    // (0.5 flat), position along the part (0 root .. 1 tip), and the tone layer (0 base, 1 muscle,
+    // 2 landmark, 3 fat).
+    @if(COAT_DATA)
+    @location(9) surface: vec4<f32>,
 }
 
 fn bevy_output(o: CoatOutput) -> VertexOutput {
@@ -42,6 +48,23 @@ fn bevy_output(o: CoatOutput) -> VertexOutput {
 @if(VISIBILITY_RANGE_DITHER)
     out.visibility_range_dither = o.visibility_range_dither;
     return out;
+}
+
+// The surface's baked data (see `CoatOutput::surface`): flat, open skin without it.
+fn surface_of(o: CoatOutput) -> vec4<f32> {
+    var surface = vec4<f32>(0.0, 0.5, 0.5, 0.0);
+@if(COAT_DATA)
+    surface = o.surface;
+    return surface;
+}
+
+// Unpacks `ATTRIBUTE_MOB_DATA` for `CoatOutput::surface`.
+fn unpack_surface(data: vec2<u32>) -> vec4<f32> {
+    let cavity = f32((data.x >> 8u) & 0xffu) / 255.0;
+    let curvature = f32((data.x >> 16u) & 0xffu) / 255.0;
+    let along = f32((data.x >> 24u) & 0xffu) / 255.0;
+    let layer = f32((data.y >> 8u) & 0xffu);
+    return vec4<f32>(cavity, curvature, along, layer);
 }
 
 // The markings' colour (w = how much of it shows), zero without any.

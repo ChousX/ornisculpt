@@ -73,6 +73,9 @@ struct CoatVertex {
     @location(11) soft: vec4<u32>,
     @if(COAT_PAINT)
     @location(12) paint: vec4<f32>,
+    // `ATTRIBUTE_MOB_DATA`: region | cavity << 8 | curvature << 16 | limb_t << 24, bone | layer << 8.
+    @if(COAT_DATA)
+    @location(13) data: vec2<u32>,
 };
 
 // The vertex in mesh space before skinning: shells pushed out, crowd skin inflated.

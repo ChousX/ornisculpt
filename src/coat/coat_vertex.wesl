@@ -6,7 +6,7 @@
 
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import package::coat::deform::{CoatVertex, deform};
-import package::coat::paint_io::CoatOutput;
+import package::coat::paint_io::{CoatOutput, unpack_surface};
 
 @vertex
 fn vertex(v: CoatVertex) -> CoatOutput {
@@ -25,5 +25,7 @@ fn vertex(v: CoatVertex) -> CoatOutput {
     out.instance_index = v.instance_index;
 @if(COAT_PAINT)
     out.paint = v.paint;
+@if(COAT_DATA)
+    out.surface = unpack_surface(v.data);
     return out;
 }

@@ -19,7 +19,7 @@ import bevy_pbr::render::{
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::FragmentOutput,
 };
-import package::coat::paint_io::{CoatOutput, bevy_output, paint_of};
+import package::coat::paint_io::{CoatOutput, bevy_output, paint_of, surface_of};
 
 struct CoatUniform {
     base: vec4<f32>,
@@ -201,8 +201,16 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
     var reflectance = pbr.material.reflectance;
 
     let pixel = pixel_size(in.world_position.xyz);
+    let surface = surface_of(out_v);
 
 @if(COAT_SKIN) {
+    // Creases baked from the field (armpits, between the fingers, under the jaw, the lids): less
+    // sky and less highlight reach them, and bare skin flushes where it folds.
+    let cavity = surface.x;
+    pbr.diffuse_occlusion *= 1.0 - 0.45 * cavity;
+    pbr.specular_occlusion *= 1.0 - 0.6 * cavity;
+    color *= mix(vec3<f32>(1.0), vec3<f32>(1.0, 0.84, 0.78), cavity * (1.0 - max(weights.x, weights.y)) * 0.7);
+
     // Scales. Hero: computed for every pixel when the coat has any (uniform branch) so the
     // derivatives used for relief stay in uniform control flow. Crowd: no relief, so uncovered
     // pixels skip it and covered ones use the cheaper search.
