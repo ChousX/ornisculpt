@@ -8,9 +8,9 @@
     iris: (0.3, 0.24, 0.1),
     coverings: [
         // Hair: fine, dense strands over the sculpted cap and ponytail.
-        (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/fall")]), kind: Fur((length: 0.03, density: 2400.0, thickness: 0.95, tip: 0.1, shells: 10))),
+        (regions: Or([Part("torso/neck/head/hair"), Part("torso/neck/head/fall")]), kind: Fur((length: 0.03, density: 2400.0, thickness: 0.95, tip: 0.1, shells: 10, cards: Some((length: 0.22, width: 0.022, density: 3200.0, lift_deg: 5.0, droop: 0.9))))),
         // ... and over the top and back of the skull itself, to the hairline.
-        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.03))),
+        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.03, cards: Some((length: 0.22, width: 0.022, density: 3200.0, lift_deg: 5.0, droop: 0.9))))),
         // Eyebrows on the front of the brow ridges; lashes on the lid rims.
         (regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75)), kind: Fur((length: 0.006))),
         (regions: Kind(Eyelid), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.55, to: 0.85)), kind: Fur((length: 0.008))),

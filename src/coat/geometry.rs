@@ -4,7 +4,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::{Coat, Feathers};
+use super::{Coat, Feathers, HairCards};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, RegionId, RegionKind, RegionMask};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 use crate::random::{RngExt, fork};
@@ -18,6 +18,7 @@ const SHELL_SOURCE_RATIO: f32 = 0.2;
 pub struct CoatMeshes {
     pub shells: Option<BodyMeshData>,
     pub feathers: Option<BodyMeshData>,
+    pub hair: Option<BodyMeshData>,
 }
 
 /// Builds the coat geometry for one LOD level.
@@ -42,6 +43,7 @@ pub fn build_coat_meshes(coat: &Coat, anatomy: &Anatomy, body: &BodyMeshData, le
         feathers: feathers
             .filter(|_| detail > 0.0)
             .and_then(|f| feather_cards(body, anatomy, level, &f, f.density * detail)),
+        hair: (detail > 0.0).then(|| hair_cards(body, anatomy, level, coat, &masks)).flatten(),
     }
 }
 
@@ -100,6 +102,92 @@ fn fur_shells(body: &BodyMeshData, coat: &Coat, masks: &[RegionMask], shells: u3
         }
         let base = (k - 1) * n;
         out.indices.extend(tris.iter().flat_map(|t| t.map(|v| base + remap.get(v.idx()).copied().unwrap_or(0))));
+    }
+    out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot: MaterialSlot::Skin });
+    Some(out)
+}
+
+/// Hair cards over the skin whose fur covering has them (`density` per m² of it), deterministic
+/// per body: each card is three strips end to end, combed down the skin (gravity projected onto
+/// the surface; along the flow where the skin faces straight up or down) and turning toward
+/// plumb by its tip, rooted on and skinned like the skin under it. uv = (across, along).
+#[must_use]
+fn hair_cards(body: &BodyMeshData, anatomy: &Anatomy, level: LodLevel, coat: &Coat, masks: &[RegionMask]) -> Option<BodyMeshData> {
+    const SEGMENTS: u32 = 3;
+    let model = anatomy.skeleton.rest_model();
+    let mut rng = fork(0, "hair");
+    let mut out = BodyMeshData::default();
+    let cards_at = |v: u32| -> Option<HairCards> {
+        let i = v.idx();
+        let d = coat.cover_at(masks, region_of(body, i)?, *body.normals.get(i)?);
+        (d.weights.y > 0.5).then_some(d.cards).flatten()
+    };
+    for [a, b, c] in body.slot_triangles(MaterialSlot::Skin).copied() {
+        let (Some(cards), Some(_), Some(_)) = (cards_at(a), cards_at(b), cards_at(c)) else { continue };
+        let (Some(va), Some(vb), Some(vc)) = (body.vertex(a.idx()), body.vertex(b.idx()), body.vertex(c.idx())) else {
+            continue;
+        };
+        let (pa, pb, pc) = (va.position, vb.position, vc.position);
+        let flow = flow_axis(anatomy, &model, level, MobVertexData::unpack(va.mob_data).region, va.joints[0]);
+        let area = (pb - pa).cross(pc - pa).length() * 0.5;
+        let expected = area * cards.density;
+        let count = expected.floor().sat_u32() + u32::from(rng.random::<f32>() < expected.fract());
+        let lift = cards.lift_deg.to_radians();
+        for _ in 0..count {
+            let (mut bu, mut bv) = (rng.random::<f32>(), rng.random::<f32>());
+            if bu + bv > 1.0 {
+                (bu, bv) = (1.0 - bu, 1.0 - bv);
+            }
+            let root = pa + (pb - pa) * bu + (pc - pa) * bv;
+            let normal = (va.normal * (1.0 - bu - bv) + vb.normal * bu + vc.normal * bv).normalize_or(Vec3::Y);
+            // Combed down the skin and back from the face: gravity in the tangent plane, swept
+            // backward (-Z) the more the skin faces forward, else the flow. Skin facing well
+            // forward (a forehead) grows none: no fringe over the eyes.
+            let facing = normal.z.max(0.0);
+            if facing > 0.3 {
+                continue;
+            }
+            let comb = Vec3::NEG_Y + Vec3::NEG_Z * facing * 1.5;
+            let down = comb - normal * comb.dot(normal);
+            let along = if down.length() > 0.3 {
+                down.normalize_or(flow)
+            } else {
+                (flow - normal * flow.dot(normal)).normalize_or(normal.any_orthonormal_vector())
+            };
+            let side = normal.cross(along).normalize_or(Vec3::X);
+            let length = cards.length * 0.4f32.mul_add(rng.random::<f32>(), 0.8);
+            let half = cards.width * 0.5;
+            let yaw = Quat::from_axis_angle(normal, 0.3f32.mul_add(-rng.random::<f32>(), 0.15));
+            let start = yaw * (along * lift.cos() + normal * lift.sin());
+            let base = out.positions.len().clamp_u32();
+            let mut at = root - normal * 0.002;
+            let mut dir = start;
+            let mut push = |at: Vec3, dir: Vec3, k: u32, w: f32| {
+                let t = k.to_f32() / SEGMENTS.to_f32();
+                let s = yaw * side;
+                for (position, uv) in [(at - s * w, [0.0, t]), (at + s * w, [1.0, t])] {
+                    out.push_vertex(Vertex { position, normal, ..va });
+                    out.uvs.push(uv);
+                    out.flow.push(dir.extend(0.0).to_array());
+                    out.push_from(body, a.idx(), &[VertexChannel::Paint, VertexChannel::Cor, VertexChannel::Muscle, VertexChannel::Soft]);
+                }
+            };
+            push(at, dir, 0, half);
+            for k in 1..=SEGMENTS {
+                let t = k.to_f32() / SEGMENTS.to_f32();
+                // Each strip turns further toward plumb, most of the way in the first.
+                dir = start.lerp(Vec3::NEG_Y, cards.droop.clamp(0.0, 1.0) * t.sqrt()).normalize_or(start);
+                at += dir * (length / SEGMENTS.to_f32());
+                push(at, dir, k, half * 0.4f32.mul_add(-t, 1.0));
+            }
+            for k in 0..SEGMENTS {
+                let r = base + k * 2;
+                out.indices.extend([r, r + 1, r + 2, r + 1, r + 3, r + 2]);
+            }
+        }
+    }
+    if out.indices.is_empty() {
+        return None;
     }
     out.submeshes.push(Submesh { indices: 0..out.indices.len().clamp_u32(), slot: MaterialSlot::Skin });
     Some(out)

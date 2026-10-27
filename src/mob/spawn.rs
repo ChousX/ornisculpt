@@ -82,7 +82,7 @@ impl FromWorld for PlaceholderAssets {
 }
 
 /// Spawns a body's meshes for one LOD level: one per material slot (with `extra` and `slot_extra`),
-/// then its coat geometry (fur shells, feather cards; with `extra`, never casting shadows).
+/// then its coat geometry (fur shells, feather and hair cards; with `extra`, never casting shadows).
 fn spawn_level_meshes(
     commands: &mut Commands,
     mob: Entity,
@@ -96,7 +96,7 @@ fn spawn_level_meshes(
         commands.spawn((MobVisual, LodMesh(level), Mesh3d(mesh.clone()), MeshMaterial3d(m.get(*slot)), extra.clone(), slot_extra.clone(), ChildOf(mob)));
     }
     let c = level.pick(&body.coat_meshes);
-    for (mesh, material) in [(&c.shells, &m.shell), (&c.feathers, &m.feather)] {
+    for (mesh, material) in [(&c.shells, &m.shell), (&c.feathers, &m.feather), (&c.hair, &m.hair)] {
         if let Some(mesh) = mesh {
             commands.spawn((
                 MobVisual,

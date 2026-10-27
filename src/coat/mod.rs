@@ -15,6 +15,7 @@ mod markings;
 mod material;
 
 pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
+pub use self::HairCards as Hair;
 pub use markings::{Bands, Facing, Marking, Patches};
 pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
@@ -70,12 +71,13 @@ pub struct Covering {
     pub facing: Option<Facing>,
 }
 
-/// What covers one vertex: the weights of scales, fur and feathers (0..1 each) and the fur's
-/// length there.
+/// What covers one vertex: the weights of scales, fur and feathers (0..1 each), the fur's
+/// length there, and the hair cards of the fur covering holding there, if it has them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cover {
     pub weights: Vec3,
     pub fur_length: f32,
+    pub cards: Option<HairCards>,
 }
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -117,11 +119,37 @@ pub struct Fur {
     pub tip: f32,
     /// Shells at hero detail (near detail uses a third, far none).
     pub shells: u8,
+    /// Long hair: cards hanging from the covered skin at hero detail, besides the shells.
+    pub cards: Option<HairCards>,
 }
 
 impl Default for Fur {
     fn default() -> Self {
-        Self { length: 0.025, density: 500.0, thickness: 0.7, tip: 0.4, shells: 12 }
+        Self { length: 0.025, density: 500.0, thickness: 0.7, tip: 0.4, shells: 12, cards: None }
+    }
+}
+
+/// Hair cards: flat strips hanging from the skin under gravity (combed down the surface, then
+/// drooping free), a few strands painted on each, ragged at the tip. Hero detail only.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct HairCards {
+    /// Card length in metres.
+    pub length: f32,
+    /// Card width in metres.
+    pub width: f32,
+    /// Cards per square metre of covered skin.
+    pub density: f32,
+    /// Angle the cards lift off the skin at the root, degrees.
+    pub lift_deg: f32,
+    /// How far each card turns from lying along the skin toward hanging straight down by its
+    /// tip (0 = along the skin, 1 = plumb).
+    pub droop: f32,
+}
+
+impl Default for HairCards {
+    fn default() -> Self {
+        Self { length: 0.12, width: 0.012, density: 2500.0, lift_deg: 8.0, droop: 0.6 }
     }
 }
 
@@ -242,7 +270,7 @@ impl Coat {
     /// length where no fur covering holds.
     #[must_use]
     pub fn cover_at(&self, masks: &[RegionMask], region: RegionId, normal: Vec3) -> Cover {
-        let mut cover = Cover { weights: Vec3::ZERO, fur_length: self.fur().map_or(0.0, |f| f.length) };
+        let mut cover = Cover { weights: Vec3::ZERO, fur_length: self.fur().map_or(0.0, |f| f.length), cards: None };
         for (c, mask) in self.coverings.iter().zip(masks) {
             if !mask.contains(region) {
                 continue;
@@ -255,6 +283,9 @@ impl Coat {
                 CoveringKind::Scales(_) => Vec3::X,
                 CoveringKind::Fur(f) => {
                     cover.fur_length = (f.length - cover.fur_length).mul_add(w, cover.fur_length);
+                    if w > 0.5 {
+                        cover.cards = f.cards;
+                    }
                     Vec3::Y
                 }
                 CoveringKind::Feathers(_) => Vec3::Z,

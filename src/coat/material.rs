@@ -35,6 +35,8 @@ pub enum CoatLayer {
     Cloth,
     /// Wing sheets: membranes, flight feathers, insect wings (sheet kind in vertex colour w).
     Wing,
+    /// Hair cards (uv = across, along).
+    Hair,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -128,6 +130,7 @@ impl MaterialExtension for CoatExt {
             CoatLayer::Hard => defs.push("COAT_HARD".into()),
             CoatLayer::Cloth => defs.push("COAT_CLOTH".into()),
             CoatLayer::Wing => defs.push("COAT_WING".into()),
+            CoatLayer::Hair => defs.push("COAT_HAIR".into()),
         }
         // `ORNISCULPT_LINEAR_SKIN`: average joint matrices instead of dual quaternions (for comparing).
         if std::env::var_os("ORNISCULPT_LINEAR_SKIN").is_some() {

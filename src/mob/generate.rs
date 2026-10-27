@@ -178,6 +178,7 @@ pub struct GeneratedBody {
 pub struct CoatMeshHandles {
     pub shells: Option<Handle<Mesh>>,
     pub feathers: Option<Handle<Mesh>>,
+    pub hair: Option<Handle<Mesh>>,
 }
 
 /// One material per surface kind, for one skinning path (hero or crowd).
@@ -188,6 +189,7 @@ pub struct SlotMaterials {
     pub eye: Handle<MobMaterial>,
     pub shell: Handle<MobMaterial>,
     pub feather: Handle<MobMaterial>,
+    pub hair: Handle<MobMaterial>,
     pub cloth: Handle<MobMaterial>,
     pub wing: Handle<MobMaterial>,
 }
@@ -214,7 +216,7 @@ impl GeneratedBody {
     }
 }
 
-/// Builds the ten materials of a body + coat.
+/// Builds the materials of a body + coat (one per surface kind, hero and crowd).
 fn body_materials(
     coat: &Coat,
     outfit: &Outfit,
@@ -247,6 +249,7 @@ fn body_materials(
             eye: mat(eye.uniform(anatomy), eye.roughness, CoatLayer::Hard),
             shell: mat(skin_uniform, 0.9, CoatLayer::Shell),
             feather: mat(skin_uniform, 0.6, CoatLayer::Feather),
+            hair: mat(skin_uniform, 0.5, CoatLayer::Hair),
             cloth: mat(skin_uniform, 0.85, CoatLayer::Cloth),
             wing: mat(skin_uniform, 0.6, CoatLayer::Wing),
         }
@@ -581,7 +584,11 @@ pub(super) fn finish_generation(
         let full = bindposes.add(SkinnedMeshInverseBindposes::from(full_bind));
         let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
         let lods = ready.lods.map(|split| LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect()));
-        let coat_meshes = ready.coats.map(|[shells, feathers]| CoatMeshHandles { shells: shells.map(|m| meshes.add(m)), feathers: feathers.map(|m| meshes.add(m)) });
+        let coat_meshes = ready.coats.map(|[shells, feathers, hair]| CoatMeshHandles {
+            shells: shells.map(|m| meshes.add(m)),
+            feathers: feathers.map(|m| meshes.add(m)),
+            hair: hair.map(|m| meshes.add(m)),
+        });
         let body_materials = body_materials(&out.coat, &out.outfit, &out.anatomy, &crowd_skin.bones, &mut materials);
         let handle = bodies.add(GeneratedBody {
             key,
@@ -616,8 +623,8 @@ pub(super) fn apply_worker_budget(budget: Res<GenBudget>, cache: Res<GenCache>, 
 pub(super) struct BodyMeshes {
     /// Per level, one mesh per material slot.
     lods: [Vec<(MaterialSlot, Mesh)>; 3],
-    /// Per level, fur shells and feather cards.
-    coats: [[Option<Mesh>; 2]; 3],
+    /// Per level, fur shells, feather cards and hair cards.
+    coats: [[Option<Mesh>; 3]; 3],
 }
 
 impl BodyMeshes {
@@ -630,7 +637,7 @@ impl BodyMeshes {
         });
         let coats = LodLevel::ALL.map(|level| {
             let m = level.pick(&out.coat_meshes);
-            [&m.shells, &m.feathers].map(|d| d.as_ref().map(|d| if crowd(level) { d.to_crowd_mesh() } else { d.to_bevy_mesh() }))
+            [&m.shells, &m.feathers, &m.hair].map(|d| d.as_ref().map(|d| if crowd(level) { d.to_crowd_mesh() } else { d.to_bevy_mesh() }))
         });
         Self { lods, coats }
     }

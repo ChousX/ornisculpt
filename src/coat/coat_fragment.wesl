@@ -4,6 +4,7 @@
 // - COAT_SHELL: fur strands, alpha-tested per shell height (uv = shell height, fur length).
 // - COAT_FEATHER: feather vane shape on a card, alpha-tested.
 // - COAT_HARD: plain colour.
+// - COAT_HAIR: hair cards (uv = across, along), strands alpha-tested.
 // Coat markings (COAT_PAINT, `paint_io.wesl`) replace the base colour where they show.
 // Vertex inputs: colour = rest-pose position (xyz) + scale weight (w); on the skin, uv = (fur,
 // feather) weights; world_tangent = coat flow (xyz) + distance along it in metres (w, skin only).
@@ -397,6 +398,34 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
     let shaft = select(1.0, 0.6, across < 0.02);
     let body = mix(secondary, base, smoothstep(0.0, 0.6, uv.y));
     color = mix(body, accent, smoothstep(0.8, 1.0, uv.y) * coat.feathers.z) * barbs * shaft;
+}
+
+@if(COAT_HAIR) {
+    // Hair cards: a few strands across each card, each ending at its own length so the tip is
+    // ragged; darker toward the roots; a sheen along the strands.
+    var uv = vec2<f32>(0.5, 0.5);
+@if(VERTEX_UVS_A) {
+    uv = in.uv;
+}
+    let strands = 8.0;
+    let s = uv.x * strands;
+    let cell = floor(rest / 0.02);
+    let id = hash1(vec3<f32>(floor(s), cell.x + cell.z * 7.0, cell.y));
+    let end = mix(0.55, 1.0, id);
+    let thin = smoothstep(end, end - 0.35, uv.y) * mix(0.5, 1.0, hash1(vec3<f32>(floor(s) + 3.0, cell.z, cell.x)));
+    let across = abs(fract(s) - 0.5) * 2.0;
+    if uv.y > end || across > thin || uv.y < 0.0 {
+        discard;
+    }
+    color = base * mix(0.6, 1.08, id) * mix(0.7, 1.0, uv.y) * (1.0 - 0.3 * surface.y);
+    roughness = 0.4;
+    reflectance = vec3<f32>(0.25);
+    if lights.n_directional_lights > 0u {
+        let light = lights.directional_lights[0];
+        let hv = normalize(light.direction_to_light + pbr.V);
+        let th = dot(T, hv);
+        glow = mix(base, vec3<f32>(1.0), 0.5) * pow(sqrt(max(0.0, 1.0 - th * th)), 50.0) * 0.12 * light.color.rgb * view.exposure;
+    }
 }
 
 @if(COAT_HARD && VERTEX_UVS_A) {
