@@ -773,7 +773,7 @@ impl HeadParams {
 
     /// The eyeball radius a face's lids are built round: plans size their `Eye` hard parts to match.
     fn eye_radius(&self) -> f32 {
-        self.skull.size.y * 0.11
+        self.skull.size.y * 0.115
     }
 
     /// A face's eye centre in the skull frame (X left, Y forward, Z down): halfway from crown to
@@ -1076,37 +1076,48 @@ fn build_face(
 
     // Midface (upper jaw and cheeks): the front of the face from under the eyes to the mouth.
     b.base(bone, ellipsoid(0.56, 0.38, 0.4), at(p(0.0, 0.5, 0.3)), rz * 0.3, face_region);
-    // Brow ridges: one over each eye, meeting over the nose bridge where the blend joins them.
+    // A frame at `q` turned about the face's forward axis so a feature's outer end rises: `side`
+    // is +1 on the left, -1 on the right.
+    let tilted = |q: Vec3, side: f32, degrees: f32| {
+        let t = at(q);
+        Transform { rotation: t.rotation * Quat::from_rotation_y((side * degrees).to_radians()), ..t }
+    };
+    // Brow ridges: one over each eye, meeting over the nose bridge where the blend joins them,
+    // each arched a little (the outer end higher); thinner with a lighter brow.
     if face.brow > 0.0 {
-        for x in [0.3, -0.3] {
-            b.base(bone, ellipsoid(0.32 * face.brow.sqrt(), 0.13, 0.07), at(p(x, 0.84, -0.22)), rz * 0.12, regions.brow);
+        let thick = 0.07 * face.brow.clamp(0.5, 1.5).sqrt();
+        for side in [1.0, -1.0] {
+            b.base(bone, ellipsoid(0.32 * face.brow.sqrt(), 0.13, thick), tilted(p(side * 0.3, 0.84, -0.22), side, 7.0), rz * 0.12, regions.brow);
         }
     }
+    // Cheekbones: high and lateral, the widest point of the face.
     if face.cheekbones > 0.0 {
         let scale = face.cheekbones.sqrt();
-        for x in [0.6, -0.6] {
-            b.base(bone, ellipsoid(0.24 * scale, 0.2 * scale, 0.11), at(p(x, 0.62, 0.17)), rz * 0.2, face_region);
+        for x in [0.66, -0.66] {
+            b.base(bone, ellipsoid(0.22 * scale, 0.2 * scale, 0.1), at(p(x, 0.6, 0.12)), rz * 0.2, face_region);
         }
     }
-    // Nose: a ridge from between the eyes down and out to the tip, nostril wings either side.
+    // Nose: a narrow ridge from between the eyes down and out to the tip, nostril wings either
+    // side.
     if face.nose > 0.0 {
         let tip = p(0.0, 0.25f32.mul_add(face.nose, 0.9), 0.27);
         let (model, len) = span(p(0.0, 0.86, -0.1), tip);
-        b.base(bone, PrimShape::RoundCone { r0: rz * 0.05, r1: rz * 0.085, len }, model, rz * 0.04, face_region);
-        for x in [0.14, -0.14] {
-            let wing = PrimShape::Ellipsoid { radii: Vec3::new(rz * 0.045, rz * 0.055, rz * 0.045) };
+        b.base(bone, PrimShape::RoundCone { r0: rz * 0.04, r1: rz * 0.062, len }, model, rz * 0.04, face_region);
+        for x in [0.13, -0.13] {
+            let wing = PrimShape::Ellipsoid { radii: Vec3::new(rz * 0.04, rz * 0.05, rz * 0.04) };
             b.base(bone, wing, at(tip + Vec3::new(x * rx, -ry * 0.17, rz * 0.03)), rz * 0.08, face_region);
         }
     }
     if face.lips > 0.0 {
-        // Small blends: the lips' region (and so their colour) stays on the lips.
-        b.base(bone, ellipsoid(0.27, 0.06 * face.lips.sqrt(), 0.045), at(p(0.0, 0.86, 0.465)), rz * 0.03, regions.lip);
+        // Small blends: the lips' region (and so their colour) stays on the lips. The upper lip is
+        // the thinner; the lower, fuller, sits a little behind it.
+        b.base(bone, ellipsoid(0.26, 0.052 * face.lips.sqrt(), 0.042), at(p(0.0, 0.86, 0.475)), rz * 0.03, regions.lip);
     }
     // Cheeks: the soft fill under each cheekbone, out to the jaw.
     if face.cheeks > 0.0 {
         let scale = face.cheeks.sqrt();
-        for x in [0.55, -0.55] {
-            b.base(bone, ellipsoid(0.3 * scale, 0.34, 0.3 * scale), at(p(x, 0.44, 0.5)), rz * 0.35, face_region);
+        for x in [0.48, -0.48] {
+            b.base(bone, ellipsoid(0.27 * scale, 0.34, 0.3 * scale), at(p(x, 0.46, 0.5)), rz * 0.35, face_region);
         }
     }
     // Eyelids: a thin skin shell round each eyeball (a mound just bigger than the ball, blended
@@ -1119,8 +1130,8 @@ fn build_face(
             // A small blend: a wide one would swell the lids a few millimetres clear of the ball.
             let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.25, eye_r * 1.05, eye_r * 1.2) };
             b.base(bone, lids, at(centre), rz * 0.06, regions.eyelid);
-            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.45 * face.eyelids.min(2.0)) };
-            let model = at(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05));
+            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.1, eye_r * 0.9, eye_r * 0.45 * face.eyelids.min(2.0)) };
+            let model = tilted(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05), x, 5.0);
             b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, regions.eyelid);
         }
     }
@@ -1140,18 +1151,22 @@ fn build_face(
         b.base(jaw, shape, model, blend, jaw_region);
     };
     // Each side of the jaw, from its angle below the ear to the chin.
-    for x in [0.7 * face.jaw_width, -0.7 * face.jaw_width] {
+    for x in [0.6 * face.jaw_width, -0.6 * face.jaw_width] {
         let (model, len) = span(p(x, -0.05, 0.72), chin + Vec3::new(x * rx * 0.3, -ry * 0.15, -rz * 0.05));
-        add(PrimShape::RoundCone { r0: rz * 0.1, r1: rz * 0.09, len }, model, rz * 0.4);
+        add(PrimShape::RoundCone { r0: rz * 0.1, r1: rz * 0.065, len }, model, rz * 0.4);
     }
     // Floor of the mouth, so the jaw is solid underneath.
-    add(ellipsoid(0.42, 0.38, 0.14), at(p(0.0, 0.45, 0.67)), rz * 0.3);
+    add(ellipsoid(0.36, 0.36, 0.12), at(p(0.0, 0.45, 0.67)), rz * 0.3);
+    // The chin: a rounded boss, narrower than the jaw.
     if face.chin > 0.0 {
         let scale = face.chin.sqrt();
-        add(ellipsoid(0.27 * scale, 0.12 * scale, 0.11), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.08)), rz * 0.1);
+        add(ellipsoid(0.2 * scale, 0.11 * scale, 0.1), at(chin - Vec3::new(0.0, ry * 0.06, rz * 0.07)), rz * 0.12);
     }
     if face.lips > 0.0 {
-        b.base(jaw, ellipsoid(0.24, 0.06 * face.lips.sqrt(), 0.045), at(p(0.0, 0.83, 0.565)), rz * 0.03, regions.lip);
+        b.base(jaw, ellipsoid(0.24, 0.062 * face.lips.sqrt(), 0.052), at(p(0.0, 0.84, 0.565)), rz * 0.03, regions.lip);
+        // The groove between the lower lip and the chin.
+        let groove = ellipsoid(0.2, 0.05, 0.045);
+        b.primitive(jaw, groove, at(p(0.0, 0.91, 0.66)), rz * 0.07, PrimOp::Subtract, PrimLayer::Base, jaw_region);
     }
     Ok(Some((jaw, moved(jaw_model, Vec3::Y * jaw_len))))
 }

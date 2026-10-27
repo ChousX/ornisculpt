@@ -351,7 +351,7 @@ pub struct FaceParams {
     pub cheeks: f32,
     /// How far open the eyes are: the lids wrap each eyeball, split by an almond opening this tall
     /// (`1.0` = a relaxed adult's, 0.45 of the eyeball's radius; `0.0` = no lids, the bare
-    /// eyeball on the face). The lids are built for an eyeball 0.11 of the skull's height in radius.
+    /// eyeball on the face). The lids are built for an eyeball 0.115 of the skull's height in radius.
     pub eyelids: f32,
 }
 
