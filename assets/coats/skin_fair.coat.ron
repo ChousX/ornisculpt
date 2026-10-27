@@ -12,12 +12,19 @@
         (regions: Part("torso/neck/head/hair"), kind: Fur((length: 0.022, density: 2200.0, thickness: 0.85, tip: 0.15, shells: 12))),
         // ... and over the top and back of the skull itself, to the hairline.
         (regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2)), kind: Fur((length: 0.022))),
+        // Eyebrows on the front of the brow ridges; lashes on the lid rims.
+        (regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75)), kind: Fur((length: 0.007))),
+        (regions: Kind(Eyelid), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.55, to: 0.85)), kind: Fur((length: 0.007))),
     ],
     markings: [
         // Hands and feet slightly redder.
         (color: (0.76, 0.52, 0.44), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
         // Lips and the mouth: rosy at the front of the face's lower part.
-        (color: (0.66, 0.38, 0.34), regions: Or([Kind(Face), Kind(Jaw)]), tip: Some((0.88, 0.97)), strength: 0.7),
+        (color: (0.66, 0.38, 0.34), regions: Kind(Lip), strength: 0.5),
+        // Lids a little darker and warmer; brows and lashes the hair's dark brown.
+        (color: (0.68, 0.44, 0.38), regions: Kind(Eyelid), strength: 0.5),
+        (color: (0.16, 0.1, 0.06), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
+        (color: (0.16, 0.1, 0.06), regions: Kind(Eyelid), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.55, to: 0.85)), strength: 0.8),
         // Hair: dark brown.
         (color: (0.16, 0.1, 0.06), regions: Part("torso/neck/head/hair")),
         (color: (0.16, 0.1, 0.06), regions: Kind(Skull), facing: Some((dir: (0.0, 0.72, -0.7), from: -0.05, to: 0.2))),
