@@ -392,9 +392,21 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
         let iris_edge = mix(-1.0, 0.87, white);
         let iris = smoothstep(iris_edge - soft, iris_edge + soft, c);
         let across = clamp((c - iris_edge) / max(1.0 - iris_edge, 1e-3), 0.0, 1.0);
-        // Darker limbal ring at the rim, lighter toward the pupil.
-        let iris_color = base * mix(0.55, 1.25, smoothstep(0.0, 0.6, across));
-        color = mix(secondary, iris_color, iris);
+        // The iris: a dark limbal ring at the rim, lighter toward the pupil, a pale collarette
+        // ring partway in, and crypts and fibres (noise in the eye's own rest space, fading out
+        // before it can shimmer).
+        var iris_color = base * mix(0.5, 1.3, smoothstep(0.0, 0.7, across));
+        let fine = detail(0.0012, pixel);
+        if fine > 0.0 {
+            let crypt = value3(rest * 900.0);
+            let fibre = value3(rest * 2600.0 + 31.0);
+            iris_color *= mix(1.0, 0.75 + 0.35 * crypt + 0.15 * fibre, fine);
+        }
+        let collarette = exp(-pow((across - 0.5) / 0.09, 2.0));
+        iris_color *= 1.0 + 0.12 * collarette;
+        // The white: duller toward the corners and the back, where the lids shade it.
+        let sclera = secondary * mix(0.7, 1.0, smoothstep(-0.2, 0.7, c));
+        color = mix(sclera, iris_color, iris);
         let pupil_edge = mix(0.9, 0.984, white);
         color = mix(color, accent, smoothstep(pupil_edge - soft, pupil_edge + soft, c));
         roughness = 0.05;

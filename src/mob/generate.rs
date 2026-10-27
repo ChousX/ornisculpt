@@ -225,7 +225,7 @@ fn body_materials(
     let skin_uniform = CoatUniform { cloth: outfit.palette(), ..coat.uniform(anatomy) };
     let hard = Coat::plain(coat.hard, 0.4);
     // Iris (base), white (secondary), pupil (accent); eyes without white show only the iris.
-    let eye = Coat { secondary: [0.86, 0.84, 0.8], accent: [0.01, 0.01, 0.01], ..Coat::plain(coat.iris, 0.1) };
+    let eye = Coat { secondary: [0.82, 0.79, 0.76], accent: [0.01, 0.01, 0.01], ..Coat::plain(coat.iris, 0.1) };
     [false, true].map(|crowd| {
         let mut mat = |uniform: CoatUniform, roughness: f32, layer: CoatLayer| {
             // Thin wing surfaces let light through (a flipped diffuse lobe; the shader varies it).

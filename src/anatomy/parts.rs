@@ -1117,7 +1117,7 @@ fn build_face(
             // A small blend: a wide one would swell the lids a few millimetres clear of the ball.
             let lids = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.25, eye_r * 1.05, eye_r * 1.2) };
             b.base(bone, lids, at(centre), rz * 0.06, regions.eyelid);
-            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.5 * face.eyelids.min(2.0)) };
+            let opening = PrimShape::Ellipsoid { radii: Vec3::new(eye_r * 1.0, eye_r * 0.9, eye_r * 0.45 * face.eyelids.min(2.0)) };
             let model = at(centre + Vec3::new(0.0, eye_r * 0.55, eye_r * 0.05));
             b.primitive(bone, opening, model, eye_r * 0.1, PrimOp::Subtract, PrimLayer::Base, regions.eyelid);
         }
