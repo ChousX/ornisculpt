@@ -231,6 +231,12 @@ fn curl_bend(lens: &[f32], curl: f32) -> impl Fn(usize) -> Quat + '_ {
     move |i| i.checked_sub(1).and_then(|j| lens.get(j)).map_or(Quat::IDENTITY, |len| Quat::from_rotation_x((curl * len).to_radians()))
 }
 
+/// [`ChainParams::segmented`] at full strength: how much narrower a segment is at its joints, how
+/// much it swells between them, and where along it the swell peaks.
+const SEGMENT_PINCH: f32 = 0.32;
+const SEGMENT_SWELL: f32 = 0.08;
+const SEGMENT_SWELL_AT: f32 = 0.4;
+
 /// Emits one bone per segment, and its surface: one round cone, or a few where the profile's
 /// section curves vary (all owned by that bone). Returns bones and axis samples (one at each
 /// bone's start and at each piece's start, plus the tip).
@@ -263,8 +269,22 @@ fn emit_chain(
         // Blend only around the segment's own joint, so a limb hanging beside the body (or a
         // tail beside a leg) stays separate along its length.
         if chain.radius.is_plain() && !matches!(chain.radius.cross, CrossSection::Teardrop { .. }) {
-            b.base(bone, PrimShape::RoundCone { r0, r1, len }, Transform { scale, ..*start }, blend, region(t0));
-            b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * r0));
+            let seg = chain.segmented.clamp(0.0, 1.0);
+            if seg > 0.0 {
+                // Narrow joints at both ends, a slight swell between; joints barely blend.
+                let (ra, rz) = (r0 * seg.mul_add(-SEGMENT_PINCH, 1.0), r1 * seg.mul_add(-SEGMENT_PINCH, 1.0));
+                let rm = r0.lerp(r1, SEGMENT_SWELL_AT) * seg.mul_add(SEGMENT_SWELL, 1.0);
+                let blend = if i == 0 { blend } else { blend.mul_add(1.0 - seg, 0.06 * seg * ra.min(rz)) };
+                let cut = len * SEGMENT_SWELL_AT;
+                b.base(bone, PrimShape::RoundCone { r0: ra, r1: rm, len: cut }, Transform { scale, ..*start }, blend, region(t0));
+                b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * ra));
+                let mid = moved(*start, Vec3::Y * cut);
+                b.base(bone, PrimShape::RoundCone { r0: rm, r1: rz, len: len - cut }, Transform { scale, ..mid }, 0.3 * rm, region(t0));
+                b.weigh_last(Weigh::Continues);
+            } else {
+                b.base(bone, PrimShape::RoundCone { r0, r1, len }, Transform { scale, ..*start }, blend, region(t0));
+                b.anchor_last_blend(Vec3::ZERO, 2.0f32.mul_add(blend, 2.0 * r0));
+            }
             axis.push(AxisSample { t: t0, bone, model: *start, radii: Vec2::new(scale.x, scale.z) * r0, drop: 0.0 });
         } else {
             let sections = emit_sections(b, bone, &chain.radius, start, len, (t0, t1), (r0, r1), blend, region(t0));
@@ -657,21 +677,68 @@ fn limb_end(end: LimbEnd, b: &mut AnatomyBuilder, last: BoneId, tip: Transform, 
             moved(tip, Vec3::Y * palm)
         }
         LimbEnd::Foot { length } => {
-            let m = moved(ground, Vec3::new(0.0, r.mul_add(-0.5, length * 0.5), r * 0.2));
-            prim(b, PrimShape::RoundBox { half: Vec3::new(r * 1.1, length * 0.5, r * 0.45), round: r * 0.4 }, m);
+            // In the ground frame (Y forward, Z down), the sole 0.65 r under the ankle: a narrow
+            // heel behind the ankle; the instep high under the ankle, falling forward to the broad
+            // ball; then the toes, thinner and tapering.
+            let at = |y: f32, z: f32| moved(ground, Vec3::new(0.0, y, z));
+            let sole = r * 0.65;
+            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(r * 0.95, r * 1.05, r * 0.8) }, at(-r * 0.3, r.mul_add(-0.8, sole)));
+            let ball_y = length.mul_add(0.7, -r * 0.5);
+            let ball = Vec3::new(r * 1.45, r * 0.8, r * 0.55);
+            // The instep: from under the ankle down to the ball, flattened top to bottom.
+            let (from, to) = (Vec3::new(0.0, r * 0.1, r.mul_add(-1.2, sole)), Vec3::new(0.0, ball_y, sole - ball.z));
+            let instep = Transform {
+                translation: ground.translation + ground.rotation * from,
+                rotation: ground.rotation * frame_y_z(to - from, Vec3::Z),
+                scale: Vec3::new(1.25, 1.0, 0.75),
+            };
+            b.base(last, PrimShape::RoundCone { r0: r * 1.1, r1: r * 0.75, len: from.distance(to) }, instep, r * 0.45, end_region);
+            b.base(last, PrimShape::Ellipsoid { radii: ball }, at(ball_y, sole - ball.z), r * 0.35, end_region);
+            let toes = Vec3::new(r * 1.25, length * 0.13, r * 0.42);
+            b.base(last, PrimShape::Ellipsoid { radii: toes }, at(length.mul_add(0.85, -r * 0.5), sole - toes.z), r * 0.3, end_region);
             moved(ground, Vec3::new(0.0, r.mul_add(-0.5, length), r * 0.2))
         }
         LimbEnd::Pad => {
             prim(b, PrimShape::Ellipsoid { radii: Vec3::new(r * 1.3, r * 1.4, r * 0.7) }, moved(ground, Vec3::Y * r * 0.4));
             moved(ground, Vec3::new(0.0, r * 1.5, r * 0.2))
         }
-        LimbEnd::Hoof { .. } => {
-            let down = Transform::from_translation(tip.translation).with_rotation(frame_y_z(Vec3::NEG_Y, Vec3::Z));
-            prim(b, PrimShape::RoundCone { r0: r * 1.05, r1: r * 1.3, len: r * 1.2 }, down);
+        LimbEnd::Hoof { split } => {
+            // The wall slopes forward to the toe (about 50° to the ground), so the hoof's axis
+            // leans its toe ahead of the coronet; the sole is wider than the coronet.
+            let lean = (Vec3::NEG_Y + Vec3::Z * 0.45).normalize();
+            let down = Transform::from_translation(tip.translation).with_rotation(frame_y_z(lean, Vec3::Z));
+            if split {
+                // Coronet joining the leg, then two claws with a cleft between them, each a little
+                // turned in at the toe.
+                prim(b, PrimShape::Sphere { r: r * 1.0 }, down);
+                for x in [1.0f32, -1.0] {
+                    let claw = Transform {
+                        translation: down.translation + down.rotation * Vec3::new(x * r * 0.5, r * 0.15, 0.0),
+                        rotation: down.rotation * Quat::from_rotation_z(x * 0.08),
+                        ..down
+                    };
+                    b.base(last, PrimShape::RoundCone { r0: r * 0.58, r1: r * 0.68, len: r * 1.05 }, claw, r * 0.06, end_region);
+                }
+            } else {
+                prim(b, PrimShape::RoundCone { r0: r * 1.05, r1: r * 1.3, len: r * 1.2 }, down);
+            }
             moved(ground, Vec3::Y * r * 1.3)
         }
         LimbEnd::Pincer { size } => {
-            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(size * 0.5, size, size * 0.4) }, moved(tip, Vec3::Y * size));
+            // Palm (propodus): swollen and flattened, the fingers' muscle inside it.
+            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(size * 0.48, size * 0.68, size * 0.3) }, moved(tip, Vec3::Y * size * 0.62));
+            // Fixed finger (pollex) and hinged finger (dactyl), tapering to points, slightly open:
+            // two cones each, bowing toward each other at the tips.
+            for (x, r0) in [(1.0f32, 0.19), (-1.0, 0.17)] {
+                let base = tip.translation + tip.rotation * Vec3::new(x * size * 0.17, size * 1.12, 0.0);
+                let knee = tip.translation + tip.rotation * Vec3::new(x * size * 0.2, size * 1.5, 0.0);
+                let point = tip.translation + tip.rotation * Vec3::new(x * size * 0.07, size * 2.0, 0.0);
+                let up = tip.rotation * Vec3::Z;
+                let seg = |from: Vec3, to: Vec3| Transform::from_translation(from).with_rotation(frame_y_z(to - from, up));
+                let (ra, rb, rc) = (size * r0, size * r0 * 0.62, size * 0.03);
+                b.base(last, PrimShape::RoundCone { r0: ra, r1: rb, len: base.distance(knee) }, seg(base, knee), size * 0.12, end_region);
+                b.base(last, PrimShape::RoundCone { r0: rb, r1: rc, len: knee.distance(point) }, seg(knee, point), size * 0.04, end_region);
+            }
             moved(tip, Vec3::Y * size * 2.0)
         }
         LimbEnd::Blade { length } => {
@@ -996,6 +1063,13 @@ fn build_face(
     }
     if face.lips > 0.0 {
         b.base(bone, ellipsoid(0.26, 0.08 * face.lips.sqrt(), 0.055), at(p(0.0, 0.9, 0.46)), rz * 0.06, face_region);
+    }
+    // Cheeks: the soft fill under each cheekbone, out to the jaw.
+    if face.cheeks > 0.0 {
+        let scale = face.cheeks.sqrt();
+        for x in [0.55, -0.55] {
+            b.base(bone, ellipsoid(0.3 * scale, 0.34, 0.3 * scale), at(p(x, 0.44, 0.5)), rz * 0.25, face_region);
+        }
     }
 
     let Some(jaw_region) = jaw_region else { return Ok(None) };

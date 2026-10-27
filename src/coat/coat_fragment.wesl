@@ -4,6 +4,7 @@
 // - COAT_SHELL: fur strands, alpha-tested per shell height.
 // - COAT_FEATHER: feather vane shape on a card, alpha-tested.
 // - COAT_HARD: plain colour.
+// Coat markings (COAT_PAINT, `paint_io.wesl`) replace the base colour where they show.
 // Vertex inputs: colour = rest-pose position (xyz) + scale weight (w); on the skin, uv = (fur,
 // feather) weights; world_tangent = coat flow (xyz) + distance along it in metres (w, skin only).
 //
@@ -16,8 +17,9 @@ import bevy_pbr::render::{
     mesh_view_bindings::{view, lights},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::FragmentOutput,
 };
+import package::coat::paint_io::{CoatOutput, bevy_output, paint_of};
 
 struct CoatUniform {
     base: vec4<f32>,
@@ -164,9 +166,18 @@ fn bump(n: vec3<f32>, world: vec3<f32>, height: f32) -> vec3<f32> {
 }
 
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    let in = bevy_output(out_v);
     var pbr = pbr_input_from_standard_material(in, is_front);
-    var color = coat.base.rgb;
+    // Coat markings replace the base colour where they show; the darker secondary and lighter
+    // accent follow them, keeping their brightness relative to the base.
+    let paint = paint_of(out_v);
+    let lum = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let base_lum = max(dot(coat.base.rgb, lum), 1e-3);
+    let base = mix(coat.base.rgb, paint.rgb, paint.a);
+    let secondary = mix(coat.secondary.rgb, min(paint.rgb * (dot(coat.secondary.rgb, lum) / base_lum), vec3<f32>(1.0)), paint.a);
+    let accent = mix(coat.accent.rgb, min(paint.rgb * (dot(coat.accent.rgb, lum) / base_lum), vec3<f32>(1.0)), paint.a);
+    var color = base;
 
     var rest = in.world_position.xyz;
     var scale_w = 0.0;
@@ -198,11 +209,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 @if(COAT_CROWD) {
     if scale_w > 0.01 {
         let fine = detail(coat.scales.x, pixel);
-        var scaled = mix(coat.base.rgb, coat.secondary.rgb, 0.5 * coat.scales.z) * 0.85;
+        var scaled = mix(base, secondary, 0.5 * coat.scales.z) * 0.85;
         if fine > 0.0 {
             let c = cellular_fast(rest / max(coat.scales.x, 1e-4));
             let dome = smoothstep(0.0, 0.35, c.y - c.x);
-            let tint = mix(coat.base.rgb, coat.secondary.rgb, c.z * coat.scales.z) * mix(0.6, 1.0, dome);
+            let tint = mix(base, secondary, c.z * coat.scales.z) * mix(0.6, 1.0, dome);
             scaled = mix(scaled, tint, fine);
         }
         color = mix(color, scaled, scale_w);
@@ -215,8 +226,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let dome = smoothstep(0.0, 0.35, edge);
         let fine = detail(coat.scales.x, pixel);
         let height = dome * coat.scales.y * coat.scales.x * 0.3 * scale_w * fine;
-        let tint = mix(coat.base.rgb, coat.secondary.rgb, c.z * coat.scales.z) * mix(0.55, 1.0, dome);
-        let avg = mix(coat.base.rgb, coat.secondary.rgb, 0.5 * coat.scales.z) * 0.85;
+        let tint = mix(base, secondary, c.z * coat.scales.z) * mix(0.55, 1.0, dome);
+        let avg = mix(base, secondary, 0.5 * coat.scales.z) * 0.85;
         color = mix(color, mix(avg, tint, fine), scale_w);
         pbr.N = bump(pbr.N, in.world_position.xyz, height);
     }
@@ -224,7 +235,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Fur and feathers. Hero: a dark undercoat beneath shells and cards.
 @if(!COAT_CROWD) {
-    color = mix(color, coat.secondary.rgb * 0.7, max(weights.x, weights.y));
+    color = mix(color, secondary * 0.7, max(weights.x, weights.y));
 }
 @if(COAT_CROWD) {
     let ndv = clamp(dot(pbr.N, pbr.V), 0.0, 1.0);
@@ -244,11 +255,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             }
         }
         let mottle = mix(0.5, n1 * 0.65 + n2 * 0.35, fine);
-        var fur = mix(coat.base.rgb, coat.secondary.rgb, (1.0 - mottle) * 0.4);
-        fur = mix(fur, coat.accent.rgb, coat.fur.w * 0.2) * mix(0.8, 1.06, mottle);
+        var fur = mix(base, secondary, (1.0 - mottle) * 0.4);
+        fur = mix(fur, accent, coat.fur.w * 0.2) * mix(0.8, 1.06, mottle);
         // Tips catch light at grazing angles: a soft, tip-coloured fuzz around the outline.
         let rim = pow(1.0 - ndv, 3.0);
-        fur = mix(fur, mix(coat.base.rgb, coat.accent.rgb, coat.fur.w) * 1.1, rim * 0.5);
+        fur = mix(fur, mix(base, accent, coat.fur.w) * 1.1, rim * 0.5);
         // Fine strand grain while it is still resolvable.
         fur *= 0.94 + 0.12 * grain;
         let N = normalize(pbr.N + (T * (n2 - 0.5) + B * (n1 - 0.5)) * 0.1 * fine);
@@ -266,14 +277,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if fine > 0.0 {
             f = feather_at(rest, along / row_len, width);
         }
-        var vane = mix(coat.secondary.rgb, coat.base.rgb, smoothstep(0.0, 0.6, f.y));
-        vane = mix(vane, coat.accent.rgb, smoothstep(0.8, 1.0, f.y) * coat.feathers.z * 0.6);
+        var vane = mix(secondary, base, smoothstep(0.0, 0.6, f.y));
+        vane = mix(vane, accent, smoothstep(0.8, 1.0, f.y) * coat.feathers.z * 0.6);
         vane *= mix(0.9, 1.08, f.id);
         // Shadow under the feather above, a dark outline where vanes overlap, a lighter shaft.
         let shade = mix(0.7, 1.0, smoothstep(0.0, 0.35, f.y)) * mix(0.82, 1.0, smoothstep(0.0, 0.12, f.edge));
         let shaft = select(1.0, 1.12, f.edge > 0.42);
         let patterned = vane * shade * shaft;
-        let avg = mix(mix(coat.secondary.rgb, coat.base.rgb, 0.65), coat.accent.rgb, 0.15 * coat.feathers.z) * 0.85;
+        let avg = mix(mix(secondary, base, 0.65), accent, 0.15 * coat.feathers.z) * 0.85;
         let feather = mix(avg, patterned, fine);
         // Each feather lifts toward its tip.
         let N = normalize(pbr.N + T * (0.5 - f.y) * 0.5 * fine);
@@ -296,7 +307,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         discard;
     }
     let root = mix(0.35, 1.0, h);
-    color = mix(coat.base.rgb, coat.accent.rgb, h * coat.fur.w) * root;
+    color = mix(base, accent, h * coat.fur.w) * root;
 }
 
 @if(COAT_FEATHER) {
@@ -312,8 +323,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     let barbs = 0.85 + 0.15 * sin((uv.y * 40.0 - across * 25.0) * 3.14159);
     let shaft = select(1.0, 0.6, across < 0.02);
-    let body = mix(coat.secondary.rgb, coat.base.rgb, smoothstep(0.0, 0.6, uv.y));
-    color = mix(body, coat.accent.rgb, smoothstep(0.8, 1.0, uv.y) * coat.feathers.z) * barbs * shaft;
+    let body = mix(secondary, base, smoothstep(0.0, 0.6, uv.y));
+    color = mix(body, accent, smoothstep(0.8, 1.0, uv.y) * coat.feathers.z) * barbs * shaft;
 }
 
 @if(COAT_HARD && VERTEX_UVS_A) {
@@ -328,10 +339,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let iris = smoothstep(iris_edge - soft, iris_edge + soft, c);
         let across = clamp((c - iris_edge) / max(1.0 - iris_edge, 1e-3), 0.0, 1.0);
         // Darker limbal ring at the rim, lighter toward the pupil.
-        let iris_color = coat.base.rgb * mix(0.55, 1.25, smoothstep(0.0, 0.6, across));
-        color = mix(coat.secondary.rgb, iris_color, iris);
+        let iris_color = base * mix(0.55, 1.25, smoothstep(0.0, 0.6, across));
+        color = mix(secondary, iris_color, iris);
         let pupil_edge = mix(0.9, 0.984, white);
-        color = mix(color, coat.accent.rgb, smoothstep(pupil_edge - soft, pupil_edge + soft, c));
+        color = mix(color, accent, smoothstep(pupil_edge - soft, pupil_edge + soft, c));
         roughness = 0.05;
     }
 }
@@ -376,11 +387,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let fibre = 0.5 + 0.5 * sin(uv.y * 90.0 + uv.x * 12.0 + warp * 4.0);
         let pebble = cellular_fast(rest / 0.006);
         let leather = mix(1.0, smoothstep(0.0, 0.3, pebble.y - pebble.x) * 0.25 + 0.75, fine);
-        let skin = mix(coat.secondary.rgb, coat.base.rgb, 0.35);
+        let skin = mix(secondary, base, 0.35);
         color = skin * leather * mix(1.0, 0.92 + 0.08 * fibre, fine);
         color = mix(color, skin * 0.45, max(vein * 0.7, thickness * 0.55));
         transmit = mix(0.7, 0.05, max(thickness, vein * 0.6));
-        glow_tint = mix(coat.base.rgb, vec3<f32>(1.0, 0.45, 0.3), 0.5) * (1.0 - thickness) * (1.0 - vein * 0.6);
+        glow_tint = mix(base, vec3<f32>(1.0, 0.45, 0.3), 0.5) * (1.0 - thickness) * (1.0 - vein * 0.6);
         roughness = 0.55;
         reflectance = vec3<f32>(0.3);
     } else if kind == 1u {
@@ -395,10 +406,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         let shaft = 1.0 - smoothstep(0.015, 0.03, abs(a));
         let barbs = 0.9 + 0.1 * sin(uv.y * 70.0 - abs(a) * 40.0) * detail(0.004, pixel);
-        var vane = mix(coat.secondary.rgb, coat.base.rgb, smoothstep(0.0, 0.5, uv.y));
-        vane = mix(vane, coat.accent.rgb, smoothstep(0.78, 0.97, uv.y) * coat.feathers.z);
+        var vane = mix(secondary, base, smoothstep(0.0, 0.5, uv.y));
+        vane = mix(vane, accent, smoothstep(0.78, 0.97, uv.y) * coat.feathers.z);
         vane *= 0.85 + 0.15 * smoothstep(0.0, 0.25, half_width - abs(a));
-        color = mix(vane * barbs, mix(coat.accent.rgb, vec3<f32>(0.9), 0.5), shaft * 0.6);
+        color = mix(vane * barbs, mix(accent, vec3<f32>(0.9), 0.5), shaft * 0.6);
         transmit = 0.3;
         glow_tint = vane * 0.6;
         roughness = 0.65;
@@ -416,8 +427,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let film = 0.35 + 0.4 * cells.z + 0.25 * thickness;
         let phase = film * (1.0 + 0.6 * (1.0 - ndv));
         let irid = 0.5 + 0.5 * cos(6.28318 * (phase * vec3<f32>(1.0, 0.85, 0.7) + vec3<f32>(0.0, 0.33, 0.67)));
-        let membrane = mix(coat.accent.rgb * 0.6, irid, 0.55 * (0.4 + 0.6 * (1.0 - ndv)));
-        color = mix(membrane, coat.secondary.rgb * 0.25, vein);
+        let membrane = mix(accent * 0.6, irid, 0.55 * (0.4 + 0.6 * (1.0 - ndv)));
+        color = mix(membrane, secondary * 0.25, vein);
         var alpha = mix(0.22, 1.0, vein);
 @if(COAT_CROWD) {
         alpha = 1.0;
@@ -436,7 +447,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Elytron: a hard, glossy, finely punctured shell.
         let dots = cellular_fast(rest / 0.004);
         let pits = 1.0 - (1.0 - smoothstep(0.0, 0.12, dots.x)) * 0.25 * detail(0.004, pixel);
-        color = coat.base.rgb * pits;
+        color = base * pits;
         roughness = 0.22;
         reflectance = vec3<f32>(0.6);
     }
@@ -452,7 +463,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // Anisotropic sheen along the shaft (Kajiya–Kay style).
             let hv = normalize(light.direction_to_light + pbr.V);
             let th = dot(T, hv);
-            glow += coat.accent.rgb * pow(sqrt(max(0.0, 1.0 - th * th)), 80.0) * 0.06 * light.color.rgb * view.exposure;
+            glow += accent * pow(sqrt(max(0.0, 1.0 - th * th)), 80.0) * 0.06 * light.color.rgb * view.exposure;
         }
     }
 }

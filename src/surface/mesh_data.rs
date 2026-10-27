@@ -29,6 +29,10 @@ pub const ATTRIBUTE_MUSCLE: MeshVertexAttribute = MeshVertexAttribute::new("Orni
 /// Muscle flex: the joint carrying the insertion (x) and the muscle's length (y, `f32` bits).
 pub const ATTRIBUTE_MUSCLE_JOINT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_MuscleJoint", 0x0b5c_0006, VertexFormat::Uint32x2);
 
+/// Coat markings ([`BodyMeshData::paint`]): the surface's own colour (linear RGB) and how much of it
+/// replaces the coat's (w).
+pub const ATTRIBUTE_PAINT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_Paint", 0x0b5c_0008, VertexFormat::Float32x4);
+
 /// Soft tissue ([`SoftVertex`]): two (joints, weight bits) pairs.
 pub const ATTRIBUTE_SOFT: MeshVertexAttribute = MeshVertexAttribute::new("Ornisculpt_Soft", 0x0b5c_0007, VertexFormat::Uint32x4);
 
@@ -148,6 +152,9 @@ pub struct BodyMeshData {
     /// Coat flow per vertex: direction (xyz, model space, unit), the way fur lies and feathers
     /// point; w = distance along the flow in metres (skin only). Empty = no coat coverings.
     pub flow: Vec<[f32; 4]>,
+    /// Coat markings per vertex: colour (linear RGB) and how much it replaces the coat's colours
+    /// (w, 0 = the coat's own). Empty = no markings.
+    pub paint: Vec<[f32; 4]>,
     /// Outfit palette index per vertex ([`NOT_CLOTH`] for body vertices). Empty = no garments.
     pub cloth: Vec<u8>,
     /// Optimized centre of rotation per vertex (rest pose; see `surface::centres_of_rotation`).
@@ -212,6 +219,9 @@ impl BodyMeshData {
             let weights: Vec<[f32; 2]> = self.coverage.iter().map(|c| [c[1], c[2]]).collect();
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, weights);
         }
+        if self.paint.len() == n {
+            mesh.insert_attribute(ATTRIBUTE_PAINT, self.paint.clone());
+        }
         if self.cor.len() == n {
             mesh.insert_attribute(ATTRIBUTE_COR, self.cor.clone());
         }
@@ -246,7 +256,7 @@ impl BodyMeshData {
     }
 
     fn split_meshes(&self, crowd: bool) -> Vec<(MaterialSlot, Mesh)> {
-        use VertexChannel::{Cloth, Cor, Coverage, Flow, Muscle, Soft, Uvs};
+        use VertexChannel::{Cloth, Cor, Coverage, Flow, Muscle, Paint, Soft, Uvs};
         let mut slots: Vec<MaterialSlot> = self.submeshes.iter().map(|s| s.slot).collect();
         slots.sort();
         slots.dedup();
@@ -267,7 +277,7 @@ impl BodyMeshData {
                             if *r == u32::MAX {
                                 *r = part.positions.len().clamp_u32();
                                 part.push_vertex(v);
-                                part.push_from(self, i, &[Uvs, Coverage, Flow, Cloth, Cor, Muscle, Soft]);
+                                part.push_from(self, i, &[Uvs, Coverage, Flow, Paint, Cloth, Cor, Muscle, Soft]);
                             }
                             part.indices.push(*r);
                         }
@@ -306,6 +316,7 @@ impl BodyMeshData {
                 VertexChannel::Uvs => self.uvs.extend(src.uvs.get(i)),
                 VertexChannel::Coverage => self.coverage.extend(src.coverage.get(i)),
                 VertexChannel::Flow => self.flow.extend(src.flow.get(i)),
+                VertexChannel::Paint => self.paint.extend(src.paint.get(i)),
                 VertexChannel::Cloth => self.cloth.extend(src.cloth.get(i)),
                 VertexChannel::Cor => self.cor.extend(src.cor.get(i)),
                 VertexChannel::Muscle => self.muscle.extend(src.muscle.get(i)),
@@ -363,6 +374,7 @@ pub enum VertexChannel {
     Uvs,
     Coverage,
     Flow,
+    Paint,
     Cloth,
     Cor,
     Muscle,

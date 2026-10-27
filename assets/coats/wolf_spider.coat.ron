@@ -1,0 +1,26 @@
+// A wolf spider: grey-brown and hairy, a pale stripe down the middle of the prosoma between two
+// dark bands, a dark heart mark on the abdomen, banded legs, glossy black eyes and fangs.
+(
+    base: (0.36, 0.28, 0.19),
+    secondary: (0.2, 0.15, 0.1),
+    accent: (0.62, 0.52, 0.38),
+    roughness: 0.8,
+    hard: (0.04, 0.03, 0.025),
+    iris: (0.01, 0.01, 0.012),
+    coverings: [
+        (regions: AllExcept([Kind(Hard)]), kind: Fur((length: 0.006, density: 1400.0, thickness: 0.6, tip: 0.5, shells: 8))),
+    ],
+    markings: [
+        // Dark bands down either side of the prosoma's back.
+        (color: (0.13, 0.1, 0.07), regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(TorsoRear), Kind(Skull)]), facing: Some((dir: (0.0, 1.0, 0.0), from: 0.3, to: 0.6))),
+        // The pale median stripe between them.
+        (color: (0.6, 0.5, 0.36), regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(TorsoRear), Kind(Skull)]), facing: Some((dir: (0.0, 1.0, 0.0), from: 0.93, to: 0.985))),
+        // Mottled abdomen, darker on top, with the paler underside.
+        (color: (0.15, 0.11, 0.08), regions: Or([Kind(TailBase), Kind(TailTip)]), patches: Some((size: 0.05, cover: 0.5, soft: 0.08, seed: 11))),
+        (color: (0.5, 0.42, 0.32), facing: Some((dir: (0.0, -1.0, 0.0), from: 0.2, to: 0.8))),
+        // Banded legs: dark rings at the joints.
+        (color: (0.12, 0.09, 0.06), regions: Role(Locomotor), bands: Some((count: 3.0, width: 0.3, soft: 0.25, offset: 0.0))),
+        // Chelicerae dark brown.
+        (color: (0.12, 0.08, 0.05), regions: Kind(Mass)),
+    ],
+)

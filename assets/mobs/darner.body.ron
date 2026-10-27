@@ -1,0 +1,83 @@
+// A green darner (Anax junius) at ten times life size: 0.76 m long (life: 76 mm), wingspan ~1.05 m.
+// Huge compound eyes meeting on top of the head; a stout, slanted thorax carrying the wings and
+// the six spiny legs, held forward in a basket under the head; a long, slender abdomen of ten
+// segments, swollen at the base. Head ≈ 0.09, thorax ≈ 0.17, abdomen ≈ 0.68 of the length; each
+// wing ≈ 0.66, the hindwings broader at the base. The wings stay spread at rest (dragonflies
+// can't fold them).
+(
+    root: (
+        name: "thorax",
+        kind: Torso((
+            chain: (segments: 2, length: 0.13, radius: (curve: [(0.0, 0.82), (0.5, 1.0), (1.0, 0.82)], scale: 0.046, cross: Ellipse(aspect: 0.85))),
+            arch: [(0.0, -0.01), (1.0, 0.012)],
+        )),
+        offset: (rotate_deg: (-12.0, 0.0, 0.0)),
+        detail: Always,
+        children: [
+            (
+                name: "head",
+                kind: Head((skull: (shape: Ellipsoid, size: (0.04, 0.034, 0.028)), snout: 0.0, jaw: None, eye_spacing: 0.58, eye_lateral: 0.85)),
+                attach: End,
+                offset: (translate: (0.0, 0.0, 0.006)),
+                detail: Always,
+                children: [
+                    // Compound eyes: wrapping most of the head, nearly touching on top.
+                    (name: "eye", kind: Hard((kind: Eye, size: 0.036)), attach: Eye, offset: (translate: (0.0, -0.008, -0.004))),
+                    (name: "eye", kind: Hard((kind: Eye, size: 0.036)), attach: Eye, offset: (translate: (0.0, -0.008, -0.004)), mirror: true),
+                    (name: "antenna", kind: Chain((role: Antenna, chain: (segments: 2, length: 0.03, radius: (curve: [(0.0, 1.0), (1.0, 0.4)], scale: 0.002), blend: 0.002))), attach: Horn, mirror: true),
+                ],
+            ),
+            (
+                // Ten segments as eight jointed rings: swollen at the base, slender, a slight club at
+                // the end with the claspers.
+                name: "abdomen",
+                kind: Chain((role: Tail, chain: (segments: 8, length: 0.52, ratios: [0.6, 0.8, 1.1, 1.1, 1.1, 1.1, 1.0, 0.8], segmented: 0.45, radius: (curve: [(0.0, 1.0), (0.06, 1.15), (0.16, 0.62), (0.5, 0.56), (0.85, 0.6), (0.94, 0.64), (1.0, 0.4)], scale: 0.026), curl: -10.0, blend: 0.012))),
+                attach: Start,
+                offset: (rotate_deg: (10.0, 0.0, 0.0)),
+                detail: Always,
+                children: [
+                    (name: "clasper", kind: Hard((kind: Spike, size: 0.022, curve: 0.3)), attach: End, offset: (translate: (0.004, 0.0, 0.0)), mirror: true),
+                ],
+            ),
+            (
+                name: "forewing",
+                kind: Wing((kind: Blade((planform: Long)), span: 0.5, chord: 0.09, fold: 0.0, sweep_deg: -2.0)),
+                attach: Surface(t: 0.72, around_deg: 25.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "hindwing",
+                kind: Wing((kind: Blade((planform: Long)), span: 0.48, chord: 0.125, fold: 0.0, sweep_deg: 10.0)),
+                attach: Surface(t: 0.32, around_deg: 25.0),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.fore",
+                kind: Limb((chain: (segments: 3, length: 0.11, ratios: [1.0, 1.1, 0.6], segmented: 0.6, radius: (curve: [(0.0, 1.0), (1.0, 0.5)], scale: 0.0055)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 20.0, flex: [110.0, 30.0])))),
+                attach: Surface(t: 0.85, around_deg: 160.0),
+                offset: (rotate_deg: (55.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.mid",
+                kind: Limb((chain: (segments: 3, length: 0.14, ratios: [1.0, 1.1, 0.6], segmented: 0.6, radius: (curve: [(0.0, 1.0), (1.0, 0.5)], scale: 0.0055)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 25.0, flex: [105.0, 30.0])))),
+                attach: Surface(t: 0.55, around_deg: 160.0),
+                offset: (rotate_deg: (25.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                name: "leg.hind",
+                kind: Limb((chain: (segments: 3, length: 0.17, ratios: [1.0, 1.1, 0.6], segmented: 0.6, radius: (curve: [(0.0, 1.0), (1.0, 0.5)], scale: 0.0058)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 25.0, flex: [100.0, 30.0])))),
+                attach: Surface(t: 0.25, around_deg: 160.0),
+                offset: (rotate_deg: (-10.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.1, fat: 0.0, folds: 0.0, landmarks: 0.3),
+)

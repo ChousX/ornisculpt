@@ -88,8 +88,9 @@ const LEG_CROTCH: f32 = 0.04;
 const LEG_SPREAD_MAX: f32 = 24.0;
 const LEG_SPREAD_STEP: f32 = 2.0;
 
-/// Limbs [`BodyField::eval`] keeps apart at one point (as `LIMB_SLOTS` in `sdf_field.wesl`).
-const LIMB_SLOTS: usize = 8;
+/// Limbs [`BodyField::eval`] keeps apart at one point (as `LIMB_SLOTS` in `sdf_field.wesl`): a
+/// lobster or a spider has eleven.
+const LIMB_SLOTS: usize = 12;
 
 /// The least margin around where a limb attaches within which it blends into the body, metres.
 const ATTACH_MARGIN: f32 = 0.01;

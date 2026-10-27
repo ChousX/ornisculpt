@@ -95,6 +95,7 @@ pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> Bo
         flow: Vec::new(),
         cloth: Vec::new(),
         cor: Vec::new(),
+        paint: Vec::new(),
         muscle: Vec::new(),
         soft: Vec::new(),
         indices: mesh.indices,
@@ -169,7 +170,7 @@ pub fn simplify(data: &BodyMeshData, target_ratio: f32, max_error: f32) -> BodyM
 /// Keeps only vertices referenced by `indices`, in first-use order (good for vertex fetch).
 /// Triangles with a vertex out of range are dropped.
 fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
-    use VertexChannel::{Cloth, Coverage, Flow, Muscle, Soft};
+    use VertexChannel::{Cloth, Coverage, Flow, Muscle, Paint, Soft};
     let mut remap = vec![u32::MAX; data.positions.len()];
     let mut out = BodyMeshData::default();
     for tri in indices.as_chunks::<3>().0 {
@@ -182,7 +183,7 @@ fn compact(data: &BodyMeshData, indices: &[u32]) -> BodyMeshData {
             if *slot == u32::MAX {
                 *slot = out.positions.len().clamp_u32();
                 out.push_vertex(v);
-                out.push_from(data, i, &[Coverage, Flow, Cloth, Muscle, Soft]);
+                out.push_from(data, i, &[Coverage, Flow, Paint, Cloth, Muscle, Soft]);
             }
             out.indices.push(*slot);
         }
@@ -243,6 +244,7 @@ pub fn merge(base: &mut BodyMeshData, other: &BodyMeshData) {
     pad_extend(&mut base.uvs, &other.uvs, base_len, other.positions.len(), [0.0; 2]);
     pad_extend(&mut base.coverage, &other.coverage, base_len, other.positions.len(), [0.0; 3]);
     pad_extend(&mut base.flow, &other.flow, base_len, other.positions.len(), [0.0, 0.0, 1.0, 0.0]);
+    pad_extend(&mut base.paint, &other.paint, base_len, other.positions.len(), [0.0; 4]);
     pad_extend(&mut base.muscle, &other.muscle, base_len, other.positions.len(), MuscleFlex::default());
     pad_extend(&mut base.soft, &other.soft, base_len, other.positions.len(), SoftVertex::default());
     if !base.cor.is_empty() || !other.cor.is_empty() {

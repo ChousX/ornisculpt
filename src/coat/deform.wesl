@@ -71,6 +71,8 @@ struct CoatVertex {
     @location(10) muscle_joint: vec2<u32>,
     @if(COAT_SOFT)
     @location(11) soft: vec4<u32>,
+    @if(COAT_PAINT)
+    @location(12) paint: vec4<f32>,
 };
 
 // The vertex in mesh space before skinning: shells pushed out, crowd skin inflated.

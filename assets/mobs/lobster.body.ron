@@ -1,0 +1,71 @@
+// An American lobster (Homarus americanus), body ~0.5 m from rostrum to tail fan. The carapace
+// (cephalothorax, ~0.4 of the body) carries the stalked eyes, two long antennae and two pairs of
+// short antennules, a pair of big chelipeds and four pairs of thin walking legs. The abdomen
+// (~0.6) is six jointed rings, wider than tall, ending in the tail fan: the telson between two
+// pairs of uropods. Every appendage is jointed (`segmented`).
+(
+    root: (
+        name: "carapace",
+        kind: Torso((
+            // Rear → front: deep and round where the legs attach, tapering to the rostrum.
+            chain: (segments: 3, length: 0.2, segmented: 0.15, radius: (curve: [(0.0, 0.92), (0.3, 1.0), (0.7, 0.95), (1.0, 0.62)], scale: 0.048, cross: Ellipse(aspect: 0.88))),
+        )),
+        detail: Always,
+        children: [
+            (
+                // The front of the carapace: no separate head, the rostrum runs on from it.
+                name: "head",
+                kind: Head((skull: (shape: Ellipsoid, size: (0.026, 0.022, 0.03)), snout: 0.045, jaw: None, eye_spacing: 0.7, eye_lateral: 0.8, muzzle: (base: (0.45, 0.4), tip: (0.12, 0.12), rise: 0.35, drop: -4.0))),
+                attach: End,
+                detail: Always,
+                children: [
+                    // Eyes on short stalks.
+                    (name: "eyestalk", kind: Chain((role: Antenna, chain: (segments: 1, length: 0.018, radius: (curve: [(0.0, 1.0), (1.0, 1.2)], scale: 0.005), blend: 0.003))), attach: Eye, mirror: true, children: [
+                        (name: "eye", kind: Hard((kind: Eye, size: 0.007)), attach: End),
+                    ]),
+                    // Second antennae: as long as the body, jointed, swept back over it.
+                    (name: "antenna", kind: Chain((role: Antenna, chain: (segments: 6, length: 0.5, ratios: [0.6, 0.6, 0.9, 1.2, 1.4, 1.6], segmented: 0.5, radius: (curve: [(0.0, 1.0), (0.12, 0.6), (1.0, 0.18)], scale: 0.008), curl: -18.0, blend: 0.004))), attach: Horn, offset: (rotate_deg: (-72.0, 0.0, -30.0)), mirror: true),
+                    // First antennae (antennules): short, forked forward.
+                    (name: "antennule", kind: Chain((role: Antenna, chain: (segments: 3, length: 0.09, segmented: 0.4, radius: (curve: [(0.0, 1.0), (1.0, 0.3)], scale: 0.004), curl: -60.0, blend: 0.003))), attach: Horn, offset: (translate: (0.0, 0.0, 0.012), rotate_deg: (10.0, 0.0, 15.0)), mirror: true),
+                ],
+            ),
+            (
+                // Six rings and the tail fan; slightly curled under.
+                name: "abdomen",
+                kind: Chain((role: Tail, chain: (segments: 6, length: 0.26, ratios: [1.0, 1.0, 1.0, 1.0, 0.95, 0.85], segmented: 0.75, radius: (curve: [(0.0, 0.95), (0.5, 0.92), (1.0, 0.62)], scale: 0.043, cross: Ellipse(aspect: 1.35)), curl: -24.0, blend: 0.02))),
+                attach: Start,
+                detail: Always,
+                children: [
+                    (name: "telson", kind: Mass((shape: Flap, size: (0.03, 0.045, 0.035), blend: 0.006)), attach: End),
+                    (name: "uropod", kind: Mass((shape: Flap, size: (0.026, 0.05, 0.035), blend: 0.005)), attach: End, offset: (translate: (0.014, -0.01, 0.0), rotate_deg: (0.0, 0.0, 32.0)), mirror: true),
+                ],
+            ),
+            (
+                // Chelipeds: merus, carpus, then the claw, held forward and out.
+                name: "cheliped",
+                kind: Limb((
+                    chain: (segments: 3, length: 0.2, ratios: [1.0, 0.55, 0.45], segmented: 0.7, radius: (curve: [(0.0, 0.7), (0.6, 1.0), (1.0, 1.35)], scale: 0.018)),
+                    role: Manipulator,
+                    end: Pincer(size: 0.085),
+                    bends: [(0.0, 0.0), (-30.0, 0.0), (20.0, 0.0)],
+                    splay_deg: 35.0,
+                    clavicle: Some(0.0),
+                )),
+                attach: Surface(t: 0.8, around_deg: 110.0),
+                offset: (rotate_deg: (98.0, 0.0, 0.0)),
+                mirror: true,
+                detail: Always,
+            ),
+            (
+                // Walking legs: thin, jointed, knees up, tips on the ground.
+                name: "leg",
+                kind: Limb((chain: (segments: 3, length: 0.15, ratios: [1.0, 1.0, 0.8], segmented: 0.8, radius: (curve: [(0.0, 1.0), (1.0, 0.45)], scale: 0.0085)), role: Locomotor, stance: Arched, end: Point, joints: Some((plan: Arched, swing: 0.0, lift: 30.0, flex: [100.0, 30.0])))),
+                attach: Surface(t: 0.2, around_deg: 100.0),
+                repeat: Series(count: 4, from: 0.2, to: 0.62),
+                mirror: true,
+                detail: Always,
+            ),
+        ],
+    ),
+    tone: (muscle: 0.0, fat: 0.0, folds: 0.0, landmarks: 0.0),
+)

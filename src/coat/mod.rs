@@ -11,9 +11,11 @@
 
 pub mod dqs;
 mod geometry;
+mod markings;
 mod material;
 
 pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
+pub use markings::{Bands, Facing, Marking, Patches};
 pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
 use bevy::prelude::*;
@@ -33,6 +35,12 @@ pub struct Coat {
     pub roughness: f32,
     /// Later coverings win where selectors overlap.
     pub coverings: Vec<Covering>,
+    /// Colour laid over the skin and hard parts by region and shape, in order (see [`Marking`]).
+    pub markings: Vec<Marking>,
+    /// Claws, horns, teeth, beaks and plates (sRGB); markings can paint them too.
+    pub hard: [f32; 3],
+    /// The eyes' iris (sRGB).
+    pub iris: [f32; 3],
 }
 
 impl Default for Coat {
@@ -43,6 +51,9 @@ impl Default for Coat {
             accent: [0.85, 0.75, 0.6],
             roughness: 0.75,
             coverings: Vec::new(),
+            markings: Vec::new(),
+            hard: Self::HARD,
+            iris: Self::IRIS,
         }
     }
 }
@@ -224,10 +235,24 @@ impl Coat {
         }
     }
 
+    /// Hard parts' colour without one set: ivory.
+    pub const HARD: [f32; 3] = [0.85, 0.8, 0.68];
+    /// Iris colour without one set: dark brown.
+    pub const IRIS: [f32; 3] = [0.13, 0.075, 0.04];
+
     /// A plain coat in one colour (hard parts, eyes).
     #[must_use]
     pub const fn plain(color: [f32; 3], roughness: f32) -> Self {
-        Self { base: color, secondary: color, accent: color, roughness, coverings: Vec::new() }
+        Self {
+            base: color,
+            secondary: color,
+            accent: color,
+            roughness,
+            coverings: Vec::new(),
+            markings: Vec::new(),
+            hard: Self::HARD,
+            iris: Self::IRIS,
+        }
     }
 }
 
@@ -247,6 +272,7 @@ impl Plugin for CoatPlugin {
         bevy::shader::load_shader_library!(app, "dqs.wesl");
         // The deformation every vertex stage shares (main pass and prepass).
         bevy::shader::load_shader_library!(app, "deform.wesl");
+        bevy::shader::load_shader_library!(app, "paint_io.wesl");
         bevy::asset::embedded_asset!(app, "coat_vertex.wesl");
         bevy::asset::embedded_asset!(app, "coat_prepass.wesl");
         bevy::asset::embedded_asset!(app, "coat_fragment.wesl");

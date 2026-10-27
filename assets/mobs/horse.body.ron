@@ -24,7 +24,7 @@
             (
                 // Carried ~45° up; thick at the base, narrowing to the throatlatch.
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 3, length: 0.7, radius: (curve: [(0.0, 1.0), (0.6, 0.6), (1.0, 0.4)], scale: 0.2, cross: Ellipse(aspect: 0.6)), curl: -25.0))),
+                kind: Chain((role: Neck, chain: (segments: 3, length: 0.75, radius: (curve: [(0.0, 1.15), (0.45, 0.8), (1.0, 0.55)], scale: 0.21, cross: Ellipse(aspect: 0.55)), curl: -25.0))),
                 attach: End,
                 offset: (rotate_deg: (-50.0, 0.0, 0.0), translate: (0.0, 0.0, 0.08)),
                 detail: Always,
@@ -33,8 +33,8 @@
                         // ≈ 0.4 of withers height, long and narrow, held angled down.
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.13, 0.115, 0.13)),
-                            snout: 0.33,
+                            skull: (shape: Ellipsoid, size: (0.13, 0.12, 0.14)),
+                            snout: 0.4,
                             jaw: Some((segments: 1, length: 0.38)),
                             eye_spacing: 0.74,
                             eye_lateral: 0.9,
@@ -56,9 +56,13 @@
                         detail: Always,
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.025)), attach: Eye, mirror: true),
-                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.15, radius: (curve: [(0.0, 0.6), (0.4, 1.0), (1.0, 0.2)], scale: 0.035, cross: Flat(aspect: 2.0)), blend: 0.01))), attach: Ear, mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.13, radius: (curve: [(0.0, 0.7), (0.4, 1.0), (1.0, 0.15)], scale: 0.03, cross: Flat(aspect: 1.8)), curl: 40.0, blend: 0.01))), attach: Ear, mirror: true),
+                            // Forelock: hair from the poll falling over the forehead.
+                            (name: "forelock", kind: Mass((shape: Ellipsoid, size: (0.04, 0.018, 0.09), blend: 0.02)), attach: Crown, offset: (translate: (0.0, -0.022, 0.035))),
                         ],
                     ),
+                    // Mane: hair standing along the crest of the neck, falling a little to one side.
+                    (name: "mane", kind: Mass((shape: Crest, size: (0.1, 0.12, 0.15), blend: 0.03)), attach: Surface(t: 0.1, around_deg: 8.0), offset: (translate: (0.0, -0.03, 0.0)), repeat: Series(count: 6, from: 0.08, to: 0.95)),
                 ],
             ),
             (
@@ -66,7 +70,7 @@
                 // pastern sloping forward onto the hoof.
                 name: "limb.front",
                 kind: Limb((
-                    chain: (segments: 4, length: 1.08, ratios: [0.8, 1.0, 0.62, 0.28], radius: (curve: [(0.0, 1.0), (0.3, 0.75), (0.5, 0.45), (0.85, 0.38), (1.0, 0.42)], scale: 0.1)),
+                    chain: (segments: 4, length: 1.08, ratios: [0.8, 1.0, 0.62, 0.28], radius: (curve: [(0.0, 1.0), (0.3, 0.8), (0.5, 0.45), (0.85, 0.38), (1.0, 0.42)], scale: 0.1)),
                     role: Locomotor,
                     stance: Unguligrade,
                     end: Hoof(split: false),
@@ -81,7 +85,7 @@
                 // pastern forward.
                 name: "limb.hind",
                 kind: Limb((
-                    chain: (segments: 4, length: 1.3, ratios: [1.0, 1.1, 0.8, 0.28], radius: (curve: [(0.0, 1.35), (0.3, 0.75), (0.55, 0.45), (0.85, 0.38), (1.0, 0.42)], scale: 0.1)),
+                    chain: (segments: 4, length: 1.3, ratios: [1.0, 1.1, 0.8, 0.28], radius: (curve: [(0.0, 1.35), (0.3, 0.8), (0.55, 0.45), (0.85, 0.38), (1.0, 0.42)], scale: 0.1)),
                     role: Locomotor,
                     stance: Unguligrade,
                     end: Hoof(split: false),
@@ -92,10 +96,11 @@
                 detail: Always,
             ),
             (
+                // The dock, then the hair falling nearly to the hocks: full and flattened side to side.
                 name: "tail",
-                kind: Chain((role: Tail, chain: (segments: 3, length: 0.45, radius: (curve: [(0.0, 1.0), (1.0, 0.5)], scale: 0.05), curl: 60.0))),
+                kind: Chain((role: Tail, chain: (segments: 4, length: 1.1, ratios: [0.6, 1.0, 1.0, 1.0], radius: (curve: [(0.0, 1.0), (0.18, 0.8), (0.5, 1.1), (0.85, 0.95), (1.0, 0.45)], scale: 0.05, cross: Ellipse(aspect: 0.45)), curl: 85.0))),
                 attach: Start,
-                offset: (rotate_deg: (40.0, 0.0, 0.0)),
+                offset: (rotate_deg: (35.0, 0.0, 0.0), translate: (0.0, 0.0, -0.1)),
             ),
         ],
     ),
