@@ -84,29 +84,70 @@ builds exactly as before, except for the foot shape and the two caps.
 Tests: `coat::markings` covers ramps, bands, patch coverage, and a bake of the darner's coat on
 its body (blue abdomen, dark stripe and rings).
 
+## Second pass (2026-10-27): faces, hair, fur at a distance, skin shading
+
+Shot the same way (viewer, headless), judged on contact sheets of the humanoids and the animals.
+All additive again; plans and coats that don't use the new fields build as before, except that
+every face now has lids and a mouth line, and skin shades differently everywhere.
+
+- **Eyelids** (`FaceParams::eyelids`, default on). A thin skin shell round each eyeball with an
+  almond opening cut through its front; the eye slot sits 0.15 radii back so the cornea stands
+  about level with brow and cheek. The lids blend over 6 mm: a wide blend swells them clear of
+  the ball and the eye sinks into a hole.
+- **Face regions.** A face is built in `Face` (it was `Snout`, so `Kind(Face)` matched nothing),
+  with `Brow` (one ridge over each eye), `Eyelid` and `Lip` for coats to dress. Coats grow
+  eyebrows and lashes as short fur and paint lips by region. A thin cut along the lip line gives
+  the mouth its seam; the lips stand 5 mm proud of the face instead of 13.
+- **Region ownership.** A vertex is owned by the nearest union primitive *whose blend reaches
+  the surface there*. By raw distance the lips owned a band 72 mm wide round 41 mm lips, since
+  the skin beside a mouth stands clear of the broad midface it blends from.
+- **Eyes.** Iris crypts and fibres, a collarette ring, a duller sclera toward the corners. A
+  split-mesh bug put the skin's coat weights in an eye's UV0 whenever the coat had coverings, so
+  every eye under a furry coat was one iris-coloured ball; fixed (`split_meshes` now sets the
+  part's submesh), with a test.
+- **Fur per covering, and by facing.** Each fur covering gives its regions their own strand
+  length (`Coat::cover_at`; density, thickness, tip and shells still come from the first).
+  `Covering::facing` narrows a covering like a marking's facing mask, so a hairline is fur on
+  the skull itself. Shells and feather cards grow from the baked per-vertex coverage. Hair,
+  beards, manes, tail switches and eyebrows are fur now.
+- **Fur shells by distance.** Strands gather into clumps as their cells shrink toward a pixel
+  (cells double level by level, each fading into the next with the clumps' area kept, until a
+  clump spans about four pixels), and past the point where clumps would be wider than the fur
+  is long, or the coat is under a dozen pixels deep, the shells settle into a pelt one shell
+  thick in the fur's average colour. The salt-and-pepper that a bay's summer coat showed from
+  two metres is gone.
+- **Skin shading.** The baked cavity term reaches the shader at last (`COAT_DATA`,
+  `paint_io.wesl`), joined by a body-scale `shade` probe (about a fourteenth of the body long)
+  in the byte curvature never used. Both scale Bevy's diffuse and specular occlusion and darken
+  the albedo a little (occlusion only touches ambient light); creases flush. Bare skin reflects
+  at F0 0.03 and its roughness is mottled over a few millimetres close up.
+- **Stage.** The examples light with a warm sun, a cool fill from the sun's other side, ambient
+  450 and an overcast backdrop: eyes under lids were holes with one shadowed sun.
+
+Things tried and dropped: a screen-space-derivative normal grain for pores (sandpaper at any
+amplitude that showed; roughness mottle instead) and long manes as shells (a 7 cm mane on
+8 shells is a brush of layers; 3.5 cm for now, cards later).
+
 ## What still limits realism, most to least
 
-1. **Faces are a dozen ellipsoids and cones.** The cheeks are fixed, but the midface and mouth
-   still push forward like a short muzzle. There are no eyelids, no nasolabial fold, no
-   philtrum, no ear detail (ears are flaps), and the lips are two ellipsoids. This is the
-   biggest gap for the five humanoids. Two ways forward:
+1. **Faces are a dozen ellipsoids and cones.** Lids, brows, lashes and a mouth line are in, but
+   there is no nasolabial fold, no philtrum, no ear detail (ears are flaps), the nose is a cone
+   and two wings, and the lips are two ellipsoids. Still the biggest gap for the five
+   humanoids. Two ways forward:
    - An authored face: `PartKind::Sculpt` already blends a glTF as an SDF. A base-mesh face
      could be added that way, with the procedural levers kept for proportions.
    - A richer procedural face, with eyelid shells, a philtrum, a nasolabial crease and
      modelled ear cartilage.
-2. **Hair and other long coverings.**
-   - Fur is shells with one length per coat (`Coat::fur` takes the first fur covering), so a
-     mane, a tail switch, a beard and the short body coat can't differ.
-   - Here manes, beards and hair are sculpted masses with paint, which reads like a statue.
-     The woman's ponytail is a chain.
-   - Next step: per-covering fur parameters, or hair cards grown from a mass, the way feathers
-     are cards grown from skin.
-3. **The skin shading is flat.**
-   - Each vertex already stores a cavity term (`MobVertexData::cavity`), but nothing uses it.
-     Darkening creases and armpits with it would cost nothing.
-   - There's no subsurface scattering on skin (ears and fingers don't glow), and no
-     micro-normal detail (pores, wrinkles).
-   - Markings place colour; they don't add texture.
+2. **Long hair.** Short hair, beards and eyebrows work as fur shells now, but shells can't do
+   a mane, a ponytail or anything past a few centimetres: the layers show. Next step: hair
+   cards grown from a mass, the way feathers are cards grown from skin, with anisotropic
+   shading. Strand tips still speckle against the sky at close range (the top shells thin to
+   points).
+3. **The skin shading is still simple.** Cavity and shade darken creases and hollows, but
+   there's no subsurface scattering (ears and fingers don't glow), no pores or wrinkles that
+   survive a close-up, and markings place colour without texture. Screen-space AO would add
+   depth the baked terms miss at joints in motion; it has a frame-time cost to measure on the
+   Steam Deck first.
 4. **Bodies are chains of round cones.**
    - Torsos and limbs read as mannequins: muscle stamps only raise the surface, and there are
      no tendons, sharp creases or bony edges at the knee, shin or wrist.
