@@ -283,6 +283,9 @@ impl BodyMeshData {
                         }
                     }
                 }
+                // The part is one submesh of its slot: `build_mesh` tells skin (coat weights in
+                // UV0) from the rest (their own UV0, an eye's iris coordinates) by it.
+                part.submeshes.push(Submesh { indices: 0..part.indices.len().clamp_u32(), slot });
                 (slot, part.build_mesh(crowd))
             })
             .collect()

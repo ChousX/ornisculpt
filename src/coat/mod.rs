@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::anatomy::{LimbRole, LodLevel, RegionKind, build_src};
     use crate::num::Idx;
-    use crate::surface::{AdaptiveContour, BodyMeshData, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
+    use crate::surface::{AdaptiveContour, BodyMeshData, MaterialSlot, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
 
     fn kinds(kinds: &[RegionKind]) -> RegionSelector {
         RegionSelector::Or(kinds.iter().map(|k| RegionSelector::Kind(*k)).collect())
@@ -402,6 +402,24 @@ mod tests {
                 assert!(c.shells.is_none() && c.feathers.is_none(), "{name} {level:?}: crowd tiers shade coverings on the skin");
             }
         }
+    }
+
+    /// Eyes keep their own UV0 (iris cosine, white) beside a coat with coverings: the skin's
+    /// coat weights must not replace them.
+    #[test]
+    fn eyes_keep_their_uvs_under_a_furry_coat() {
+        let anatomy = build_src(include_str!("../../assets/mobs/man.body.ron"));
+        let coat: Coat = ron::from_str(include_str!("../../assets/coats/skin_fair.coat.ron")).unwrap();
+        assert!(!coat.coverings.is_empty());
+        let mut lods = mesh_all_lods(&AdaptiveContour, &anatomy, &SurfaceSettings::default(), 0).unwrap();
+        let hero = &mut lods[0];
+        annotate(hero, &coat, &anatomy, LodLevel::Hero);
+        let meshes = hero.to_bevy_meshes();
+        let (_, eye) = meshes.iter().find(|(slot, _)| *slot == MaterialSlot::Eye).expect("an eye mesh");
+        let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = eye.attribute(Mesh::ATTRIBUTE_UV_0) else {
+            panic!("eye without UV0");
+        };
+        assert!(uv.iter().all(|[_, white]| *white >= 1.0), "eye UV0 replaced: {:?}", &uv[..4]);
     }
 
     #[test]
