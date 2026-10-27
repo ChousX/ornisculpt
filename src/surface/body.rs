@@ -1015,11 +1015,28 @@ impl BodyField {
             (Sheet::Limb(l), Some(own)) => own == l,
         };
         let prims = prims.filter(|prim| on(prim));
-        let near_bone = near.map(|n| n.bone);
+        // The owner (region, layer, the bone the weights centre on) is the nearest union
+        // primitive among those whose blend reaches the surface here. A primitive too far off
+        // to shape the surface at `p` doesn't own it however near it lies: beside a mouth the
+        // skin stands a few millimetres clear of the broad midface it blends from, and the lips
+        // would otherwise claim it a centimetre out.
+        let mut owner = near;
+        let mut owner_distance = f32::INFINITY;
+        for prim in prims.clone() {
+            if prim.op != PrimOp::Union {
+                continue;
+            }
+            let (dl, blend) = prim.eval(p);
+            if dl < owner_distance && dl - d <= f32::mul_add(blend, 2.0, 1e-4) {
+                owner_distance = dl;
+                owner = Some(prim);
+            }
+        }
+        let near_bone = owner.map(|n| n.bone);
         let mut influences = Influences::default();
         for prim in prims {
-            // Weights only from bones in line with the nearest one (its parents and children):
-            // never a neighbouring finger, never the other leg.
+            // Weights only from bones in line with the owner's (its parents and children): never
+            // a neighbouring finger, never the other leg.
             if prim.op != PrimOp::Union || near_bone.is_some_and(|b| !self.in_line(b, prim.bone)) {
                 continue;
             }
@@ -1029,11 +1046,11 @@ impl BodyField {
             let w = (1.0 - gap / reach).max(0.0);
             influences.add(prim.bone, w * w);
         }
-        influences.normalize(near.map_or(BoneId(0), |n| n.bone));
+        influences.normalize(owner.map_or(BoneId(0), |n| n.bone));
         SurfaceInfo {
             influences,
-            region: near.map_or(RegionId(0), |n| n.region),
-            layer: near.map_or(PrimLayer::Base, |n| n.layer),
+            region: owner.map_or(RegionId(0), |n| n.region),
+            layer: owner.map_or(PrimLayer::Base, |n| n.layer),
         }
     }
 }
