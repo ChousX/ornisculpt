@@ -8,7 +8,7 @@ use super::{Coat, Feathers, HairCards};
 use crate::anatomy::{Anatomy, BoneId, LodLevel, RegionId, RegionKind, RegionMask};
 use crate::num::{Clamp, Idx, Saturate, ToF32};
 use crate::random::{RngExt, fork};
-use crate::surface::{BodyMeshData, MaterialSlot, MobVertexData, Submesh, Vertex, VertexChannel, simplify};
+use crate::surface::{BodyMeshData, MaterialSlot, MobVertexData, Submesh, Vertex, VertexChannel, simplify_keeping};
 
 /// Fraction of the hero skin's triangles used as the source for fur shells.
 const SHELL_SOURCE_RATIO: f32 = 0.2;
@@ -35,8 +35,10 @@ pub fn build_coat_meshes(coat: &Coat, anatomy: &Anatomy, body: &BodyMeshData, le
     let shells = coat.fur().map_or(0, |f| (f32::from(f.shells) * detail).round().sat_u32());
     let feathers = coat.feathers();
     // Fur hides fine surface detail, so shells use a simplified copy of the skin: every shell
-    // multiplies its triangle count and they are alpha-tested.
-    let shell_source = (shells > 0).then(|| simplify(body, SHELL_SOURCE_RATIO, 0.01));
+    // multiplies its triangle count and they are alpha-tested. The shells copy the skin's paint,
+    // so the copy keeps its triangles where the markings change (a zebra's stripes).
+    let paint = (body.paint.len() == body.positions.len()).then_some(body.paint.as_slice());
+    let shell_source = (shells > 0).then(|| simplify_keeping(body, SHELL_SOURCE_RATIO, 0.01, paint));
     let masks = coat.covering_masks(anatomy);
     CoatMeshes {
         shells: shell_source.and_then(|s| fur_shells(&s, coat, &masks, shells)),
