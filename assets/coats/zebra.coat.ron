@@ -1,24 +1,30 @@
 // A plains zebra: black stripes on white, upright round the body and neck, ringing the legs down
 // to the hooves and barring the face; a white line along the belly; the muzzle black; the stiff
-// mane striped through; white ears tipped black; a black tail tuft.
+// mane striped through; white ears tipped black; a black tail tuft. The body's stripes are
+// bands along the body's length (`axis`), so they cross onto the shoulders and haunches.
 (
     base: (0.88, 0.86, 0.81),
     secondary: (0.84, 0.82, 0.77),
     accent: (0.92, 0.9, 0.86),
     roughness: 0.75,
     hard: (0.1, 0.095, 0.09),
-    // Fur only on the mane and the tail's tuft: fur shells are built on a simplified copy of the
-    // skin, which smears stripes this fine, so the short body coat is left to the skin.
     coverings: [
-        (regions: Part("torso/neck/mane"), kind: Fur((length: 0.02, density: 1400.0, thickness: 0.85, tip: 0.1, shells: 8))),
+        (
+            regions: AllExcept([Kind(LimbEnd), Kind(Snout), Kind(Hard), Kind(TailTip)]),
+            kind: Fur((length: 0.007, density: 1000.0, thickness: 0.8, tip: 0.15, shells: 8)),
+        ),
+        (regions: Part("torso/neck/mane"), kind: Fur((length: 0.02))),
         (regions: Kind(TailTip), kind: Fur((length: 0.04, cards: Some((length: 0.3, width: 0.02, density: 9000.0, lift_deg: 5.0, droop: 0.95))))),
     ],
     markings: [
-        // The stripes: broad and upright on the body, narrower on the neck, rings round the
-        // legs, bars across the face.
-        (color: (0.05, 0.045, 0.04), regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(TorsoRear), Kind(Belly)]), bands: Some((count: 11.0, width: 0.48, soft: 0.08, offset: 0.2))),
+        // The stripes. Upright across the body, running on over the shoulders and the tops of
+        // the forelegs, wavering a little.
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(Belly), And([Part("torso/limb.front"), Kind(LimbUpper)])]), bands: Some((count: 22.0, width: 0.48, soft: 0.08, axis: Some((0.0, 0.0, 1.0)), warp: 0.12))),
+        // Over the haunch they turn and run back toward the tail, sloping down.
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(TorsoRear), And([Part("torso/limb.hind"), Kind(LimbUpper)])]), bands: Some((count: 16.0, width: 0.48, soft: 0.08, axis: Some((0.0, 1.0, -0.7)), warp: 0.1))),
+        // Rings round the neck and the lower legs, bars across the face.
         (color: (0.05, 0.045, 0.04), regions: Or([Kind(Neck), Part("torso/neck/mane")]), bands: Some((count: 7.0, width: 0.48, soft: 0.08))),
-        (color: (0.05, 0.045, 0.04), regions: Role(Locomotor), bands: Some((count: 12.0, width: 0.48, soft: 0.08))),
+        (color: (0.05, 0.045, 0.04), regions: And([Role(Locomotor), Kind(LimbLower)]), bands: Some((count: 12.0, width: 0.48, soft: 0.08))),
         (color: (0.05, 0.045, 0.04), regions: Or([Kind(Skull), Kind(Snout), Kind(Jaw)]), bands: Some((count: 7.0, width: 0.45, soft: 0.1))),
         (color: (0.05, 0.045, 0.04), regions: Or([Kind(TailBase)]), bands: Some((count: 6.0, width: 0.45, soft: 0.08))),
         // A clean white line along the belly.

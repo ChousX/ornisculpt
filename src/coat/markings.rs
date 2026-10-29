@@ -91,13 +91,23 @@ pub struct Bands {
     pub width: f32,
     pub soft: f32,
     pub offset: f32,
+    /// Stripes across the whole body instead of rings round each part: `count` of them over the
+    /// body's extent along this model-space direction (+Z runs tail to nose, +Y up), so
+    /// they run on from the torso over the shoulders and haunches (a zebra's, a tiger's).
+    pub axis: Option<Vec3>,
+    /// How far the stripes wander, in periods: value noise about [`BAND_WARP_SIZE`] across
+    /// shifts them, so they waver and fork rather than run ruler-straight.
+    pub warp: f32,
 }
 
 impl Default for Bands {
     fn default() -> Self {
-        Self { count: 4.0, width: 0.3, soft: 0.1, offset: 0.0 }
+        Self { count: 4.0, width: 0.3, soft: 0.1, offset: 0.0, axis: None, warp: 0.0 }
     }
 }
+
+/// Feature size of [`Bands::warp`]'s noise, metres.
+pub const BAND_WARP_SIZE: f32 = 0.18;
 
 /// A [`Marking`] mask of patches about `size` metres across covering `cover` (0..1) of the
 /// surface, their edges blurred over `soft`; `seed` picks the pattern.
@@ -141,6 +151,15 @@ pub fn paint(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: Lod
     let (low, high) = body.positions.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
     let height = (high - low).max(1e-3);
     let masks: Vec<_> = coat.markings.iter().map(|m| m.regions.mask(anatomy)).collect();
+    // The body's extent along each axis-banded marking's direction.
+    let ranges: Vec<Option<(f32, f32)>> = coat
+        .markings
+        .iter()
+        .map(|m| {
+            let dir = m.bands?.axis?.normalize_or_zero();
+            (dir != Vec3::ZERO).then(|| body.positions.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.dot(dir)), hi.max(p.dot(dir)))))
+        })
+        .collect();
     // Each vertex's bone, and how far along that bone it lies (in bone lengths, unclamped).
     let placed: Vec<Option<(BoneId, f32, f32)>> = (0..count)
         .map(|i| {
@@ -170,11 +189,11 @@ pub fn paint(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: Lod
             let at = At { pos, normal, height: (pos.y - low) / height, along, tip };
             let mut rgb = Vec3::ZERO;
             let mut alpha = 0.0f32;
-            for (m, mask) in coat.markings.iter().zip(&masks) {
+            for ((m, mask), range) in coat.markings.iter().zip(&masks).zip(&ranges) {
                 if !mask.contains(region) {
                     continue;
                 }
-                let w = m.strength.clamp(0.0, 1.0) * m.weight(&at);
+                let w = m.strength.clamp(0.0, 1.0) * m.weight(&at, *range);
                 if w <= 0.0 {
                     continue;
                 }
@@ -227,8 +246,9 @@ struct At {
 }
 
 impl Marking {
-    /// The product of the masks at a vertex.
-    fn weight(&self, at: &At) -> f32 {
+    /// The product of the masks at a vertex; `range` is the body's extent along the bands' axis,
+    /// for bands across the body.
+    fn weight(&self, at: &At, range: Option<(f32, f32)>) -> f32 {
         let At { pos, normal, height, along, tip } = *at;
         let mut w = 1.0;
         if let Some(facing) = self.facing {
@@ -244,8 +264,14 @@ impl Marking {
             w *= ramp(from, to, tip);
         }
         if let Some(bands) = self.bands {
+            // Where the vertex lies along the bands: its part, or the body along the axis.
+            let t = match (bands.axis.map(Vec3::normalize_or_zero), range) {
+                (Some(dir), Some((lo, hi))) if dir != Vec3::ZERO => ((pos.dot(dir) - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0),
+                _ => along,
+            };
+            let wander = if bands.warp == 0.0 { 0.0 } else { bands.warp * 2.0f32.mul_add(fbm(pos / BAND_WARP_SIZE, 0x5eed), -1.0) };
             // Distance from the middle of the nearest band, in periods (0..0.5).
-            let phase = along.mul_add(bands.count.max(0.0), -bands.offset).rem_euclid(1.0);
+            let phase = t.mul_add(bands.count.max(0.0), -bands.offset + wander).rem_euclid(1.0);
             let from_mid = (phase - 0.5).abs();
             let half = bands.width.clamp(0.0, 1.0) * 0.5;
             let soft = bands.soft.max(1e-3) * 0.5;
@@ -374,11 +400,28 @@ mod tests {
 
     #[test]
     fn bands_ring_the_part() {
-        let m = Marking { bands: Some(Bands { count: 2.0, width: 0.4, soft: 0.02, offset: 0.0 }), ..default() };
-        let w = |t: f32| m.weight(&At { pos: Vec3::ZERO, normal: Vec3::Y, height: 0.5, along: t, tip: 0.5 });
+        let m = Marking { bands: Some(Bands { count: 2.0, width: 0.4, soft: 0.02, ..default() }), ..default() };
+        let w = |t: f32| m.weight(&At { pos: Vec3::ZERO, normal: Vec3::Y, height: 0.5, along: t, tip: 0.5 }, None);
         // Band middles at 0.25 and 0.75 of the part, gaps at 0, 0.5 and 1.
         assert!(w(0.25) > 0.99 && w(0.75) > 0.99, "{} {}", w(0.25), w(0.75));
         assert!(w(0.5) < 0.01 && w(0.02) < 0.01, "{} {}", w(0.5), w(0.02));
+    }
+
+    /// Bands along an axis follow the position across the body, whatever part a vertex is on.
+    #[test]
+    fn bands_along_an_axis_cross_the_body() {
+        let m = Marking { bands: Some(Bands { count: 2.0, width: 0.4, soft: 0.02, axis: Some(Vec3::Z), ..default() }), ..default() };
+        // A body 2 m long (z from -1 to 1): band middles at z = -0.5 and 0.5, a gap at 0.
+        let w = |z: f32| m.weight(&At { pos: Vec3::new(0.3, 0.2, z), normal: Vec3::Y, height: 0.5, along: 0.25, tip: 0.5 }, Some((-1.0, 1.0)));
+        assert!(w(-0.5) > 0.99 && w(0.5) > 0.99, "{} {}", w(-0.5), w(0.5));
+        assert!(w(0.0) < 0.01 && w(-0.98) < 0.01, "{} {}", w(0.0), w(-0.98));
+        // Warped, the same bands shift by up to `warp` periods from place to place.
+        let warped = Marking { bands: Some(Bands { warp: 0.5, ..m.bands.unwrap() }), ..m.clone() };
+        let shifted = (0..50).any(|i| {
+            let p = Vec3::new(i.to_f32() * 0.07, 0.0, 0.5);
+            warped.weight(&At { pos: p, normal: Vec3::Y, height: 0.5, along: 0.0, tip: 0.5 }, Some((-1.0, 1.0))) < 0.5
+        });
+        assert!(shifted, "warp moves the bands somewhere");
     }
 
     #[test]
@@ -389,7 +432,7 @@ mod tests {
             .filter(|i| {
                 let t = i.to_f32();
                 let p = Vec3::new((t * 0.618_034).fract(), (t * 0.414_214).fract(), (t * 0.732_051).fract()) * 2.0;
-                m.weight(&At { pos: p, normal: Vec3::Y, height: 0.5, along: 0.5, tip: 0.5 }) > 0.5
+                m.weight(&At { pos: p, normal: Vec3::Y, height: 0.5, along: 0.5, tip: 0.5 }, None) > 0.5
             })
             .count();
         let share = covered.to_f32() / samples.to_f32();
