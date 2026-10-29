@@ -278,7 +278,8 @@ impl AnatomyBuilder {
     /// # Errors
     ///
     /// When a part with the same path already exists.
-    pub fn begin_part(&mut self, node: &PartNode, path: PartPath) -> Result<BuildCx, AnatomyError> {
+    /// `attach` is where the part attaches on its parent (logical model space), before its offset.
+    pub fn begin_part(&mut self, node: &PartNode, path: PartPath, attach: Transform) -> Result<BuildCx, AnatomyError> {
         if self.anatomy.parts.iter().any(|p| p.path == path) {
             return Err(AnatomyError::DuplicatePath(path));
         }
@@ -304,6 +305,7 @@ impl AnatomyBuilder {
             hard_parts: hard..hard,
             regions: regions..regions,
             axis: SmallVec::new(),
+            attach,
             mirrored,
             density: node.density,
         });
@@ -674,6 +676,7 @@ impl AnatomyBuilder {
             }
         }
         for part in &mut self.anatomy.parts {
+            part.attach.translation.y -= min_y;
             for s in &mut part.axis {
                 s.model.translation.y -= min_y;
             }

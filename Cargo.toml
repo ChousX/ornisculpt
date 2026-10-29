@@ -16,6 +16,9 @@ soft-tissue = []
 # Creatures as DNA (`anatomy::genome`): body, coat and form in one genome, with the traits a
 # design lets vary, through the `genetics` crate.
 genetics = ["dep:genetics"]
+# Interchange (`interchange`): body plans, authored parts and garments to and from glTF, so artists
+# can author in their own tools (`docs/design/interchange.md`).
+interchange = ["dep:serde_json", "dep:base64"]
 web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
 
 [dependencies]
@@ -28,6 +31,8 @@ genetics = { git = "https://github.com/ChousX/genetics", branch = "traits", opti
 mesh_to_sdf = "0.4"
 meshopt = "0.6"
 rand = "0.10"
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.23", optional = true }
 rand_pcg = "0.10"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +46,8 @@ getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"], 
 # Tests read the glTF part meshes the sample plans reference (`anatomy::build_src`).
 [dev-dependencies]
 base64 = "0.23"
+# Interchange tests check exported files with the glTF reader Bevy already builds.
+gltf = { version = "1.4", default-features = false, features = ["extras", "names", "utils"] }
 serde_json = "1"
 
 # For the examples: hot reload (not in the browser, where Bevy rejects `file_watcher`) and the
@@ -79,3 +86,7 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 as_conversions = "deny"
+
+[[example]]
+name = "export"
+required-features = ["interchange"]

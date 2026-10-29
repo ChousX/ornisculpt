@@ -66,6 +66,9 @@ pub struct BuiltPart {
     pub regions: Range<u8>,
     /// Axis samples along the part, logical model space (empty for parts without an axis).
     pub axis: SmallVec<[AxisSample; 9]>,
+    /// Where the part attaches on its parent, before its offset (logical model space, grounded
+    /// with the body). The part builds from `attach * offset`.
+    pub attach: Transform,
     /// Built mirrored: stored transforms are the logical ones reflected across x = 0.
     pub mirrored: bool,
     /// Relative to water; see [`PartNode::density`](super::PartNode::density).
@@ -174,7 +177,7 @@ pub fn referenced_assets(plan: &BodyPlan) -> Vec<String> {
 }
 
 fn walk(b: &mut AnatomyBuilder, node: &PartNode, path: PartPath, at: AttachPoint) -> Result<(), AnatomyError> {
-    let cx = b.begin_part(node, path.clone())?;
+    let cx = b.begin_part(node, path.clone(), at.model)?;
     let slots = node.kind.build(b, at, &cx)?;
     b.set_axis(&slots.axis);
     super::tone::apply_stamps(b, &node.kind, &node.stamps, &slots, &cx);

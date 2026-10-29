@@ -4639,6 +4639,7 @@ dependencies = [
  "genetics",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
+ "gltf",
  "mesh_to_sdf",
  "meshopt",
  "rand 0.10.3",

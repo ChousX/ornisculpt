@@ -75,6 +75,8 @@ impl Plugin for AnatomyPlugin {
             .register_type::<PartLodRules>();
         #[cfg(feature = "genetics")]
         app.add_plugins(genome::GenomePlugin);
+        #[cfg(feature = "interchange")]
+        app.add_plugins(crate::interchange::InterchangePlugin);
     }
 }
 

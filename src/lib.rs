@@ -8,6 +8,8 @@ pub mod anatomy;
 pub mod clothing;
 pub mod coat;
 pub mod equip;
+#[cfg(feature = "interchange")]
+pub mod interchange;
 pub mod mob;
 pub mod motion;
 pub mod num;
