@@ -1,0 +1,11 @@
+// An orc's war-gear: a ragged hide loincloth swinging with the thighs, a broad belt, leather
+// bracers on the forearms and wraps round the shins.
+(
+    garments: [
+        (name: "loincloth", on: "torso", span: (0.0, 0.11), mesh: "garments/garments.gltf#Mesh3/Primitive0", color: (0.24, 0.17, 0.11), roughness: 0.85, ease: 0.012,
+            hang: Some((length: 0.34, chains: 5, segments: 2, droop: 1.0, flare: 0.2, stiffness: 0.5, damping: 0.4, follow_legs: 0.8))),
+        (name: "belt", on: "torso", span: (0.09, 0.18), mesh: "garments/garments.gltf#Mesh2/Primitive0", color: (0.13, 0.09, 0.06), roughness: 0.5, ease: 0.018),
+        (name: "bracer", on: "torso/arm", span: (0.62, 0.93), mesh: "garments/garments.gltf#Mesh1/Primitive0", color: (0.2, 0.13, 0.08), roughness: 0.55, ease: 0.005),
+        (name: "wrap", on: "torso/leg", span: (0.62, 0.88), mesh: "garments/garments.gltf#Mesh1/Primitive0", color: (0.3, 0.24, 0.17), roughness: 0.9, ease: 0.005),
+    ],
+)

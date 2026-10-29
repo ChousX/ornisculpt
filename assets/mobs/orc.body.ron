@@ -48,16 +48,18 @@
                             snout: 0.0,
                             jaw: Some((segments: 1, length: 0.1)),
                             eye_spacing: 0.46,
-                            face: Some((nose: 1.05, brow: 2.0, cheekbones: 1.4, lips: 1.2, chin: 1.35, jaw_width: 1.5, cheeks: 1.1)),
+                            face: Some((nose: 1.2, brow: 2.4, cheekbones: 1.5, lips: 1.25, chin: 1.45, jaw_width: 1.6, cheeks: 1.1)),
                         )),
                         offset: (rotate_deg: (-18.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.011, sclera: 0.5)), attach: Eye, mirror: true),
                             // Pointed ears, swept back.
-                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.085, radius: (curve: [(0.0, 1.0), (0.4, 0.9), (1.0, 0.12)], scale: 0.022, cross: Flat(aspect: 2.6)), blend: 0.006))), attach: Ear, offset: (rotate_deg: (-70.0, 0.0, 15.0)), mirror: true),
-                            // Tusks from the lower jaw, up past the upper lip.
-                            (name: "tusk", kind: Hard((kind: Tusk, size: 0.042, curve: 0.25)), attach: Mouth, offset: (translate: (0.026, -0.012, 0.02), rotate_deg: (-75.0, 0.0, 10.0)), mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.1, radius: (curve: [(0.0, 1.0), (0.4, 0.9), (1.0, 0.1)], scale: 0.024, cross: Flat(aspect: 2.6)), blend: 0.006))), attach: Ear, offset: (rotate_deg: (-70.0, 0.0, 15.0)), mirror: true),
+                            // Tusks from the lower jaw, up past the upper lip, splayed a little.
+                            (name: "tusk", kind: Hard((kind: Horn, size: 0.056, curve: 0.4)), attach: Mouth, offset: (translate: (0.025, -0.018, 0.02), rotate_deg: (-70.0, 0.0, 18.0)), mirror: true),
+                            // Long black hair gathered in a crest from brow to nape.
+                            (name: "hair", kind: Mass((shape: Crest, size: (0.018, 0.022, 0.11), blend: 0.012)), attach: Crown, offset: (translate: (0.0, -0.015, -0.02))),
                         ],
                     ),
                 ],

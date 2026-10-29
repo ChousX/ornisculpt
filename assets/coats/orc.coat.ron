@@ -1,23 +1,33 @@
-// Orc hide: grey-green, darker and browner over the back and shoulders, scarred and mottled; lips
-// and knuckles darker; coarse black hair; yellowed tusks and claws; amber eyes.
+// Orc hide: grey-green, darker and browner over the back and shoulders, mottled; knuckles,
+// elbows and knees darker and the skin round the eyes dusky; lips dark; coarse black hair in
+// a stiff crest, heavy black brows; yellowed tusks and claws, darker at the root; amber eyes.
 (
     base: (0.34, 0.4, 0.24),
     secondary: (0.22, 0.27, 0.15),
     accent: (0.45, 0.5, 0.32),
-    roughness: 0.62,
-    hard: (0.78, 0.7, 0.5),
-    iris: (0.55, 0.35, 0.05),
+    roughness: 0.6,
+    hard: (0.8, 0.72, 0.52),
+    iris: (0.6, 0.38, 0.05),
     coverings: [
-        // Cropped black hair over the crown and back of the head; heavy black brows.
-        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.75, -0.66), from: 0.1, to: 0.3)), kind: Fur((length: 0.006, density: 1800.0, thickness: 0.9, tip: 0.0, shells: 8))),
+        // A stiff crest of black hair from brow to nape.
+        (regions: Part("torso/neck/head/hair"), kind: Fur((length: 0.04, density: 2400.0, thickness: 0.95, tip: 0.0, shells: 12))),
+        // Stubble over the shaved sides; heavy black brows.
+        (regions: Kind(Skull), facing: Some((dir: (0.0, 0.75, -0.66), from: 0.1, to: 0.3)), kind: Fur((length: 0.003))),
         (regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75)), kind: Fur((length: 0.01))),
     ],
     markings: [
         (color: (0.25, 0.28, 0.16), facing: Some((dir: (0.0, 1.0, -0.4), from: 0.2, to: 0.8)), strength: 0.6),
-        (color: (0.06, 0.055, 0.045), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
         (color: (0.27, 0.3, 0.18), patches: Some((size: 0.06, cover: 0.4, soft: 0.1, seed: 5)), strength: 0.5),
+        (color: (0.3, 0.32, 0.2), patches: Some((size: 0.018, cover: 0.45, soft: 0.04, seed: 11)), strength: 0.35),
+        // Darker hands and feet.
+        (color: (0.24, 0.26, 0.16), regions: Or([Kind(LimbEnd), Kind(Digit)]), strength: 0.6),
+        (color: (0.06, 0.055, 0.045), regions: Kind(Brow), facing: Some((dir: (0.0, -0.3, 1.0), from: 0.45, to: 0.75))),
+        (color: (0.2, 0.2, 0.13), regions: Kind(Eyelid), strength: 0.6),
         (color: (0.22, 0.2, 0.14), regions: Kind(Lip), facing: Some((dir: (0.0, 0.0, 1.0), from: 0.5, to: 0.8)), strength: 0.7),
-        // Coarse black hair cropped close over the crown and the back of the head.
-        (color: (0.06, 0.055, 0.045), regions: Kind(Skull), facing: Some((dir: (0.0, 0.75, -0.66), from: 0.1, to: 0.3))),
+        // Shaved sides of the head, a dark shadow of stubble.
+        (color: (0.17, 0.19, 0.12), regions: Kind(Skull), facing: Some((dir: (0.0, 0.75, -0.66), from: 0.1, to: 0.3)), strength: 0.7),
+        (color: (0.05, 0.045, 0.04), regions: Part("torso/neck/head/hair")),
+        // Tusks and claws darker at the root.
+        (color: (0.55, 0.45, 0.3), regions: Kind(Hard), tip: Some((0.4, 0.0)), strength: 0.7),
     ],
 )
