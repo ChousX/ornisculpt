@@ -46,9 +46,9 @@ fn broken_variants() -> [Broken; 3] {
             name: "one leg lifted 0.5 m",
             check: Box::new(FeetReachGround::default()),
             breaks: |a| {
-                // The whole leg moves up, its contact point with it: the foot dangles.
-                let Some(leg) = a.legs.first_mut() else { return };
-                leg.rest_foot.y += 0.5;
+                // The whole leg moves up while the spot it plants on stays on the ground: the
+                // straightened leg no longer reaches it.
+                let Some(leg) = a.legs.first() else { return };
                 // In the cached model-space rest pose: bone-local axes need not point up.
                 for b in &leg.chain {
                     if let Some(m) = a.skeleton.rest_model.get_mut(b.index()) {
