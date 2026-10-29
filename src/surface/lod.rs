@@ -142,6 +142,11 @@ pub fn mesh_lod_keeping<M: Mesher>(
     smooth(&mut raw, 2);
     let sheets = raw.sheets.clone();
     let mut data = skin_and_attrs(raw, &field, anatomy);
+    // Which limbs each hero skin vertex presses against rather than passes through (the field's
+    // attachment zones are in its own pose, as the vertices still are).
+    if level == LodLevel::Hero {
+        super::contact_masks(&mut data, &field, anatomy);
+    }
     // Weights by distance through the body (in the meshing pose, before the unbind uses them).
     let bind = BindSettings { voxel: (mesh_settings.voxel_size * 1.5).max(0.012), ..BindSettings::default() };
     VoxelBinding::new(&field, anatomy, &bind).apply(&mut data, &sheets, &field);

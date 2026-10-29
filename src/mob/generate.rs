@@ -17,7 +17,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{GarmentCover, MobOutfit, Outfit, cover_skin, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
+use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -221,7 +221,7 @@ fn body_materials(
     coat: &Coat,
     outfit: &Outfit,
     anatomy: &Anatomy,
-    bones: &Handle<ShaderBuffer>,
+    [bones, contacts]: [&Handle<ShaderBuffer>; 2],
     materials: &mut Assets<MobMaterial>,
 ) -> [SlotMaterials; 2] {
     let skin_uniform = CoatUniform { cloth: outfit.palette(), ..coat.uniform(anatomy) };
@@ -240,7 +240,7 @@ fn body_materials(
                     diffuse_transmission,
                     ..default()
                 },
-                extension: CoatExt { bones: bones.clone(), coat: uniform, crowd, layer },
+                extension: CoatExt { bones: bones.clone(), contacts: contacts.clone(), coat: uniform, crowd, layer },
             })
         };
         SlotMaterials {
@@ -345,6 +345,8 @@ pub struct GenOutput {
     pub coat: Coat,
     pub coat_meshes: [CoatMeshes; 3],
     pub outfit: Outfit,
+    /// Proxies the hero skin is pushed out of where limbs meet (`deform.wesl`).
+    pub contacts: ContactSet,
     #[cfg(feature = "soft-tissue")]
     pub soft: crate::soft::SoftTissue,
 }
@@ -441,6 +443,7 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
     }
     let motion = times.stage("bake_motion", || bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len())));
     let coat_meshes = times.stage("coat_meshes", || LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level)));
+    let contacts = times.stage("contacts", || ContactSet::new(&anatomy));
     Ok(GenOutput {
         anatomy,
         lods,
@@ -448,6 +451,7 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
         coat,
         coat_meshes,
         outfit,
+        contacts,
         #[cfg(feature = "soft-tissue")]
         soft,
     })
@@ -556,6 +560,7 @@ pub(super) fn start_generation(
 }
 
 /// Polls in-flight tasks and turns finished outputs into [`GeneratedBody`] assets.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn finish_generation(
     mut cache: ResMut<GenCache>,
     budget: Res<GenBudget>,
@@ -563,6 +568,7 @@ pub(super) fn finish_generation(
     mut meshes: ResMut<Assets<Mesh>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut materials: ResMut<Assets<MobMaterial>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     crowd_skin: Res<CrowdSkin>,
 ) {
     let mut done = Vec::new();
@@ -601,7 +607,8 @@ pub(super) fn finish_generation(
             feathers: feathers.map(|m| meshes.add(m)),
             hair: hair.map(|m| meshes.add(m)),
         });
-        let body_materials = body_materials(&out.coat, &out.outfit, &out.anatomy, &crowd_skin.bones, &mut materials);
+        let contacts = buffers.add(ShaderBuffer::from(out.contacts.gpu()));
+        let body_materials = body_materials(&out.coat, &out.outfit, &out.anatomy, [&crowd_skin.bones, &contacts], &mut materials);
         let handle = bodies.add(GeneratedBody {
             key,
             anatomy: Arc::new(out.anatomy),

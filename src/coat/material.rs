@@ -47,6 +47,10 @@ pub struct CoatExt {
     pub bones: Handle<ShaderBuffer>,
     #[uniform(101)]
     pub coat: CoatUniform,
+    /// The body's contact proxies ([`ContactSet::gpu`](crate::surface::ContactSet::gpu)): hero skin
+    /// is pushed out of them where limbs meet.
+    #[storage(102, read_only)]
+    pub contacts: Handle<ShaderBuffer>,
     pub crowd: bool,
     pub layer: CoatLayer,
 }
@@ -106,6 +110,12 @@ impl MaterialExtension for CoatExt {
         let soft = layout.0.contains(ATTRIBUTE_SOFT) && std::env::var_os("ORNISCULPT_NO_SOFT").is_none();
         if soft {
             defs.push("COAT_SOFT".into());
+        }
+        // Hero skin, shells and hair cards press against the limbs they meet (`ORNISCULPT_NO_CONTACT`
+        // to compare).
+        let pressed = matches!(key.bind_group_data.layer, CoatLayer::Skin | CoatLayer::Shell | CoatLayer::Hair);
+        if !key.bind_group_data.crowd && pressed && layout.0.contains(ATTRIBUTE_MOB_DATA) && std::env::var_os("ORNISCULPT_NO_CONTACT").is_none() {
+            defs.push("COAT_CONTACT".into());
         }
         defs.extend(crate::mob::crowd_slot_defs());
         // Optional inputs by what the mesh has: the prepass would otherwise drop the ones it

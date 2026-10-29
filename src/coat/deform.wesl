@@ -11,6 +11,9 @@
 //   over the muscle's length.
 // - Soft tissue (COAT_SOFT) moves with up to two regions' springs: each region is a soft joint (its
 //   bone's skin matrix, moved by the spring) beside its bone's, and S·p − B·p is the spring's offset.
+// - Contact (COAT_CONTACT, hero only): skin that a pose brings inside another limb or the body is
+//   pushed out halfway, so the two surfaces meet and press flat (`surface::contact`). Each vertex's
+//   mask (high half of the mob data's second word) names the groups it may be pushed out of.
 // - `previous`: last frame's surface, for motion vectors. Hero joints have last frame's matrices;
 //   the crowd bone buffer holds only the current pose, so crowd meshes move only with their
 //   instance transform.
@@ -49,6 +52,17 @@ struct CoatUniform {
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<storage, read> crowd_bones: array<mat4x4<f32>>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> coat: CoatUniform;
+
+// `surface::ContactProxyGpu`: a rounded cone in the rest pose, from a (radius a.w) to b (radius
+// b.w), its section narrowed `cross.w` times along `cross`; then its bone and group.
+struct ContactProxy {
+    a: vec4<f32>,
+    b: vec4<f32>,
+    cross: vec4<f32>,
+    ids: vec4<u32>,
+};
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var<storage, read> contact_proxies: array<ContactProxy>;
 
 struct CoatVertex {
     @builtin(instance_index) instance_index: u32,
@@ -134,7 +148,88 @@ fn deform(v: CoatVertex, previous: bool) -> dqs::Skinned {
 @if(COAT_SOFT) {
     s.position += soft_offset(v, position, instance_from_local, previous);
 }
+@if(COAT_CONTACT && COAT_DATA && SKINNED && !COAT_CROWD) {
+    let mask = v.data.y >> 16u;
+    if mask != 0u {
+        s = pressed(s, mask, v.instance_index, previous);
+    }
+}
     return s;
+}
+
+// How far apart two pressed surfaces stay, metres.
+const CONTACT_GAP: f32 = 0.0015;
+
+// Quilez's rounded cone from the origin to `ba`, radii `r1` there and `r2` at `ba`.
+fn round_cone_sdf(p: vec3<f32>, ba: vec3<f32>, r1: f32, r2: f32) -> f32 {
+    let l2 = dot(ba, ba);
+    if l2 < 1e-10 {
+        return length(p) - max(r1, r2);
+    }
+    let rr = r1 - r2;
+    let a2 = l2 - rr * rr;
+    let il2 = 1.0 / l2;
+    let y = dot(p, ba);
+    let z = y - l2;
+    let xv = p * l2 - ba * y;
+    let x2 = dot(xv, xv);
+    let y2 = y * y * l2;
+    let z2 = z * z * l2;
+    let k = sign(rr) * rr * rr * x2;
+    if sign(z) * a2 * z2 > k {
+        return sqrt(x2 + z2) * il2 - r2;
+    }
+    if sign(y) * a2 * y2 < k {
+        return sqrt(x2 + y2) * il2 - r1;
+    }
+    return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
+}
+
+// The skinned vertex pushed out of the deepest contact proxy in `mask` it lies inside, its normal
+// turned to face the other surface (`ContactSet::sink` finds the same proxy).
+@if(COAT_CONTACT && SKINNED)
+fn pressed(s: dqs::Skinned, mask: u32, instance_index: u32, previous: bool) -> dqs::Skinned {
+    var deepest = 0.0;
+    var out_dir = vec3<f32>(0.0);
+    let count = arrayLength(&contact_proxies);
+    for (var i = 0u; i < count; i++) {
+        let c = contact_proxies[i];
+        if (mask & (1u << c.ids.y)) == 0u {
+            continue;
+        }
+        let m = joint_matrix(c.ids.x, instance_index, previous);
+        let scale = length(m[0].xyz);
+        let a = (m * vec4<f32>(c.a.xyz, 1.0)).xyz;
+        let b = (m * vec4<f32>(c.b.xyz, 1.0)).xyz;
+        let r = max(c.a.w, c.b.w) * scale;
+        let ba = b - a;
+        // Far from this one: skip the rest.
+        if distance(s.position, (a + b) * 0.5) > length(ba) * 0.5 + r {
+            continue;
+        }
+        let cross = normalize((m * vec4<f32>(c.cross.xyz, 0.0)).xyz);
+        let k = max(c.cross.w, 1e-3);
+        let p = s.position - a;
+        let q = p + cross * ((k - 1.0) * dot(p, cross));
+        let t = clamp(dot(q, ba) / max(dot(ba, ba), 1e-10), 0.0, 1.0);
+        let off = q - ba * t;
+        let n = select(vec3<f32>(0.0, 1.0, 0.0), normalize(off), dot(off, off) > 1e-12);
+        let along = dot(n, cross);
+        let d = round_cone_sdf(q, ba, c.a.w * scale, c.b.w * scale) / ((k - 1.0) * along * along + 1.0);
+        if d < deepest {
+            deepest = d;
+            out_dir = normalize(n + cross * ((k - 1.0) * along));
+        }
+    }
+    var out = s;
+    if deepest < 0.0 {
+        // The two surfaces meet halfway (each is pushed out of the other), CONTACT_GAP short of
+        // it so they don't fight for depth. A limb hung deep inside another (a forearm in a
+        // thigh) is a pose to fix (`ContactSet::clearance`): this only moves skin.
+        out.position += out_dir * (-deepest * 0.5 + CONTACT_GAP * smoothstep(0.0, 0.004, -deepest));
+        out.normal = normalize(mix(s.normal, -out_dir, smoothstep(0.0, 0.01, -deepest)));
+    }
+    return out;
 }
 
 // One of Bevy's joint matrices for a hero vertex: this frame's, or the last frame's. Last frame's
