@@ -343,7 +343,7 @@ mod tests {
         assert!(hind_joints(|j| j.flex.push(10.0)).is_err(), "one flexion per hinge");
     }
 
-    const PLANS: [(&str, &str); 11] = [
+    const PLANS: [(&str, &str); 13] = [
         ("bat", include_str!("../../assets/mobs/bat.body.ron")),
         ("beast", include_str!("../../assets/mobs/beast.body.ron")),
         ("beetle", include_str!("../../assets/mobs/beetle.body.ron")),
@@ -354,7 +354,9 @@ mod tests {
         ("hexapod", include_str!("../../assets/mobs/hexapod.body.ron")),
         ("horse", include_str!("../../assets/mobs/horse.body.ron")),
         ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron")),
+        ("unicorn", include_str!("../../assets/mobs/unicorn.body.ron")),
         ("wyvern", include_str!("../../assets/mobs/wyvern.body.ron")),
+        ("zebra", include_str!("../../assets/mobs/zebra.body.ron")),
     ];
 
     /// Every sample limb declares its joints, and each leg's declared knee points the way its
