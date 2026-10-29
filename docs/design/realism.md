@@ -161,17 +161,18 @@ Shots: `target/shots/fantasy/` (`before_after_*.png`, `new_horses.png`).
 
 What the round found, for the engine:
 
-1. **Fur shells smear markings.** `build_coat_meshes` grows the shells on
-   `simplify(body, 0.2, 0.01)`, which ignores the paint, so a furry zebra's stripes came out as
-   grey blotches across big triangles. The zebra goes without body fur for now. Fix: simplify the
-   shell source with `simplify_keeping` and the body's paint, as the crowd levels do.
-2. **Hero meshes lose fine markings on flat skin.** The hero level simplifies to 0.5 without
-   the markings (`generate_body`'s `keep` skips Hero), so a stripe that lands on a flat flank
-   spreads over triangles several centimetres across (the zebra's black patch at the girth).
-   Markings per pixel, or `keep` at Hero too, would fix it.
-3. **Bands follow each vertex's bone.** Skin bound to a leg's upper bone (a zebra's rump and
-   shoulder) takes the leg's rings, not the torso's stripes. A world-space or body-length stripe
-   mask would let a pattern cross part borders.
+1. **Fur shells smeared markings** (fixed, 3d62404). The shells grew on
+   `simplify(body, 0.2, 0.01)`, which ignored the paint, so a furry zebra's stripes came out as
+   grey blotches. The shell source now simplifies with the paint as attributes
+   (`simplify_keeping`), and the zebra wears its fur again.
+2. **Hero meshes lost fine markings on flat skin** (fixed, aaf5519). The hero level simplified
+   to half without the markings, leaving flanks in triangles several centimetres across. The
+   `keep` hook runs at every level now; hero triangle counts are unchanged and generation is
+   5 to 9 % slower (bench gen on tir).
+3. **Bands followed each vertex's bone** (fixed, 03a0053). Skin bound to a leg's first bone took
+   the leg's rings, and a belly bound to one bone took one band as a black patch.
+   `Bands::axis` counts bands over the body's extent along a model-space direction, and
+   `Bands::warp` makes them waver; the zebra's stripes run on over shoulders and haunch.
 4. **Budgets.** A dragon with clawed toes, spines and horns hits both caps at 64: bones
    (two-segment toes were 16 too many) and regions (every hard part is a region; the spine series
    had to shrink). Hard parts don't need a region each.
@@ -182,8 +183,10 @@ What the round found, for the engine:
 
 1. **Faces are a dozen ellipsoids and cones.** Lids, brows, lashes and a mouth line are in, but
    there is no nasolabial fold, no philtrum, no ear detail (ears are flaps), the nose is a cone
-   and two wings, and the lips are two ellipsoids. Still the biggest gap for the five
-   humanoids. Two ways forward:
+   and two wings, and the lips are two ellipsoids. The woman, man and thick woman wear the
+   sculpted MakeHuman head, and the orc a warp of it (`tools/gen_head_orc.py`: displacement
+   fields round the landmarks, which then come out for the plan); the gnome and goblin are
+   still procedural and could be warped the same way. Two ways forward for the rest:
    - An authored face: `PartKind::Sculpt` already blends a glTF as an SDF. A base-mesh face
      could be added that way, with the procedural levers kept for proportions.
    - A richer procedural face, with eyelid shells, a philtrum, a nasolabial crease and
