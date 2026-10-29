@@ -1,0 +1,33 @@
+// A plains zebra: black stripes on white, upright round the body and neck, ringing the legs down
+// to the hooves and barring the face; a white line along the belly; the muzzle black; the stiff
+// mane striped through; white ears tipped black; a black tail tuft.
+(
+    base: (0.88, 0.86, 0.81),
+    secondary: (0.84, 0.82, 0.77),
+    accent: (0.92, 0.9, 0.86),
+    roughness: 0.75,
+    hard: (0.1, 0.095, 0.09),
+    // Fur only on the mane and the tail's tuft: fur shells are built on a simplified copy of the
+    // skin, which smears stripes this fine, so the short body coat is left to the skin.
+    coverings: [
+        (regions: Part("torso/neck/mane"), kind: Fur((length: 0.02, density: 1400.0, thickness: 0.85, tip: 0.1, shells: 8))),
+        (regions: Kind(TailTip), kind: Fur((length: 0.04, cards: Some((length: 0.3, width: 0.02, density: 9000.0, lift_deg: 5.0, droop: 0.95))))),
+    ],
+    markings: [
+        // The stripes: broad and upright on the body, narrower on the neck, rings round the
+        // legs, bars across the face.
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(TorsoFront), Kind(TorsoMid), Kind(TorsoRear), Kind(Belly)]), bands: Some((count: 11.0, width: 0.48, soft: 0.08, offset: 0.2))),
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(Neck), Part("torso/neck/mane")]), bands: Some((count: 7.0, width: 0.48, soft: 0.08))),
+        (color: (0.05, 0.045, 0.04), regions: Role(Locomotor), bands: Some((count: 12.0, width: 0.48, soft: 0.08))),
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(Skull), Kind(Snout), Kind(Jaw)]), bands: Some((count: 7.0, width: 0.45, soft: 0.1))),
+        (color: (0.05, 0.045, 0.04), regions: Or([Kind(TailBase)]), bands: Some((count: 6.0, width: 0.45, soft: 0.08))),
+        // A clean white line along the belly.
+        (color: (0.88, 0.86, 0.81), regions: Or([Kind(Belly), Kind(TorsoMid), Kind(TorsoRear)]), facing: Some((dir: (0.0, -1.0, 0.0), from: 0.82, to: 0.95))),
+        // The muzzle black.
+        (color: (0.07, 0.06, 0.055), regions: Or([Kind(Snout), Kind(Jaw)]), tip: Some((0.62, 0.8))),
+        // White inside the ears, black tips.
+        (color: (0.05, 0.045, 0.04), regions: Kind(Appendage), along: Some((0.65, 0.85))),
+        (color: (0.04, 0.035, 0.03), regions: Kind(TailTip), along: Some((0.3, 0.6))),
+        (color: (0.09, 0.085, 0.08), regions: Kind(LimbEnd)),
+    ],
+)
