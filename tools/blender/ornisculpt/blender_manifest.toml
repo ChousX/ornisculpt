@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+
+id = "ornisculpt"
+version = "0.1.0"
+name = "Ornisculpt"
+tagline = "Author Ornisculpt body plans, parts and garments"
+maintainer = "Ornisculpt"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+tags = ["Import-Export"]

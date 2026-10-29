@@ -1,0 +1,1914 @@
+{
+  "format": 1,
+  "garment": {
+    "color": [
+      0.550000011920929,
+      0.5,
+      0.41999998688697815
+    ],
+    "ease": 0.006000000052154064,
+    "mesh": "",
+    "name": "",
+    "on": "",
+    "reach": 0.30000001192092896,
+    "roughness": 0.8500000238418579,
+    "span": [
+      0.0,
+      1.0
+    ]
+  },
+  "modelled": {
+    "Mesh": {
+      "attach": {
+        "Surface": {
+          "around_deg": 0.0,
+          "t": 0.5
+        }
+      },
+      "children": [],
+      "density": 1.0,
+      "detail": "Auto",
+      "kind": {
+        "Hard": {
+          "curve": 0.30000001192092896,
+          "kind": {
+            "Mesh": {
+              "orient": "Model",
+              "path": "",
+              "scale": 1.0
+            }
+          },
+          "sclera": 0.0,
+          "size": 0.029999999329447746,
+          "twist": 0.0
+        }
+      },
+      "mirror": false,
+      "name": "mesh",
+      "offset": {
+        "rotate_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0,
+        "translate": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "repeat": "Once",
+      "stamps": "Default",
+      "tone": {
+        "fat": 1.0,
+        "folds": 1.0,
+        "muscle": 1.0
+      }
+    },
+    "Sculpt": {
+      "attach": {
+        "Surface": {
+          "around_deg": 0.0,
+          "t": 0.5
+        }
+      },
+      "children": [],
+      "density": 1.0,
+      "detail": "Auto",
+      "kind": {
+        "Sculpt": {
+          "blend": 0.019999999552965164,
+          "mesh": "",
+          "orient": "Model",
+          "own_bone": true,
+          "region": "Mass",
+          "resolution": 40,
+          "scale": 1.0
+        }
+      },
+      "mirror": false,
+      "name": "sculpt",
+      "offset": {
+        "rotate_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0,
+        "translate": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "repeat": "Once",
+      "stamps": "Default",
+      "tone": {
+        "fat": 1.0,
+        "folds": 1.0,
+        "muscle": 1.0
+      }
+    }
+  },
+  "parts": [
+    {
+      "from": "bat: torso/neck",
+      "label": "Chain Neck (bat)",
+      "part": {
+        "attach": "End",
+        "children": [
+          {
+            "attach": "End",
+            "children": [
+              {
+                "attach": "Eye",
+                "children": [],
+                "density": 1.0,
+                "detail": "Auto",
+                "kind": {
+                  "Hard": {
+                    "curve": 0.30000001192092896,
+                    "kind": "Eye",
+                    "sclera": 0.0,
+                    "size": 0.012000000104308128,
+                    "twist": 0.0
+                  }
+                },
+                "mirror": true,
+                "name": "eye",
+                "offset": {
+                  "rotate_deg": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": 1.0,
+                  "translate": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "repeat": "Once",
+                "stamps": "Default",
+                "tone": {
+                  "fat": 1.0,
+                  "folds": 1.0,
+                  "muscle": 1.0
+                }
+              },
+              {
+                "attach": "Ear",
+                "children": [],
+                "density": 1.0,
+                "detail": "Auto",
+                "kind": {
+                  "Chain": {
+                    "chain": {
+                      "blend": 0.00800000037997961,
+                      "curl": 0.0,
+                      "length": 0.07000000029802322,
+                      "radius": {
+                        "cross": {
+                          "Flat": {
+                            "aspect": 3.0
+                          }
+                        },
+                        "curve": [
+                          [
+                            0.0,
+                            0.699999988079071
+                          ],
+                          [
+                            0.5,
+                            1.0
+                          ],
+                          [
+                            1.0,
+                            0.30000001192092896
+                          ]
+                        ],
+                        "depth": [],
+                        "drop": [],
+                        "scale": 0.02500000037252903,
+                        "width": []
+                      },
+                      "ratios": [],
+                      "segmented": 0.0,
+                      "segments": 2
+                    },
+                    "role": "Ear"
+                  }
+                },
+                "mirror": true,
+                "name": "ear",
+                "offset": {
+                  "rotate_deg": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": 1.0,
+                  "translate": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "repeat": "Once",
+                "stamps": "Default",
+                "tone": {
+                  "fat": 1.0,
+                  "folds": 1.0,
+                  "muscle": 1.0
+                }
+              }
+            ],
+            "density": 1.0,
+            "detail": "Always",
+            "kind": {
+              "Head": {
+                "eye_lateral": 0.4000000059604645,
+                "eye_spacing": 0.6000000238418579,
+                "jaw": {
+                  "blend": 0.05000000074505806,
+                  "curl": 0.0,
+                  "length": 0.05999999865889549,
+                  "radius": {
+                    "cross": "Round",
+                    "curve": [
+                      [
+                        0.0,
+                        1.0
+                      ],
+                      [
+                        1.0,
+                        0.699999988079071
+                      ]
+                    ],
+                    "depth": [],
+                    "drop": [],
+                    "scale": 0.07999999821186066,
+                    "width": []
+                  },
+                  "ratios": [],
+                  "segmented": 0.0,
+                  "segments": 1
+                },
+                "muzzle": {
+                  "base": [
+                    0.550000011920929,
+                    0.550000011920929
+                  ],
+                  "cheek": 0.0,
+                  "dish": 0.0,
+                  "drop": 0.0,
+                  "jaw_depth": 1.0,
+                  "jaw_width": 1.0,
+                  "lips": 0.0,
+                  "nostrils": 0.0,
+                  "rise": -0.15000000596046448,
+                  "tip": [
+                    0.3499999940395355,
+                    0.3499999940395355
+                  ]
+                },
+                "pitch": 0.0,
+                "skull": {
+                  "blend": 0.05000000074505806,
+                  "shape": "Ellipsoid",
+                  "size": [
+                    0.05000000074505806,
+                    0.05000000074505806,
+                    0.054999999701976776
+                  ]
+                },
+                "snout": 0.05000000074505806
+              }
+            },
+            "mirror": false,
+            "name": "head",
+            "offset": {
+              "rotate_deg": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "scale": 1.0,
+              "translate": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "repeat": "Once",
+            "stamps": "Default",
+            "tone": {
+              "fat": 1.0,
+              "folds": 1.0,
+              "muscle": 1.0
+            }
+          }
+        ],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Chain": {
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.05000000074505806,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.699999988079071
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.05000000074505806,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 1
+            },
+            "role": "Neck"
+          }
+        },
+        "mirror": false,
+        "name": "neck",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bat: torso/neck/head",
+      "label": "Head (bat)",
+      "part": {
+        "attach": "End",
+        "children": [
+          {
+            "attach": "Eye",
+            "children": [],
+            "density": 1.0,
+            "detail": "Auto",
+            "kind": {
+              "Hard": {
+                "curve": 0.30000001192092896,
+                "kind": "Eye",
+                "sclera": 0.0,
+                "size": 0.012000000104308128,
+                "twist": 0.0
+              }
+            },
+            "mirror": true,
+            "name": "eye",
+            "offset": {
+              "rotate_deg": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "scale": 1.0,
+              "translate": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "repeat": "Once",
+            "stamps": "Default",
+            "tone": {
+              "fat": 1.0,
+              "folds": 1.0,
+              "muscle": 1.0
+            }
+          },
+          {
+            "attach": "Ear",
+            "children": [],
+            "density": 1.0,
+            "detail": "Auto",
+            "kind": {
+              "Chain": {
+                "chain": {
+                  "blend": 0.00800000037997961,
+                  "curl": 0.0,
+                  "length": 0.07000000029802322,
+                  "radius": {
+                    "cross": {
+                      "Flat": {
+                        "aspect": 3.0
+                      }
+                    },
+                    "curve": [
+                      [
+                        0.0,
+                        0.699999988079071
+                      ],
+                      [
+                        0.5,
+                        1.0
+                      ],
+                      [
+                        1.0,
+                        0.30000001192092896
+                      ]
+                    ],
+                    "depth": [],
+                    "drop": [],
+                    "scale": 0.02500000037252903,
+                    "width": []
+                  },
+                  "ratios": [],
+                  "segmented": 0.0,
+                  "segments": 2
+                },
+                "role": "Ear"
+              }
+            },
+            "mirror": true,
+            "name": "ear",
+            "offset": {
+              "rotate_deg": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "scale": 1.0,
+              "translate": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "repeat": "Once",
+            "stamps": "Default",
+            "tone": {
+              "fat": 1.0,
+              "folds": 1.0,
+              "muscle": 1.0
+            }
+          }
+        ],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Head": {
+            "eye_lateral": 0.4000000059604645,
+            "eye_spacing": 0.6000000238418579,
+            "jaw": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.05999999865889549,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.699999988079071
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.07999999821186066,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 1
+            },
+            "muzzle": {
+              "base": [
+                0.550000011920929,
+                0.550000011920929
+              ],
+              "cheek": 0.0,
+              "dish": 0.0,
+              "drop": 0.0,
+              "jaw_depth": 1.0,
+              "jaw_width": 1.0,
+              "lips": 0.0,
+              "nostrils": 0.0,
+              "rise": -0.15000000596046448,
+              "tip": [
+                0.3499999940395355,
+                0.3499999940395355
+              ]
+            },
+            "pitch": 0.0,
+            "skull": {
+              "blend": 0.05000000074505806,
+              "shape": "Ellipsoid",
+              "size": [
+                0.05000000074505806,
+                0.05000000074505806,
+                0.054999999701976776
+              ]
+            },
+            "snout": 0.05000000074505806
+          }
+        },
+        "mirror": false,
+        "name": "head",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bat: torso/neck/head/eye",
+      "label": "Hard Eye (bat)",
+      "part": {
+        "attach": "Eye",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.30000001192092896,
+            "kind": "Eye",
+            "sclera": 0.0,
+            "size": 0.012000000104308128,
+            "twist": 0.0
+          }
+        },
+        "mirror": true,
+        "name": "eye",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bat: torso/neck/head/ear",
+      "label": "Chain Ear (bat)",
+      "part": {
+        "attach": "Ear",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Chain": {
+            "chain": {
+              "blend": 0.00800000037997961,
+              "curl": 0.0,
+              "length": 0.07000000029802322,
+              "radius": {
+                "cross": {
+                  "Flat": {
+                    "aspect": 3.0
+                  }
+                },
+                "curve": [
+                  [
+                    0.0,
+                    0.699999988079071
+                  ],
+                  [
+                    0.5,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.30000001192092896
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.02500000037252903,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 2
+            },
+            "role": "Ear"
+          }
+        },
+        "mirror": true,
+        "name": "ear",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bat: torso/wing",
+      "label": "Wing Membrane (bat)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 75.0,
+            "t": 0.8500000238418579
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Wing": {
+            "chord": 0.3499999940395355,
+            "fold": 1.0,
+            "kind": {
+              "Membrane": {
+                "billow": 0.05000000074505806,
+                "closed": {
+                  "curl": 14.0,
+                  "elbow": 166.0,
+                  "raise": -68.0,
+                  "spread": 10.0,
+                  "sweep": 78.0,
+                  "wrist": 164.0
+                },
+                "fingers": 4,
+                "half": {
+                  "curl": 12.0,
+                  "elbow": 130.0,
+                  "raise": 32.0,
+                  "spread": 28.0,
+                  "sweep": 55.0,
+                  "wrist": 150.0
+                },
+                "open": {
+                  "curl": 8.0,
+                  "elbow": 34.0,
+                  "raise": 4.0,
+                  "spread": 105.0,
+                  "sweep": 22.0,
+                  "wrist": 4.0
+                },
+                "scallop": 0.3199999928474426,
+                "thumb": true,
+                "trailing": "HindLeg"
+              }
+            },
+            "radius": 0.02800000086426735,
+            "span": 0.75,
+            "sweep_deg": 8.0
+          }
+        },
+        "mirror": true,
+        "name": "wing",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bat: torso/leg",
+      "label": "Limb Locomotor (bat)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 120.0,
+            "t": 0.07999999821186066
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Limb": {
+            "bends": [],
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.1599999964237213,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.6000000238418579
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.02199999988079071,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 2
+            },
+            "end": "Pad",
+            "joints": {
+              "flex": [
+                25.0
+              ],
+              "lift": 0.0,
+              "plan": "Hindleg",
+              "swing": 10.0
+            },
+            "role": "Locomotor",
+            "splay_deg": 25.0,
+            "stance": "Plantigrade"
+          }
+        },
+        "mirror": true,
+        "name": "leg",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beast: torso/hump",
+      "label": "Mass Hump (beast)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 0.0,
+            "t": 0.800000011920929
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Mass": {
+            "blend": 0.10000000149011612,
+            "shape": "Hump",
+            "size": [
+              0.17000000178813934,
+              0.07000000029802322,
+              0.23999999463558197
+            ]
+          }
+        },
+        "mirror": false,
+        "name": "hump",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            -0.05000000074505806,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beast: torso/neck/head/crest",
+      "label": "Hard Mesh (beast)",
+      "part": {
+        "attach": "Crown",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.30000001192092896,
+            "kind": {
+              "Mesh": {
+                "orient": "Model",
+                "path": "parts/sample_parts.gltf#Mesh1/Primitive0",
+                "scale": 1.600000023841858
+              }
+            },
+            "sclera": 0.0,
+            "size": 0.029999999329447746,
+            "twist": 0.0
+          }
+        },
+        "mirror": false,
+        "name": "crest",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beast: torso/limb.front/foot",
+      "label": "Sculpt (beast)",
+      "part": {
+        "attach": "End",
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Sculpt": {
+            "blend": 0.03999999910593033,
+            "mesh": "parts/sample_parts.gltf#Mesh0/Primitive0",
+            "orient": "Model",
+            "own_bone": true,
+            "region": "Mass",
+            "resolution": 40,
+            "scale": 1.899999976158142
+          }
+        },
+        "mirror": false,
+        "name": "foot",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beast: torso/tail",
+      "label": "Chain Tail (beast)",
+      "part": {
+        "attach": "Start",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Chain": {
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.10000000149011612,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.5
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.03999999910593033,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 2
+            },
+            "role": "Tail"
+          }
+        },
+        "mirror": false,
+        "name": "tail",
+        "offset": {
+          "rotate_deg": [
+            30.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beetle: thorax/head/antenna",
+      "label": "Chain Antenna (beetle)",
+      "part": {
+        "attach": "Horn",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Chain": {
+            "chain": {
+              "blend": 0.004000000189989805,
+              "curl": 60.0,
+              "length": 0.15000000596046448,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.6000000238418579
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.006000000052154064,
+                "width": []
+              },
+              "ratios": [],
+              "segmented": 0.0,
+              "segments": 3
+            },
+            "role": "Antenna"
+          }
+        },
+        "mirror": true,
+        "name": "antenna",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "beetle: thorax/hindwing",
+      "label": "Wing Blade (beetle)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 35.0,
+            "t": 0.10000000149011612
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Wing": {
+            "chord": 0.11999999731779099,
+            "fold": 1.0,
+            "kind": {
+              "Blade": {
+                "elytron": false,
+                "planform": "Long"
+              }
+            },
+            "radius": 0.029999999329447746,
+            "span": 0.28999999165534973,
+            "sweep_deg": 10.0
+          }
+        },
+        "mirror": true,
+        "name": "hindwing",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "biped: torso/neck/head/ear",
+      "label": "Mass Flap (biped)",
+      "part": {
+        "attach": "Ear",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Mass": {
+            "blend": 0.004000000189989805,
+            "shape": "Flap",
+            "size": [
+              0.01600000075995922,
+              0.027000000700354576,
+              0.029999999329447746
+            ]
+          }
+        },
+        "mirror": true,
+        "name": "ear",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "biped: torso/arm",
+      "label": "Limb Manipulator (biped)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 92.0,
+            "t": 0.8999999761581421
+          }
+        },
+        "children": [
+          {
+            "attach": "End",
+            "children": [],
+            "density": 1.0,
+            "detail": {
+              "UpTo": "Hero"
+            },
+            "kind": {
+              "Digits": {
+                "chain": {
+                  "blend": 0.05000000074505806,
+                  "curl": 160.0,
+                  "length": 0.08500000089406967,
+                  "radius": {
+                    "cross": "Round",
+                    "curve": [
+                      [
+                        0.0,
+                        1.0
+                      ],
+                      [
+                        1.0,
+                        0.800000011920929
+                      ]
+                    ],
+                    "depth": [],
+                    "drop": [],
+                    "scale": 0.008500000461935997,
+                    "width": []
+                  },
+                  "ratios": [
+                    1.0,
+                    0.6600000262260437,
+                    0.550000011920929
+                  ],
+                  "segmented": 0.0,
+                  "segments": 3
+                },
+                "count": 5,
+                "opposable": true,
+                "spread_deg": 16.0,
+                "webbing": 0.0
+              }
+            },
+            "mirror": false,
+            "name": "fingers",
+            "offset": {
+              "rotate_deg": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "scale": 1.0,
+              "translate": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            "repeat": "Once",
+            "stamps": "Default",
+            "tone": {
+              "fat": 1.0,
+              "folds": 1.0,
+              "muscle": 1.0
+            }
+          }
+        ],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Limb": {
+            "bends": [],
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.5350000262260437,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    0.5,
+                    0.7200000286102295
+                  ],
+                  [
+                    1.0,
+                    0.550000011920929
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.04500000178813934,
+                "width": []
+              },
+              "ratios": [
+                1.0,
+                0.7799999713897705
+              ],
+              "segmented": 0.0,
+              "segments": 2
+            },
+            "end": {
+              "Hand": {
+                "palm": 0.09000000357627869
+              }
+            },
+            "joints": {
+              "flex": [
+                15.0
+              ],
+              "lift": 0.0,
+              "plan": "Arm",
+              "swing": 0.0
+            },
+            "role": "Manipulator",
+            "splay_deg": 10.0,
+            "stance": "Plantigrade"
+          }
+        },
+        "mirror": true,
+        "name": "arm",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.03500000014901161,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "biped: torso/arm/fingers",
+      "label": "Digits (biped)",
+      "part": {
+        "attach": "End",
+        "children": [],
+        "density": 1.0,
+        "detail": {
+          "UpTo": "Hero"
+        },
+        "kind": {
+          "Digits": {
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 160.0,
+              "length": 0.08500000089406967,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.800000011920929
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.008500000461935997,
+                "width": []
+              },
+              "ratios": [
+                1.0,
+                0.6600000262260437,
+                0.550000011920929
+              ],
+              "segmented": 0.0,
+              "segments": 3
+            },
+            "count": 5,
+            "opposable": true,
+            "spread_deg": 16.0,
+            "webbing": 0.0
+          }
+        },
+        "mirror": false,
+        "name": "fingers",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bird: torso/neck/head/beak",
+      "label": "Hard Beak (bird)",
+      "part": {
+        "attach": "Mouth",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.6000000238418579,
+            "kind": "Beak",
+            "sclera": 0.0,
+            "size": 0.07000000029802322,
+            "twist": 0.0
+          }
+        },
+        "mirror": false,
+        "name": "beak",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "bird: torso/wing",
+      "label": "Wing Feathered (bird)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 70.0,
+            "t": 0.800000011920929
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Wing": {
+            "chord": 0.3199999928474426,
+            "fold": 1.0,
+            "kind": {
+              "Feathered": {
+                "covert_rows": 2,
+                "primaries": 10,
+                "secondaries": 12,
+                "shape": "Slotted"
+              }
+            },
+            "radius": 0.03500000014901161,
+            "span": 0.949999988079071,
+            "sweep_deg": 6.0
+          }
+        },
+        "mirror": true,
+        "name": "wing",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "darner: thorax/abdomen/clasper",
+      "label": "Hard Spike (darner)",
+      "part": {
+        "attach": "End",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.30000001192092896,
+            "kind": "Spike",
+            "sclera": 0.0,
+            "size": 0.02199999988079071,
+            "twist": 0.0
+          }
+        },
+        "mirror": true,
+        "name": "clasper",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.004000000189989805,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "dragon: torso/neck/head/horn",
+      "label": "Hard Horn (dragon)",
+      "part": {
+        "attach": "Horn",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.5,
+            "kind": "Horn",
+            "sclera": 0.0,
+            "size": 0.4000000059604645,
+            "twist": 0.0
+          }
+        },
+        "mirror": true,
+        "name": "horn",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "gnome: torso/neck/head/beard",
+      "label": "Mass Ellipsoid (gnome)",
+      "part": {
+        "attach": "Mouth",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Mass": {
+            "blend": 0.029999999329447746,
+            "shape": "Ellipsoid",
+            "size": [
+              0.07500000298023224,
+              0.12999999523162842,
+              0.054999999701976776
+            ]
+          }
+        },
+        "mirror": false,
+        "name": "beard",
+        "offset": {
+          "rotate_deg": [
+            95.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            -0.05000000074505806,
+            0.019999999552965164
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "hexapod: thorax/abdomen/plate",
+      "label": "Hard Plate (hexapod)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 0.0,
+            "t": 0.5
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.6000000238418579,
+            "kind": "Plate",
+            "sclera": 0.0,
+            "size": 0.10000000149011612,
+            "twist": 0.0
+          }
+        },
+        "mirror": false,
+        "name": "plate",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": {
+          "Series": {
+            "count": 3,
+            "from": 0.15000000596046448,
+            "to": 0.699999988079071
+          }
+        },
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "horse: torso/neck/mane",
+      "label": "Mass Crest (horse)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 8.0,
+            "t": 0.10000000149011612
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Mass": {
+            "blend": 0.029999999329447746,
+            "shape": "Crest",
+            "size": [
+              0.10000000149011612,
+              0.11999999731779099,
+              0.15000000596046448
+            ]
+          }
+        },
+        "mirror": false,
+        "name": "mane",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            -0.029999999329447746,
+            0.0
+          ]
+        },
+        "repeat": {
+          "Series": {
+            "count": 6,
+            "from": 0.07999999821186066,
+            "to": 0.949999988079071
+          }
+        },
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "orc: torso/neck/head/tusk",
+      "label": "Hard Tusk (orc)",
+      "part": {
+        "attach": "Mouth",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.25,
+            "kind": "Tusk",
+            "sclera": 0.0,
+            "size": 0.041999999433755875,
+            "twist": 0.0
+          }
+        },
+        "mirror": true,
+        "name": "tusk",
+        "offset": {
+          "rotate_deg": [
+            -75.0,
+            0.0,
+            10.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.026000000536441803,
+            -0.012000000104308128,
+            0.019999999552965164
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "spider: prosoma/head/chelicera/fang",
+      "label": "Hard Fang (spider)",
+      "part": {
+        "attach": "End",
+        "children": [],
+        "density": 1.0,
+        "detail": "Auto",
+        "kind": {
+          "Hard": {
+            "curve": 0.5,
+            "kind": "Fang",
+            "sclera": 0.0,
+            "size": 0.026000000536441803,
+            "twist": 0.0
+          }
+        },
+        "mirror": false,
+        "name": "fang",
+        "offset": {
+          "rotate_deg": [
+            0.0,
+            0.0,
+            20.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    },
+    {
+      "from": "spider: prosoma/pedipalp",
+      "label": "Limb Display (spider)",
+      "part": {
+        "attach": {
+          "Surface": {
+            "around_deg": 120.0,
+            "t": 0.949999988079071
+          }
+        },
+        "children": [],
+        "density": 1.0,
+        "detail": "Always",
+        "kind": {
+          "Limb": {
+            "bends": [],
+            "chain": {
+              "blend": 0.05000000074505806,
+              "curl": 0.0,
+              "length": 0.1599999964237213,
+              "radius": {
+                "cross": "Round",
+                "curve": [
+                  [
+                    0.0,
+                    1.0
+                  ],
+                  [
+                    1.0,
+                    0.75
+                  ]
+                ],
+                "depth": [],
+                "drop": [],
+                "scale": 0.010999999940395355,
+                "width": []
+              },
+              "ratios": [
+                1.0,
+                0.800000011920929,
+                0.699999988079071
+              ],
+              "segmented": 0.6000000238418579,
+              "segments": 3
+            },
+            "end": "Point",
+            "joints": {
+              "flex": [
+                80.0,
+                30.0
+              ],
+              "lift": 20.0,
+              "plan": "Arched",
+              "swing": 0.0
+            },
+            "role": "Display",
+            "splay_deg": 0.0,
+            "stance": "Arched"
+          }
+        },
+        "mirror": true,
+        "name": "pedipalp",
+        "offset": {
+          "rotate_deg": [
+            70.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0,
+          "translate": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "repeat": "Once",
+        "stamps": "Default",
+        "tone": {
+          "fat": 1.0,
+          "folds": 1.0,
+          "muscle": 1.0
+        }
+      }
+    }
+  ]
+}

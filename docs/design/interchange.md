@@ -1,7 +1,8 @@
 # Interchange: creatures, parts and clothes from artists' own tools
 
-Status: **proposal, being built on branch `interchange`** (2026-10-29). Behind the `interchange`
-cargo feature.
+Status: **built on branch `interchange`** (2026-10-29), behind the `interchange` cargo feature:
+body plans, authored parts and garments round-trip through glTF and Blender. The in-game creator
+(a constrained front end over the same files) is next, as its own plan.
 
 Artists work in the tools they prefer (Blender, Maya, ZBrush and a DCC for retopology) and bring
 the result into the game. The rule: **everything a player can make in the game must also be
@@ -149,12 +150,31 @@ with the tunic loosened 5% (`scale:tunic:1.05`), only the tunic changes, to a ne
 Not yet: a garment brought back keeps only its first piece's shape (a sleeve modelled on the left
 arm is mirrored onto the right, as wrap space always does).
 
-## Blender add-on (phase 5)
+## Blender add-on
 
-Optional: plain glTF with hand-typed custom properties works the same. The add-on
-(`tools/blender/ornisculpt/`) generates its panels from a JSON schema of the Rust types (the
-`schema` example dumps it from reflection), and adds *Mark as part*, *Mark as garment*, *New part
-here* and export on save, so a running `editor` or `viewer` hot-reloads each save.
+Optional: plain glTF with hand-typed custom properties works the same. `tools/blender/ornisculpt/`
+installs as an add-on (zip the folder; it carries a `blender_manifest.toml` and `bl_info`). In
+the Object properties it adds:
+
+- **Add Part**: a part from a template under the active part, with what hangs off it (an arm with
+  its fingers), named apart from its siblings. The templates (`templates.json`) are one part of
+  each kind, role, hard kind or shape lifted from the sample plans, written by the `templates`
+  example; run it after changing the part types or the sample plans.
+- **Mark as Part** (Sculpt or Mesh): the selected meshes become parts modelled in place, nested
+  under the active part.
+- **Mark as Garment**: the selected meshes become garments; with a part active they wrap it,
+  otherwise their part and span come from where they lie.
+
+In the Scene properties it sets the `.body.glb` to export to, and **Export on Save** writes it on
+every save of the `.blend`, so a running `editor` or `viewer` on that file hot-reloads.
+
+`tools/blender/test_addon.py` checks it headless: on the exported woman it adds a spike from a
+template, marks an ico sphere on her back as a sculpt and a cylinder round her waist as a garment,
+and exports; `convert` then reads back the spike, the sculpt (its mesh from the file) and the
+garment (on `torso`, its span inferred).
+
+A node may also sit outside the `ornisculpt` root (Blender keeps new objects at the top of the
+scene): it is placed relative to the root all the same.
 
 ## Artist checklist
 

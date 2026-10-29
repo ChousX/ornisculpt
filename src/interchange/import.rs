@@ -113,23 +113,19 @@ pub fn read_body(bytes: &[u8], mesh_file: &str) -> Result<ReadBody, ImportError>
     let empty = Vec::new();
     let nodes = doc.get("nodes").and_then(Value::as_array).unwrap_or(&empty);
     let node = |i: usize| nodes.get(i);
-    let children = |n: &Value| -> Vec<usize> {
-        n.get("children").and_then(Value::as_array).map_or_else(Vec::new, |c| c.iter().filter_map(index).collect())
-    };
-
-    // Model space is the root node's: moving the whole file in the DCC moves nothing.
+    // Model space is the root node's: moving the whole file in the DCC moves nothing. Nodes
+    // outside it (a garment modelled as an object of its own) are placed relative to it too.
+    let scene = doc.get("scene").and_then(index).unwrap_or(0);
+    let starts: Vec<usize> =
+        doc.pointer(&format!("/scenes/{scene}/nodes")).and_then(Value::as_array).map_or_else(Vec::new, |r| r.iter().filter_map(index).collect());
     let root = nodes.iter().position(|n| ornisculpt(n).is_some_and(|o| o.get("format").is_some()));
-    let scene_roots = || {
-        let scene = doc.get("scene").and_then(index).unwrap_or(0);
-        let roots = doc.pointer(&format!("/scenes/{scene}/nodes")).and_then(Value::as_array);
-        (roots.map_or_else(Vec::new, |r| r.iter().filter_map(index).collect()), None)
-    };
-    let (starts, root_extras) = root.and_then(node).map_or_else(scene_roots, |r| (children(r), ornisculpt(r)));
+    let root_extras = root.and_then(node).and_then(ornisculpt);
+    let root_world = root.and_then(|r| starts.iter().find_map(|&s| world_of(nodes, s, r, Affine3A::IDENTITY, 0))).unwrap_or(Affine3A::IDENTITY);
 
     let mut cx = Cx { nodes, doc: &doc, buffers: &buffers, mesh_file, meshes: Vec::new(), garments: Vec::new(), warnings: Vec::new() };
     let mut found = Vec::new();
     for s in starts {
-        collect(&mut cx, s, Affine3A::IDENTITY, &mut found, 0)?;
+        collect(&mut cx, s, root_world.inverse(), &mut found, 0)?;
     }
     let root_part = match found.len() {
         0 => return Err(ImportError::NoParts),
@@ -381,6 +377,16 @@ impl Cx<'_> {
         };
         set_authored(&mut data.kind, path);
     }
+}
+
+/// The world transform of node `target`, searched for under node `i` (at `parent`).
+fn world_of(nodes: &[Value], i: usize, target: usize, parent: Affine3A, depth: usize) -> Option<Affine3A> {
+    let n = nodes.get(i).filter(|_| depth <= 256)?;
+    let world = parent * local(n);
+    if i == target {
+        return Some(world);
+    }
+    n.get("children")?.as_array()?.iter().filter_map(index).find_map(|c| world_of(nodes, c, target, world, depth + 1))
 }
 
 /// Collects the part nodes at and under node `i`, whose parent is at `parent` (model space).

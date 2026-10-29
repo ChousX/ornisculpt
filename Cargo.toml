@@ -94,3 +94,7 @@ required-features = ["interchange"]
 [[example]]
 name = "convert"
 required-features = ["interchange"]
+
+[[example]]
+name = "templates"
+required-features = ["interchange"]
