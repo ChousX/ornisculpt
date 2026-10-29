@@ -18,7 +18,7 @@ import bevy_pbr::render::{
     mesh_view_bindings::{view, lights},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-    forward_io::FragmentOutput,
+    forward_io::{FragmentOutput, VertexOutput},
 };
 import package::coat::paint_io::{CoatOutput, bevy_output, paint_of, surface_of};
 
@@ -188,9 +188,64 @@ fn bump(n: vec3<f32>, world: vec3<f32>, height: f32) -> vec3<f32> {
     return normalize(abs(det) * n - grad);
 }
 
+// Fur shells: discards the fragment where no strand passes; 1 where the shell is the smooth pelt,
+// else 0. Runs before anything else in the fragment, so discarded fragments (most of them) skip
+// the lighting setup.
+fn shell_pelt(in: VertexOutput) -> f32 {
+    // uv = (shell height, the fur's length here in metres).
+    var h = 0.0;
+    var fur_length = coat.fur.x;
+@if(VERTEX_UVS_A) {
+    h = in.uv.x;
+    fur_length = in.uv.y;
+}
+    var rest = in.world_position.xyz;
+@if(VERTEX_COLORS) {
+    rest = in.color.xyz;
+}
+    let pixel = pixel_size(in.world_position.xyz);
+    // One strand per cell, thinning to a point at full length. Strands need a few pixels per cell
+    // to resolve; finer than that they alias into salt-and-pepper. So the strands gather into
+    // clumps as they get small: the cells double (level by level, each level fading into the
+    // next with the clumps' area kept) until a clump spans about four pixels. Clumps wider than
+    // the fur is long would read as dapple, and a coat only a dozen pixels deep shows its shells
+    // as layers of specks, so past either the shells go over to a smooth pelt: the shell halfway
+    // up stays whole in the fur's average colour (clear of the skin, which the lowest shells dip
+    // under where their simplified source strays), the rest go.
+    let cell = 1.0 / max(coat.fur.y, 1.0);
+    let radius = 0.5 * coat.fur.z * (1.0 - h);
+    let level = max(0.0, log2(4.0 * pixel / cell));
+    let top = log2(max(2.0 * fur_length / cell, 1.0));
+    var pelt = 0.0;
+    if level > top || fur_length < 12.0 * pixel {
+        let step = 1.0 / max(coat.scales.w, 1.0);
+        if h > 0.5 + 1e-3 || h <= 0.5 - step + 1e-3 {
+            discard;
+        }
+        pelt = 1.0;
+    } else {
+        let l0 = floor(level);
+        let f = level - l0;
+        let k0 = exp2(l0);
+        let fine = cellular_within(rest * coat.fur.y / k0, radius * sqrt(1.0 - f));
+        var coarse = false;
+        if f > 0.02 {
+            coarse = cellular_within(rest * coat.fur.y / (k0 * 2.0), radius * sqrt(f));
+        }
+        if !(fine || coarse) {
+            discard;
+        }
+    }
+    return pelt;
+}
+
 @fragment
 fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     let in = bevy_output(out_v);
+    var pelt = 0.0;
+@if(COAT_SHELL) {
+    pelt = shell_pelt(in);
+}
     var pbr = pbr_input_from_standard_material(in, is_front);
     // Coat markings replace the base colour where they show; the darker secondary and lighter
     // accent follow them, keeping their brightness relative to the base.
@@ -343,45 +398,10 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
 }
 
 @if(COAT_SHELL) {
-    // uv = (shell height, the fur's length here in metres).
     var h = 0.0;
-    var fur_length = coat.fur.x;
 @if(VERTEX_UVS_A) {
     h = in.uv.x;
-    fur_length = in.uv.y;
 }
-    // One strand per cell, thinning to a point at full length. Strands need a few pixels per cell
-    // to resolve; finer than that they alias into salt-and-pepper. So the strands gather into
-    // clumps as they get small: the cells double (level by level, each level fading into the
-    // next with the clumps' area kept) until a clump spans about four pixels. Clumps wider than
-    // the fur is long would read as dapple, and a coat only a dozen pixels deep shows its shells
-    // as layers of specks, so past either the shells go over to a smooth pelt: the shell halfway
-    // up stays whole in the fur's average colour (clear of the skin, which the lowest shells dip
-    // under where their simplified source strays), the rest go.
-    let cell = 1.0 / max(coat.fur.y, 1.0);
-    let radius = 0.5 * coat.fur.z * (1.0 - h);
-    let level = max(0.0, log2(4.0 * pixel / cell));
-    let top = log2(max(2.0 * fur_length / cell, 1.0));
-    var pelt = 0.0;
-    if level > top || fur_length < 12.0 * pixel {
-        let step = 1.0 / max(coat.scales.w, 1.0);
-        if h > 0.5 + 1e-3 || h <= 0.5 - step + 1e-3 {
-            discard;
-        }
-        pelt = 1.0;
-    } else {
-        let l0 = floor(level);
-        let f = level - l0;
-        let k0 = exp2(l0);
-        let fine = cellular_within(rest * coat.fur.y / k0, radius * sqrt(1.0 - f));
-        var coarse = false;
-        if f > 0.02 {
-            coarse = cellular_within(rest * coat.fur.y / (k0 * 2.0), radius * sqrt(f));
-        }
-        if !(fine || coarse) {
-            discard;
-        }
-    }
     let root = mix(mix(0.35, 1.0, h), 0.72, pelt);
     color = mix(base, accent, mix(h, 0.5, pelt) * coat.fur.w) * root * (1.0 - 0.3 * surface.y);
     pbr.diffuse_occlusion *= 1.0 - 0.5 * surface.y;
