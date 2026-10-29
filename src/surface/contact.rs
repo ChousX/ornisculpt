@@ -21,7 +21,8 @@ use bevy::prelude::*;
 
 use super::body::{BodyField, BodyFieldOptions, Sheet, limb_of};
 use super::{BodyMeshData, MobVertexData};
-use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, PrimOp, PrimShape};
+use crate::num::Idx;
+use crate::anatomy::{Anatomy, AnatomyError, BodyPlan, BoneId, LimbRole, LodLevel, PartAssets, PartKind, PartLodRules, PrimLayer, PrimOp, PrimShape};
 
 /// Groups a mask can name (16 bits): the body and up to 15 limbs. Limbs past them aren't tested.
 pub const CONTACT_GROUPS: usize = 16;
@@ -32,9 +33,10 @@ const MIN_RADIUS: f32 = 0.008;
 /// Depths shallower than this aren't reported (the fitted proxies are good to about that).
 pub const REPORT_DEPTH: f32 = 0.008;
 
-/// A rounded cone standing in for part of a group's surface, in the rest (bind) pose: from `a`
-/// (radius `r0`) to `b` (radius `r1`), its section an ellipse reaching `radius / squash` along
-/// `cross` (a torso wider than it is deep).
+/// A rounded cone standing in for part of a group's surface, in the rest (bind) pose.
+///
+/// It runs from `a` (radius `r0`) to `b` (radius `r1`), its section an ellipse reaching
+/// `radius / squash` along `cross` (a torso wider than it is deep).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContactProxy {
     pub bone: BoneId,
@@ -66,6 +68,7 @@ impl ContactProxy {
 /// `squash` along `cross`, and the outward direction. Space is stretched by `squash` along
 /// `cross`, which makes the section round, and the distance scaled back by the stretch along the
 /// direction found.
+#[allow(clippy::many_single_char_names)]
 fn round_cone(p: Vec3, a: Vec3, b: Vec3, r0: f32, r1: f32, cross: Vec3, squash: f32) -> (f32, Vec3) {
     let k = squash.max(1e-3);
     let stretch = |v: Vec3| v + cross * ((k - 1.0) * v.dot(cross));
@@ -91,7 +94,7 @@ fn round_cone_sdf(p: Vec3, ba: Vec3, r1: f32, r2: f32) -> f32 {
         return p.length() - r1.max(r2);
     }
     let rr = r1 - r2;
-    let a2 = l2 - rr * rr;
+    let a2 = rr.mul_add(-rr, l2);
     let il2 = 1.0 / l2;
     let y = p.dot(ba);
     let z = y - l2;
@@ -100,12 +103,12 @@ fn round_cone_sdf(p: Vec3, ba: Vec3, r1: f32, r2: f32) -> f32 {
     let z2 = z * z * l2;
     let k = rr.signum() * rr * rr * x2;
     if z.signum() * a2 * z2 > k {
-        return (x2 + z2).sqrt() * il2 - r2;
+        return (x2 + z2).sqrt().mul_add(il2, -r2);
     }
     if y.signum() * a2 * y2 < k {
-        return (x2 + y2).sqrt() * il2 - r1;
+        return (x2 + y2).sqrt().mul_add(il2, -r1);
     }
-    ((x2 * a2 * il2).sqrt() + y * rr) * il2 - r1
+    y.mul_add(rr, (x2 * a2 * il2).sqrt()).mul_add(il2, -r1)
 }
 
 /// Where, in a pose, one group's surface sinks into another's.
@@ -149,10 +152,7 @@ pub fn contact_limbs(anatomy: &Anatomy) -> Vec<u16> {
 
 /// The group of `part`: its limb's, or the body's (0). `None` for a limb past the groups.
 fn group_of(limbs: &[u16], anatomy: &Anatomy, part: u16) -> Option<u8> {
-    match limb_of(anatomy, part) {
-        None => Some(0),
-        Some(limb) => limbs.iter().position(|l| *l == limb).and_then(|i| u8::try_from(i + 1).ok()),
-    }
+    limb_of(anatomy, part).map_or(Some(0), |limb| limbs.iter().position(|l| *l == limb).and_then(|i| u8::try_from(i + 1).ok()))
 }
 
 /// The groups a point at `p` (rest pose, on `group`'s surface) may be pushed out of: all but its
@@ -209,18 +209,17 @@ fn capsule(model: &Affine3A, h: Vec3) -> Option<(Vec3, Vec3, f32, f32, Vec3, f32
 }
 
 /// Points round a proxy's surface: `rings` rings of `around` points between its ends.
-fn surface_points(p: &ContactProxy, rings: u8, around: u8) -> Vec<Vec3> {
-    let axis = (p.b - p.a).normalize_or(Vec3::Y);
-    let u = p.cross.cross(axis).normalize_or(Vec3::X);
-    let v = p.cross;
+fn surface_points(proxy: &ContactProxy, rings: u8, around: u8) -> Vec<Vec3> {
+    let axis = (proxy.b - proxy.a).normalize_or(Vec3::Y);
+    let wide = proxy.cross.cross(axis).normalize_or(Vec3::X);
     let mut out = Vec::new();
-    for i in 0..rings {
-        let t = (f32::from(i) + 0.5) / f32::from(rings);
-        let centre = p.a.lerp(p.b, t);
-        let r = p.r0 + (p.r1 - p.r0) * t;
-        for j in 0..around {
-            let ang = f32::from(j) / f32::from(around) * std::f32::consts::TAU;
-            out.push(centre + u * (ang.cos() * r) + v * (ang.sin() * r / p.squash.max(1e-3)));
+    for ring in 0..rings {
+        let t = (f32::from(ring) + 0.5) / f32::from(rings);
+        let centre = proxy.a.lerp(proxy.b, t);
+        let radius = (proxy.r1 - proxy.r0).mul_add(t, proxy.r0);
+        for step in 0..around {
+            let angle = f32::from(step) / f32::from(around) * std::f32::consts::TAU;
+            out.push(centre + wide * (angle.cos() * radius) + proxy.cross * (angle.sin() * radius / proxy.squash.max(1e-3)));
         }
     }
     out
@@ -293,9 +292,15 @@ impl ContactSet {
         let mut best: Option<(f32, Vec3, u8)> = None;
         for proxy in self.proxies.iter().filter(|q| mask & (1 << q.group) != 0) {
             let Some(skin) = skins.get(proxy.bone.index()) else { continue };
-            let (d, n) = proxy.distance(skin, p);
-            if d < best.map_or(0.0, |b| b.0) {
-                best = Some((d, n, proxy.group));
+            // Far from this one: skip the rest (as the shader does).
+            let (start, end) = (skin.transform_point3(proxy.a), skin.transform_point3(proxy.b));
+            let reach = proxy.r0.max(proxy.r1) * Vec3::from(skin.matrix3.x_axis).length();
+            if p.distance((start + end) * 0.5) > start.distance(end).mul_add(0.5, reach) {
+                continue;
+            }
+            let (depth, out) = proxy.distance(skin, p);
+            if depth < best.map_or(0.0, |b| b.0) {
+                best = Some((depth, out, proxy.group));
             }
         }
         best
@@ -337,7 +342,7 @@ impl ContactSet {
     #[must_use]
     pub fn gpu(&self) -> Vec<ContactProxyGpu> {
         if self.proxies.is_empty() {
-            return vec![ContactProxyGpu { a: [1e6, 1e6, 1e6, 0.0], b: [1e6, 1e6, 1e6, 0.0], cross: [1.0, 0.0, 0.0, 1.0], meta: [0, 31, 0, 0] }];
+            return vec![ContactProxyGpu { a: [1e6, 1e6, 1e6, 0.0], b: [1e6, 1e6, 1e6, 0.0], cross: [1.0, 0.0, 0.0, 1.0], ids: [0, 31, 0, 0] }];
         }
         self.proxies
             .iter()
@@ -345,10 +350,155 @@ impl ContactSet {
                 a: p.a.extend(p.r0).to_array(),
                 b: p.b.extend(p.r1).to_array(),
                 cross: p.cross.extend(p.squash).to_array(),
-                meta: [u32::from(p.bone.0), u32::from(p.group), 0, 0],
+                ids: [u32::from(p.bone.0), u32::from(p.group), 0, 0],
             })
             .collect()
     }
+}
+
+impl ContactSet {
+    /// A group's name for messages: its limb's path, or "the body".
+    #[must_use]
+    pub fn name(&self, anatomy: &Anatomy, limb: Option<u16>) -> String {
+        limb.and_then(|l| anatomy.parts.get(l.idx())).map_or_else(|| "the body".to_owned(), |p| p.path.to_string())
+    }
+}
+
+/// Contacts [`clear_plan`] leaves: shallower than this, metres (the skin presses them flat).
+pub const CLEAR_DEPTH: f32 = 0.012;
+/// Degrees [`clear_plan`] tries turning a limb by at each step (either way for a swing, outward
+/// for a splay), and steps per limb.
+const CLEAR_TURNS: [f32; 3] = [4.0, 8.0, 16.0];
+const CLEAR_STEPS: u8 = 12;
+
+/// One change [`clear_plan`] made to a limb, in degrees.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClearEdit {
+    /// The limb's node in the plan (mirrored copies share it), e.g. `torso/arm`.
+    pub path: String,
+    /// `splay_deg` (outward from the body) or `swing` (its joints' fore-and-aft swing).
+    pub field: &'static str,
+    pub from: f32,
+    pub to: f32,
+}
+
+/// What [`clear_plan`] did.
+#[derive(Clone, Debug)]
+pub struct Cleared {
+    pub plan: BodyPlan,
+    pub edits: Vec<ClearEdit>,
+    /// The deepest contact in the idle pose before and after, metres.
+    pub before: f32,
+    pub after: f32,
+}
+
+/// The plan path of a built part: mirror and repeat suffixes dropped from every segment.
+fn plan_path(built: &str) -> String {
+    built
+        .split('/')
+        .map(|seg| {
+            let seg = seg.strip_suffix(".l").or_else(|| seg.strip_suffix(".r")).unwrap_or(seg);
+            match seg.rsplit_once('.') {
+                Some((base, n)) if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) => base,
+                _ => seg,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Sets a limb node's `field` (see [`ClearEdit::field`]) to `value`; its value before.
+fn set_limb(plan: &mut BodyPlan, path: &str, field: &str, value: Option<f32>) -> Option<f32> {
+    let mut before = None;
+    plan.visit_mut(|p, n| {
+        if p.to_string() != path {
+            return;
+        }
+        if let PartKind::Limb(l) = &mut n.kind {
+            let slot = match field {
+                "splay_deg" => Some(&mut l.splay_deg),
+                _ => l.joints.as_mut().map(|j| &mut j.swing),
+            };
+            if let Some(slot) = slot {
+                before = Some(*slot);
+                if let Some(v) = value {
+                    *slot = v;
+                }
+            }
+        }
+    });
+    before
+}
+
+/// Turns limbs that sink deep into another limb or the body in the idle pose out of it.
+///
+/// Deeper than [`CLEAR_DEPTH`], each limb, the deepest first, turns a few degrees at a time by its
+/// `splay_deg` or its joints' `swing`, whichever helps most, until it clears or stops helping. An
+/// arm moves rather than the leg it sinks into, and a leg only for the body or another leg.
+///
+/// # Errors
+///
+/// When the plan doesn't build.
+pub fn clear_plan(plan: &BodyPlan, rules: &PartLodRules, assets: &PartAssets) -> Result<Cleared, AnatomyError> {
+    let measure = |plan: &BodyPlan| -> Result<(Anatomy, Vec<Contact>), AnatomyError> {
+        let anatomy = Anatomy::from_plan(plan, rules, assets)?;
+        let contacts = ContactSet::new(&anatomy).contacts(&anatomy, &anatomy.idle_pose());
+        Ok((anatomy, contacts))
+    };
+    let deepest = |contacts: &[Contact]| contacts.first().map_or(0.0, |c| c.depth);
+    let (mut anatomy, mut contacts) = measure(plan)?;
+    let before = deepest(&contacts);
+    let mut plan = plan.clone();
+    let mut edits: Vec<ClearEdit> = Vec::new();
+    let mut done: Vec<String> = Vec::new();
+    loop {
+        let locomotor = |a: &Anatomy, l: u16| a.parts.get(l.idx()).is_some_and(|p| p.role == Some(LimbRole::Locomotor));
+        // The deepest contact left with a limb to move: an arm before the leg it lies in.
+        let mover = contacts.iter().filter(|c| c.depth > CLEAR_DEPTH).find_map(|c| {
+            let limbs: Vec<u16> = [c.limb, c.into].into_iter().flatten().collect();
+            // A leg moves only for the body or another leg.
+            let free = limbs.iter().any(|l| !locomotor(&anatomy, *l));
+            let options = limbs.into_iter().filter(|l| !free || !locomotor(&anatomy, *l));
+            options.map(|l| (l, anatomy.parts.get(l.idx()).map(|p| plan_path(&p.path.to_string())))).find_map(|(l, path)| path.filter(|p| !done.contains(p)).map(|p| (l, p)))
+        });
+        let Some((limb, path)) = mover else { break };
+        done.push(path.clone());
+        // How deep this limb is in anything, or anything in it.
+        let depth_of = |a: &Anatomy, cs: &[Contact]| {
+            let name = a.parts.get(limb.idx()).map(|p| plan_path(&p.path.to_string()));
+            cs.iter()
+                .filter(|c| [c.limb, c.into].into_iter().flatten().any(|l| a.parts.get(l.idx()).map(|p| plan_path(&p.path.to_string())) == name))
+                .map(|c| c.depth)
+                .fold(0.0, f32::max)
+        };
+        let mut current = depth_of(&anatomy, &contacts);
+        for _ in 0..CLEAR_STEPS {
+            if current <= CLEAR_DEPTH {
+                break;
+            }
+            let mut best: Option<(f32, BodyPlan, &'static str, f32, f32)> = None;
+            let tries = CLEAR_TURNS.iter().flat_map(|t| [("splay_deg", *t), ("swing", *t), ("swing", -*t)]);
+            for (field, step) in tries {
+                let mut trial = plan.clone();
+                let Some(was) = set_limb(&mut trial, &path, field, None) else { continue };
+                set_limb(&mut trial, &path, field, Some(was + step));
+                let Ok((a, cs)) = measure(&trial) else { continue };
+                let d = depth_of(&a, &cs);
+                if d < best.as_ref().map_or(current, |b| b.0) {
+                    best = Some((d, trial, field, was, was + step));
+                }
+            }
+            let Some((d, trial, field, was, now)) = best else { break };
+            plan = trial;
+            current = d;
+            match edits.iter_mut().find(|e| e.path == path && e.field == field) {
+                Some(e) => e.to = now,
+                None => edits.push(ClearEdit { path: path.clone(), field, from: was, to: now }),
+            }
+        }
+        (anatomy, contacts) = measure(&plan)?;
+    }
+    Ok(Cleared { plan, edits, before, after: deepest(&contacts) })
 }
 
 /// [`ContactProxy`] as `deform.wesl` reads it: `a` and `b` with their radii in w, `cross` with the
@@ -359,12 +509,13 @@ pub struct ContactProxyGpu {
     pub a: [f32; 4],
     pub b: [f32; 4],
     pub cross: [f32; 4],
-    pub meta: [u32; 4],
+    pub ids: [u32; 4],
 }
 
-/// Writes each skin vertex's contact mask (the groups it may be pushed out of) into the high half
-/// of its packed vertex data's second word. `field` is the one the mesh was built from, its
-/// vertices still in that field's pose (attachment zones move with it).
+/// Writes each skin vertex's contact mask (the groups it may be pushed out of).
+///
+/// The mask goes in the high half of the packed vertex data's second word. `field` is the one the
+/// mesh was built from, its vertices still in that field's pose (attachment zones move with it).
 pub fn contact_masks(body: &mut BodyMeshData, field: &BodyField, anatomy: &Anatomy) {
     let limbs = contact_limbs(anatomy);
     let skin = body.skin_vertex_mask();
@@ -391,18 +542,22 @@ pub const fn contact_mask(data: [u32; 2]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{BodyPlan, PartAssets, PartKind, PartLodRules};
-    use crate::num::Idx;
 
-    /// The orc without his sculpted head (its SDF takes minutes in a test build).
-    fn orc(edit: impl Fn(&str) -> String) -> Anatomy {
-        let mut plan: BodyPlan = ron::from_str(&edit(include_str!("../../assets/mobs/orc.body.ron"))).unwrap();
+    /// The orc's plan as it was before its arms were cleared (hanging inside his thighs), without
+    /// his sculpted head (its SDF takes minutes in a test build).
+    fn orc_plan(edit: impl Fn(&str) -> String) -> BodyPlan {
+        let src = include_str!("../../assets/mobs/orc.body.ron").replace("plan: Arm, swing: -8.0", "plan: Arm, swing: 8.0");
+        let mut plan: BodyPlan = ron::from_str(&edit(&src)).unwrap();
         plan.visit_mut(|_, n| {
             if let PartKind::Head(h) = &mut n.kind {
                 h.sculpt = None;
             }
         });
-        Anatomy::from_plan(&plan, &PartLodRules::default(), &PartAssets::default()).unwrap()
+        plan
+    }
+
+    fn orc(edit: impl Fn(&str) -> String) -> Anatomy {
+        Anatomy::from_plan(&orc_plan(edit), &PartLodRules::default(), &PartAssets::default()).unwrap()
     }
 
     /// A rounded cone's distance: on its axis, off its side, past its ends, squashed.
@@ -426,7 +581,7 @@ mod tests {
         let set = ContactSet::new(&anatomy);
         assert!(!set.proxies.is_empty() && set.proxies.len() <= MAX_PROXIES);
         let contacts = set.contacts(&anatomy, &anatomy.idle_pose());
-        let name = |l: Option<u16>| l.and_then(|l| anatomy.parts.get(l.idx())).map_or("body".to_owned(), |p| p.path.to_string());
+        let name = |l: Option<u16>| set.name(&anatomy, l);
         let found: Vec<String> = contacts.iter().map(|c| format!("{} into {} {:.3}", name(c.limb), name(c.into), c.depth)).collect();
         println!("{found:#?}");
         assert!(
@@ -435,13 +590,53 @@ mod tests {
         );
     }
 
+    /// The hero mesh carries masks: limb skin may be pushed out of the body and the other limbs,
+    /// claws and eyes out of nothing.
+    #[test]
+    fn hero_skin_carries_contact_masks() {
+        use crate::surface::{AdaptiveContour, SurfaceSettings, mesh_lod};
+        let anatomy = orc(str::to_owned);
+        let settings = SurfaceSettings::default();
+        let body = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 0).unwrap();
+        let skin = body.skin_vertex_mask();
+        let masked = body.mob_data.iter().zip(&skin).filter(|(d, s)| **s && contact_mask(**d) != 0).count();
+        let skin_count = skin.iter().filter(|s| **s).count();
+        let off_skin = body.mob_data.iter().zip(&skin).filter(|(d, s)| !**s && contact_mask(**d) != 0).count();
+        println!("{masked} of {skin_count} skin vertices masked, {off_skin} off the skin");
+        assert!(masked > skin_count / 2, "{masked} of {skin_count}");
+        assert_eq!(off_skin, 0);
+        // Posed at idle, skinned as the GPU does (linearly here), many forearm vertices sink.
+        let set = ContactSet::new(&anatomy);
+        let skins = ContactSet::skins(&anatomy, &anatomy.skeleton.model_from(&anatomy.idle_pose()));
+        let sunk = (0..body.positions.len())
+            .filter(|&i| {
+                let (Some(p), Some(j), Some(w), Some(d)) = (body.positions.get(i), body.joints.get(i), body.weights.get(i), body.mob_data.get(i)) else { return false };
+                let posed: Vec3 = j.iter().zip(w).filter_map(|(j, w)| skins.get(usize::from(*j)).map(|m| m.transform_point3(*p) * *w)).sum();
+                set.sink(&skins, contact_mask(*d), posed).is_some_and(|(d, _, _)| d < -0.01)
+            })
+            .count();
+        println!("{sunk} vertices sink over 1 cm at idle");
+        assert!(sunk > 100, "{sunk}");
+    }
+
+    /// Cleared, the orc's arms splay out of his thighs and nothing is left deep.
+    #[test]
+    fn clearing_turns_the_orcs_arms_out_of_his_thighs() {
+        let plan = orc_plan(str::to_owned);
+        let cleared = clear_plan(&plan, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        println!("{:.3} -> {:.3}: {:?}", cleared.before, cleared.after, cleared.edits);
+        assert!(cleared.before > 0.05 && cleared.after < cleared.before * 0.5, "{} -> {}", cleared.before, cleared.after);
+        assert!(cleared.edits.iter().any(|e| e.path == "torso/arm"), "{:?}", cleared.edits);
+        assert!(!cleared.edits.iter().any(|e| e.path == "torso/leg"), "the legs stay: {:?}", cleared.edits);
+    }
+
     /// Spread apart, the same orc's arms clear his thighs.
     #[test]
     fn arms_held_out_clear_the_thighs() {
         let anatomy = orc(|s| s.replace("splay_deg: 12.0", "splay_deg: 40.0"));
         let set = ContactSet::new(&anatomy);
         let contacts = set.contacts(&anatomy, &anatomy.idle_pose());
-        let name = |l: Option<u16>| l.and_then(|l| anatomy.parts.get(l.idx())).map_or("body".to_owned(), |p| p.path.to_string());
+        let name = |l: Option<u16>| set.name(&anatomy, l);
         assert!(
             !contacts.iter().any(|c| name(c.limb).contains("arm") && name(c.into).contains("leg")),
             "{:?}",

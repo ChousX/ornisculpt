@@ -198,17 +198,30 @@ fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     hull
 }
 
-/// Non-adjacent parts don't interpenetrate at rest (e.g. legs through the belly).
+/// No limb sinks deep into another limb or the body in the idle pose (a forearm in a thigh).
+///
+/// The hero skin presses shallow contacts flat, but a deep one is a pose to fix
+/// ([`clear_plan`](crate::surface::clear_plan)). Measured by the contact proxies
+/// ([`ContactSet`](crate::surface::ContactSet)).
 pub struct RestSelfIntersection;
+
+/// Contacts deeper than this fail [`RestSelfIntersection`] with a warning, metres.
+pub const DEEP_CONTACT: f32 = 0.02;
 
 impl ViabilityCheck for RestSelfIntersection {
     fn name(&self) -> &'static str {
         "rest_self_intersection"
     }
 
-    fn check(&self, _anatomy: &Anatomy) -> Viability {
-        // Planned: primitive bounds overlapping between parts that are not parent and child.
-        Viability::Warn("rest_self_intersection is not implemented yet".into())
+    fn check(&self, anatomy: &Anatomy) -> Viability {
+        let set = crate::surface::ContactSet::new(anatomy);
+        let deep: Vec<String> = set
+            .contacts(anatomy, &anatomy.idle_pose())
+            .iter()
+            .filter(|c| c.depth >= DEEP_CONTACT)
+            .map(|c| format!("{} sinks {:.1} cm into {}", set.name(anatomy, c.limb), c.depth * 100.0, set.name(anatomy, c.into)))
+            .collect();
+        if deep.is_empty() { Viability::Ok } else { Viability::Warn(deep.join("; ")) }
     }
 }
 

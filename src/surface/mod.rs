@@ -25,7 +25,7 @@ mod process;
 pub mod sdf;
 
 pub use binding::{BindSettings, VoxelBinding};
-pub use contact::{CONTACT_GROUPS, Contact, ContactProxy, ContactProxyGpu, ContactSet, MAX_PROXIES, contact_limbs, contact_mask, contact_masks};
+pub use contact::{CLEAR_DEPTH, CONTACT_GROUPS, ClearEdit, Cleared, Contact, ContactProxy, ContactProxyGpu, ContactSet, MAX_PROXIES, clear_plan, contact_limbs, contact_mask, contact_masks};
 pub use cor::centres_of_rotation;
 #[cfg(feature = "soft-tissue")]
 pub(crate) use body::primitive_parts;
