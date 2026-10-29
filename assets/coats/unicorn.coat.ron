@@ -1,0 +1,33 @@
+// A unicorn: a white coat with a faint warm cast, silver-grey skin showing at the muzzle and round
+// the eyes, a long silky white mane, forelock and tail, pale grey hooves; the horn ivory warming
+// to gold at the tip; deep violet-blue eyes.
+(
+    base: (0.9, 0.89, 0.86),
+    secondary: (0.8, 0.79, 0.77),
+    accent: (0.97, 0.96, 0.93),
+    roughness: 0.55,
+    hard: (0.92, 0.88, 0.76),
+    iris: (0.16, 0.12, 0.32),
+    coverings: [
+        (
+            regions: AllExcept([Kind(LimbEnd), Kind(Snout), Kind(Hard), Kind(Mass), Kind(TailBase), Kind(TailTip)]),
+            kind: Fur((length: 0.008, density: 900.0, thickness: 0.8, tip: 0.3, shells: 8)),
+        ),
+        // Mane and forelock: long hair falling from the crest.
+        (regions: Or([Part("torso/neck/mane"), Part("torso/neck/head/forelock")]), kind: Fur((length: 0.035, cards: Some((length: 0.36, width: 0.026, density: 9000.0, lift_deg: 10.0, droop: 0.9))))),
+        // The tail: long hair to below the hocks.
+        (regions: Or([Kind(TailBase), Kind(TailTip)]), kind: Fur((length: 0.045, cards: Some((length: 0.55, width: 0.026, density: 9000.0, lift_deg: 6.0, droop: 0.95))))),
+    ],
+    markings: [
+        // Grey skin round the nostrils and lips.
+        (color: (0.55, 0.52, 0.52), regions: Or([Kind(Snout), Kind(Jaw)]), tip: Some((0.75, 0.92)), strength: 0.8),
+        // Silvery lower legs, faintly.
+        (color: (0.78, 0.78, 0.8), regions: Role(Locomotor), along: Some((0.55, 0.8)), strength: 0.6),
+        // Pale grey hooves.
+        (color: (0.55, 0.55, 0.56), regions: Kind(LimbEnd)),
+        // The horn turns gold toward its tip.
+        (color: (0.86, 0.68, 0.32), regions: Kind(Hard), tip: Some((0.35, 1.0)), strength: 0.75),
+        // Mane and tail a touch brighter than the body.
+        (color: (0.96, 0.95, 0.93), regions: Or([Part("torso/neck/mane"), Part("torso/neck/head/forelock"), Kind(TailBase), Kind(TailTip)])),
+    ],
+)
