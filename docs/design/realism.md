@@ -128,6 +128,56 @@ Things tried and dropped: a screen-space-derivative normal grain for pores (sand
 amplitude that showed; roughness mottle instead) and long manes as shells (a 7 cm mane on
 8 shells is a brush of layers; 3.5 cm for now, cards later).
 
+## Third pass (2026-10-29): dragon, wyvern, unicorn, zebra, orc
+
+Plans and coats only, in three rounds of shots (viewer, headless): no engine changes.
+
+| Creature | Plan | Coat |
+|---|---|---|
+| Red dragon | `mobs/dragon.body.ron` (reworked) | `coats/dragon_red.coat.ron` |
+| Wyvern | `mobs/wyvern.body.ron` (reworked) | `coats/wyvern_green.coat.ron` |
+| Unicorn | `mobs/unicorn.body.ron` | `coats/unicorn.coat.ron` |
+| Plains zebra | `mobs/zebra.body.ron` | `coats/zebra.coat.ron` |
+| Orc | `mobs/orc.body.ron` (tusks, crest) | `coats/orc.coat.ron`, `outfits/orc.outfit.ron` |
+
+- **Dragon:** a deep-chested body on shorter, clawed legs, an S-curved neck, horns swept back
+  over cheek horns and fangs, spines down neck, back and tail, a spade at the tail's tip, wings
+  half raised (`fold: 0.42`). Coat: crimson scales at 3.4 cm (the lizard's 1.4 cm glittered
+  at a distance), a dark back, pale-gold belly scutes as bands under a facing mask, bone-tipped
+  horns and claws.
+- **Wyvern:** pterosaur wings half spread (`fold: 0.35`), theropod legs with three clawed toes, a
+  barbed stinger. Coat: bottle green, dark back, banded tail.
+- **Unicorn:** the horse on Arabian lines (dished face, arched neck, bigger eyes) with a spiral
+  horn, a rigid mesh from `parts/horns.gltf` (`tools/gen_horns.py`): `HardKind::Horn` is too
+  thick for it (base radius 0.22 × length) and has no ridges. Mane, forelock and tail are hair
+  cards at 9000 per m² (2600 left gaps).
+- **Zebra:** a stockier, shorter-legged horse, upright mane, big ears, a tufted tail. Stripes are
+  `bands` markings per part: upright on the torso, rings on legs, neck and face.
+- **Orc:** horn-shaped tusks (the `Tusk` kind is thinner than it reads), a stiff black crest
+  (fur shells at 4 cm look right for a mohawk), heavier brow, nose and jaw; a hide loincloth,
+  belt, bracers and shin wraps.
+
+Shots: `target/shots/fantasy/` (`before_after_*.png`, `new_horses.png`).
+
+What the round found, for the engine:
+
+1. **Fur shells smear markings.** `build_coat_meshes` grows the shells on
+   `simplify(body, 0.2, 0.01)`, which ignores the paint, so a furry zebra's stripes came out as
+   grey blotches across big triangles. The zebra goes without body fur for now. Fix: simplify the
+   shell source with `simplify_keeping` and the body's paint, as the crowd levels do.
+2. **Hero meshes lose fine markings on flat skin.** The hero level simplifies to 0.5 without
+   the markings (`generate_body`'s `keep` skips Hero), so a stripe that lands on a flat flank
+   spreads over triangles several centimetres across (the zebra's black patch at the girth).
+   Markings per pixel, or `keep` at Hero too, would fix it.
+3. **Bands follow each vertex's bone.** Skin bound to a leg's upper bone (a zebra's rump and
+   shoulder) takes the leg's rings, not the torso's stripes. A world-space or body-length stripe
+   mask would let a pattern cross part borders.
+4. **Budgets.** A dragon with clawed toes, spines and horns hits both caps at 64: bones
+   (two-segment toes were 16 too many) and regions (every hard part is a region; the spine series
+   had to shrink). Hard parts don't need a region each.
+5. **Hard-part shapes are fixed ratios.** Horns, tusks and spikes take one size; their base
+   radius is a fixed fraction of it. A slender horn needs an authored mesh.
+
 ## What still limits realism, most to least
 
 1. **Faces are a dozen ellipsoids and cones.** Lids, brows, lashes and a mouth line are in, but
