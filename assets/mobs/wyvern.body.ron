@@ -1,77 +1,104 @@
-// A wyvern on pterosaur lines: two legs and wings carried by one enormous fourth finger, the
-// membrane running from its tip back to the hind leg, a smooth (unscalloped) trailing edge.
-// A long tail balances the body over the hips. See docs/design/wings.md.
+// A wyvern: two legs and two wings, the wings its arms, on pterosaur lines: one enormous fourth
+// finger carries the membrane from its tip back to the hind leg, two short clawed fingers and
+// a thumb at the wrist. Lean and long-necked, a narrow horned head, the body carried level over
+// powerful theropod legs and balanced by a long tail ending in a barbed stinger. The wings are
+// half folded at rest. See docs/design/wings.md.
 (
     root: (
         name: "torso",
         kind: Torso((
-            chain: (segments: 4, length: 1.1, radius: (curve: [(0.0, 0.7), (0.4, 0.95), (0.75, 1.0), (1.0, 0.8)], scale: 0.24, cross: Ellipse(aspect: 0.85))),
-            arch: [(0.0, -0.05), (0.5, 0.03), (1.0, 0.06)],
-            belly: 0.2,
+            chain: (segments: 4, length: 1.2, radius: (
+                curve: [(0.0, 0.75), (0.4, 0.95), (0.75, 1.0), (1.0, 0.8)], scale: 0.26, cross: Ellipse(aspect: 0.85),
+                depth: [(0.0, 1.0), (0.5, 1.05), (0.8, 1.2), (1.0, 1.05)],
+                drop: [(0.0, 0.0), (0.5, 0.04), (0.8, 0.15), (1.0, 0.05)],
+            )),
+            arch: [(0.0, -0.04), (0.5, 0.04), (1.0, 0.06)],
+            belly: 0.18,
         )),
         detail: Always,
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 3, length: 0.75, radius: (curve: [(0.0, 1.0), (1.0, 0.55)], scale: 0.14), curl: -40.0))),
+                kind: Chain((role: Neck, chain: (segments: 4, length: 0.95, radius: (curve: [(0.0, 1.0), (0.5, 0.68), (1.0, 0.55)], scale: 0.16, cross: Ellipse(aspect: 0.85)), curl: -55.0))),
                 attach: End,
-                offset: (rotate_deg: (-30.0, 0.0, 0.0)),
+                offset: (rotate_deg: (-35.0, 0.0, 0.0)),
                 detail: Always,
                 children: [
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.12, 0.11, 0.15)),
-                            snout: 0.3,
-                            jaw: Some((segments: 1, length: 0.34)),
+                            skull: (shape: Ellipsoid, size: (0.12, 0.11, 0.16)),
+                            snout: 0.34,
+                            jaw: Some((segments: 1, length: 0.38)),
                             eye_spacing: 0.7,
                             eye_lateral: 0.6,
-                            // A long, flat, narrow snout.
-                            muzzle: (base: (0.65, 0.5), tip: (0.45, 0.28), rise: 0.05, cheek: 0.4, nostrils: 0.6, jaw_depth: 1.2, jaw_width: 1.2),
+                            pitch: 10.0,
+                            // Long, narrow and pointed, like a crocodile's turned hawk.
+                            muzzle: (base: (0.62, 0.55), tip: (0.36, 0.26), rise: 0.1, drop: 6.0, cheek: 0.4, nostrils: 0.5, jaw_depth: 1.15, jaw_width: 1.1),
                         )),
-                        offset: (rotate_deg: (30.0, 0.0, 0.0)),
+                        offset: (rotate_deg: (45.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.035)), attach: Eye, mirror: true),
-                            (name: "horn", kind: Hard((kind: Horn, size: 0.22, curve: 0.3)), attach: Horn, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.032)), attach: Eye, mirror: true),
+                            (name: "brow", kind: Mass((shape: Ellipsoid, size: (0.035, 0.022, 0.06), blend: 0.025)), attach: Eye, offset: (translate: (0.0, 0.03, -0.01)), mirror: true),
+                            // Long horns laid straight back off the skull.
+                            (name: "horn", kind: Hard((kind: Horn, size: 0.34, curve: 0.25)), attach: Horn, offset: (rotate_deg: (-92.0, 0.0, -10.0)), mirror: true),
+                            (name: "fang", kind: Hard((kind: Fang, size: 0.04, curve: 0.1)), attach: Mouth, offset: (translate: (0.035, 0.0, -0.05), rotate_deg: (180.0, 0.0, 0.0)), mirror: true),
                         ],
                     ),
+                    (name: "spine.neck", kind: Hard((kind: Spike, size: 0.08, curve: 0.25)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 5, from: 0.1, to: 0.9)),
                 ],
             ),
             (
                 name: "wing",
                 kind: Wing((
-                    kind: Membrane((fingers: 1, trailing: HindLeg, scallop: 0.05, thumb: true)),
-                    span: 2.4,
-                    chord: 0.9,
-                    fold: 1.0,
-                    sweep_deg: 8.0,
-                    radius: 0.055,
+                    kind: Membrane((fingers: 1, trailing: HindLeg, scallop: 0.08, billow: 0.06, thumb: true)),
+                    span: 2.8,
+                    chord: 1.05,
+                    fold: 0.35,
+                    sweep_deg: 10.0,
+                    radius: 0.065,
                 )),
-                attach: Surface(t: 0.85, around_deg: 60.0),
+                attach: Surface(t: 0.86, around_deg: 55.0),
                 mirror: true,
                 detail: Always,
             ),
+            (name: "spine.back", kind: Hard((kind: Spike, size: 0.1, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 6, from: 0.05, to: 0.95)),
             (
-                // Theropod-style hind legs: femur forward, long shin back, long metatarsus.
+                // Theropod legs: thick thigh forward, long shin back, a long metatarsus; three
+                // big clawed toes forward.
                 name: "leg",
                 kind: Limb((
-                    chain: (segments: 3, length: 1.15, ratios: [1.0, 1.15, 0.6], radius: (curve: [(0.0, 1.3), (0.35, 0.75), (0.7, 0.5), (1.0, 0.42)], scale: 0.1)),
+                    chain: (segments: 3, length: 1.2, ratios: [1.0, 1.15, 0.6], radius: (curve: [(0.0, 1.5), (0.3, 0.9), (0.55, 0.6), (0.75, 0.48), (1.0, 0.45)], scale: 0.115)),
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    joints: Some((plan: Hindleg, swing: 35.0, flex: [75.0, 50.0])),
+                    joints: Some((plan: Hindleg, swing: 32.0, flex: [72.0, 50.0])),
                 )),
-                attach: Surface(t: 0.32, around_deg: 120.0),
+                attach: Surface(t: 0.3, around_deg: 118.0),
                 mirror: true,
                 detail: Always,
+                children: [
+                    (
+                        name: "toes",
+                        kind: Digits((count: 3, chain: (segments: 2, length: 0.17, radius: (curve: [(0.0, 1.0), (1.0, 0.7)], scale: 0.028), curl: 200.0), spread_deg: 50.0, tip: Some((kind: Claw, size: 0.07, curve: 0.5)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
             ),
             (
                 name: "tail",
-                kind: Chain((role: Tail, chain: (segments: 6, length: 1.7, radius: (curve: [(0.0, 1.0), (1.0, 0.1)], scale: 0.13), curl: 8.0))),
+                kind: Chain((role: Tail, chain: (segments: 6, length: 2.0, radius: (curve: [(0.0, 1.0), (0.35, 0.55), (1.0, 0.1)], scale: 0.16, cross: Ellipse(aspect: 0.9)), curl: 6.0))),
                 attach: Start,
+                offset: (rotate_deg: (6.0, 0.0, 0.0)),
+                children: [
+                    (name: "spine.tail", kind: Hard((kind: Spike, size: 0.08, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-40.0, 0.0, 0.0)), repeat: Series(count: 6, from: 0.04, to: 0.75)),
+                    // The stinger: a curved barb at the tip.
+                    (name: "sting", kind: Hard((kind: Horn, size: 0.2, curve: 0.35)), attach: End, offset: (rotate_deg: (-90.0, 0.0, 0.0))),
+                ],
             ),
         ],
     ),
-    tone: (muscle: 0.6, fat: 0.1, landmarks: 0.5),
+    tone: (muscle: 0.65, fat: 0.08, landmarks: 0.6),
 )
