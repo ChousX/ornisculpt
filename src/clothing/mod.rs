@@ -30,7 +30,7 @@ mod cover;
 mod fit;
 
 pub use cover::{GarmentCover, cover_skin};
-pub use fit::{fit_outfit, garment_lods};
+pub use fit::{first_piece, fit_first_piece, fit_outfit, garment_field, garment_lods, garment_point};
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};

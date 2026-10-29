@@ -6,6 +6,7 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use super::authored::{authored, base_frame, fingerprint};
+use crate::clothing::{Outfit, fit_first_piece, garment_field};
 use super::{FORMAT, GlbError, KEY, write_glb};
 use crate::anatomy::{Anatomy, BodyPlan, PartAssets, PartNode, PartPath, path_matches};
 use crate::coat::Coat;
@@ -21,26 +22,34 @@ pub enum ExportError {
     Glb(#[from] GlbError),
 }
 
-/// Writes `plan` as a `*.body.glb`.
+/// What [`export_body`] writes.
+pub struct BodyExport<'a> {
+    pub plan: &'a BodyPlan,
+    /// Built from `plan` in its default form (`Anatomy::from_plan`) with `assets`: the part
+    /// frames come from it.
+    pub anatomy: &'a Anatomy,
+    /// The meshes the plan and the outfit reference.
+    pub assets: &'a PartAssets,
+    pub coat: Option<&'a Coat>,
+    /// Garments to export fitted on the body (each on the first part it wraps).
+    pub outfit: Option<&'a Outfit>,
+    /// A hero mesh of the body, exported skinned to the skeleton as reference.
+    pub skin: Option<&'a BodyMeshData>,
+}
+
+/// Writes a body as a `*.body.glb`.
 ///
 /// The file holds an empty per authored part at its frame, carrying the part, and, when given,
-/// the reference content: `anatomy`'s skeleton in rest pose and `skin` (a hero mesh of the same
-/// body) skinned to it. `coat` rides along on the root. A part with an authored mesh (a sculpt, a
-/// mesh hard part) is a mesh node instead, with its mesh from `assets`, scaled, in its frame.
-///
-/// `anatomy` must be built from `plan` in its default form (`Anatomy::from_plan`), with `assets`:
-/// the part frames come from it.
+/// the reference content: the skeleton in rest pose and the skin skinned to it. The coat rides
+/// along on the root. A part with an authored mesh (a sculpt, a mesh hard part) is a mesh node
+/// instead, with its mesh, scaled, in its frame. Each garment is a mesh node fitted on the first
+/// part it wraps, in the rest pose, carrying its [`Garment`](crate::clothing::Garment).
 ///
 /// # Errors
 ///
-/// When a part of the plan isn't in `anatomy`.
-pub fn export_body(
-    plan: &BodyPlan,
-    coat: Option<&Coat>,
-    anatomy: &Anatomy,
-    assets: &PartAssets,
-    skin: Option<&BodyMeshData>,
-) -> Result<Vec<u8>, ExportError> {
+/// When a part of the plan isn't in the anatomy.
+pub fn export_body(body: &BodyExport) -> Result<Vec<u8>, ExportError> {
+    let BodyExport { plan, anatomy, assets, coat, outfit, skin } = *body;
     let mut doc = Doc::default();
     let mut extras = Map::new();
     extras.insert("format".into(), json!(FORMAT));
@@ -53,6 +62,22 @@ pub fn export_body(
     let cx = PartCx { anatomy, assets };
     let part = part_node(&mut doc, &cx, &plan.root, &PartPath::root(&plan.root.name), Affine3A::IDENTITY, 0)?;
     doc.child(root, part);
+
+    if let Some(outfit) = outfit.filter(|o| !o.garments.is_empty()) {
+        let field = garment_field(anatomy);
+        for (order, g) in outfit.garments.iter().enumerate() {
+            let Some(fitted) = assets.meshes.get(&g.mesh).and_then(|m| fit_first_piece(anatomy, &field, g, m)) else {
+                warn!("garment `{}`: no mesh or no part to wrap; not exported", g.name);
+                continue;
+            };
+            let garment = strip_nulls(serde_json::to_value(g)?);
+            let print = format!("{:016x}", fingerprint(&fitted.positions, fitted.indices.len() / 3));
+            let mesh = doc.mesh(&g.name, &fitted.positions, &[], &fitted.indices, MaterialSlot::Cloth);
+            let name = if g.name.is_empty() { format!("garment.{order}") } else { g.name.clone() };
+            let n = doc.node(json!({ "name": name, "mesh": mesh, "extras": { KEY: { "garment": garment, "order": order, "mesh_print": print } } }));
+            doc.child(root, n);
+        }
+    }
 
     if let Some(skin) = skin {
         let reference = reference(&mut doc, anatomy, skin);
@@ -302,7 +327,7 @@ mod tests {
     #[test]
     fn every_sample_plan_exports() {
         for (name, plan) in crate::interchange::sample_plans() {
-            let bytes = export_body(&plan, None, &built(&plan), &test_assets(&plan), None).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let bytes = export_body(&BodyExport { plan: &plan, anatomy: &built(&plan), assets: &test_assets(&plan), coat: None, outfit: None, skin: None }).unwrap_or_else(|e| panic!("{name}: {e}"));
             let gltf = gltf::Gltf::from_slice(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             let parts = gltf
                 .nodes()
@@ -321,7 +346,7 @@ mod tests {
         let anatomy = built(&plan);
         let settings = SurfaceSettings::default();
         let skin = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
-        let bytes = export_body(&plan, Some(&Coat::default()), &anatomy, &test_assets(&plan), Some(&skin)).unwrap();
+        let bytes = export_body(&BodyExport { plan: &plan, anatomy: &anatomy, assets: &test_assets(&plan), coat: Some(&Coat::default()), outfit: None, skin: Some(&skin) }).unwrap();
         let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
         let s = gltf.skins().next().unwrap();
         assert_eq!(s.joints().count(), anatomy.skeleton.len());

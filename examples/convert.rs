@@ -1,5 +1,6 @@
 //! Converts a `*.body.glb` (or `.gltf`) authored in a DCC tool back to a `*.body.ron`, listing the
-//! parts whose nodes moved and anything approximated (see `docs/design/interchange.md`). Headless;
+//! parts whose nodes moved and anything approximated (see `docs/design/interchange.md`). Part
+//! meshes modelled in it go to `<plan>.parts.gltf`, garments to `<plan>.outfit.ron`. Headless;
 //! authored part meshes are read straight from `assets/parts`.
 //!
 //! ```text
@@ -40,6 +41,12 @@ fn run() -> Result<(), String> {
         Some((_, file)) => {
             std::fs::write(&file, text).map_err(|e| format!("{file}: {e}"))?;
             eprintln!("wrote {file}");
+            if let Some(outfit) = &body.outfit {
+                let outfit_file = format!("{}.outfit.ron", file.trim_end_matches(".body.ron"));
+                let text = ron::ser::to_string_pretty(outfit, ron::ser::PrettyConfig::new()).map_err(|e| e.to_string())?;
+                std::fs::write(&outfit_file, text).map_err(|e| format!("{outfit_file}: {e}"))?;
+                eprintln!("wrote {outfit_file} ({} garments)", outfit.garments.len());
+            }
             if !body.meshes.is_empty() {
                 let parts_file = format!("{}.parts.gltf", file.trim_end_matches(".body.ron"));
                 let meshes: Vec<_> = body.meshes.into_iter().map(|(_, m)| m).collect();

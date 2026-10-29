@@ -9,6 +9,7 @@
 mod attach;
 mod authored;
 mod export;
+mod garment;
 mod glb;
 mod import;
 mod loader;
@@ -17,10 +18,11 @@ mod mesh;
 use bevy::prelude::*;
 
 pub use attach::axis_coords;
-pub use export::{ExportError, export_body};
+pub use export::{BodyExport, ExportError, export_body};
+pub use garment::{Unwrapped, infer_on, unwrap_garment};
 pub use glb::{GlbError, read_glb, write_glb};
 pub use import::{ImportError, ImportedBody, ReadBody, import_body, place_moved, read_body};
-pub use loader::{BodyGltfLoader, BodyGltfLoaderError};
+pub use loader::{BodyGltfLoader, BodyGltfLoaderError, OUTFIT_LABEL};
 pub use mesh::{gltf_document, read_trimesh, trimesh, write_meshes_gltf};
 
 /// Version of the `extras.ornisculpt` layout written by [`export_body`].

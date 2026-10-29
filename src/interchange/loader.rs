@@ -12,7 +12,11 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use super::{ImportError, place_moved, read_body, read_trimesh};
 use crate::anatomy::{BodyPlan, PartAssets, TriMesh, referenced_assets};
 
-/// Loads a body plan from glTF (see [`import_body`](super::import_body)). Warnings are logged.
+/// Label of the [`Outfit`](crate::clothing::Outfit) a body file's garments make (`mobs/x.body.glb#outfit`).
+pub const OUTFIT_LABEL: &str = "outfit";
+
+/// Loads a body plan from glTF (see [`import_body`](super::import_body)), with the part meshes
+/// and garments modelled in it as labelled assets. Warnings are logged.
 #[derive(Default, TypePath)]
 pub struct BodyGltfLoader;
 
@@ -57,6 +61,10 @@ impl AssetLoader for BodyGltfLoader {
                 cx.add_labeled_asset(label.to_owned(), bevy_mesh(&mesh));
             }
         }
+        // Garments modelled on the body: `<file>#outfit`.
+        if let Some(outfit) = body.outfit {
+            cx.add_labeled_asset(OUTFIT_LABEL.to_owned(), outfit);
+        }
         Ok(body.plan)
     }
 
@@ -80,7 +88,7 @@ fn bevy_mesh(m: &TriMesh) -> Mesh {
 mod tests {
     use super::*;
     use crate::anatomy::{Anatomy, PartKind, PartLodRules, test_assets};
-    use crate::interchange::{KEY, export_body, read_glb, write_glb};
+    use crate::interchange::{BodyExport, KEY, export_body, read_glb, write_glb};
 
     /// The asset server loads a `*.body.glb` as a plan, and serves the part meshes modelled in it
     /// (here every authored mesh, its exported fingerprint dropped) as its labelled meshes.
@@ -90,7 +98,7 @@ mod tests {
         let plan: BodyPlan = ron::from_str(&src).unwrap();
         let assets = test_assets(&plan);
         let anatomy = Anatomy::from_plan(&plan, &PartLodRules::default(), &assets).unwrap();
-        let (mut doc, bin) = read_glb(&export_body(&plan, None, &anatomy, &assets, None).unwrap()).map(|(d, b)| (d, b.to_vec())).unwrap();
+        let (mut doc, bin) = read_glb(&export_body(&BodyExport { plan: &plan, anatomy: &anatomy, assets: &assets, coat: None, outfit: None, skin: None }).unwrap()).map(|(d, b)| (d, b.to_vec())).unwrap();
         for n in doc["nodes"].as_array_mut().unwrap() {
             if let Some(o) = n.pointer_mut(&format!("/extras/{KEY}")).and_then(serde_json::Value::as_object_mut) {
                 o.remove("mesh_print");

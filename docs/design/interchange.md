@@ -116,20 +116,38 @@ its node's name with `.` made `_` (`horn_001`), since `.1` would read as a copy 
 
 Not yet: heads' sculpts (`Head { sculpt }`) and digit tips export without their meshes.
 
-## Garments (phase 4)
+## Garments
 
-A mesh node with `extras.ornisculpt.garment` is a garment **modelled on the reference body in its
-real shape**. Import is the inverse of the fit (`clothing::fit_outfit`). For each vertex:
+Export fits each garment of an outfit on the **first part it wraps** (its logical copy), in the
+rest pose, with hanging cloth straight down from its edge, and writes it as a mesh node under the
+root carrying `extras.ornisculpt.garment` (the `Garment`), its `order` in the outfit and the
+fitted geometry's `mesh_print`. The artist edits it, or models a new garment on the reference
+body in its real shape.
 
-- the nearest axis sample of the garment's `on` part gives `t`, normalised into its span for `y`;
-- the part's dorsal and side directions give the angle around it (mirrored on mirrored parts);
-- the distance above the body's surface gives `r - 1`.
+On import:
 
-`on` and `span` are inferred when absent (the part most vertices are nearest, and the range of `t`
-they cover). Vertices past the span become the hang or the end cap, as `y < 0` does in wrap space.
-`ease`, `reach`, `hang`, `color` and `roughness` come from the extras. The result is a wrap-space
-mesh and an `Outfit` entry. Wrap space is relative to the body, so a garment modelled on the woman
-fits the orc and the thick woman too.
+- **Unchanged** (same fingerprint), a garment comes back exactly as it was, so it still re-fits
+  any body, including one whose parts moved in the same file.
+- **Edited or new**, each vertex is solved back into wrap space: damped Gauss-Newton for the
+  wrap-space point (`y`, angle, `r`) that the fit (`clothing::garment_point`) places where the
+  vertex is, started from where the vertex lies along and around the part, and from each span edge
+  for cloth hanging past it or capping the part's end. Fitted again on the body it was modelled
+  on, every vertex of every sample garment lands within 0.1 mm of where it was (the peasant and
+  warrior outfits, hanging skirt and cape included), and the result fits other bodies (the orc).
+  A vertex the fit can't reach (inside the body) lands at the nearest place it can, with a
+  warning past 5 mm.
+- `on` and `span`, when not given, come from where the garment lies: the part most vertices are
+  nearest (as a pattern over its copies, `torso/arm`), and the stretch of it they cover.
+  `ease`, `reach`, `hang`, `color` and `roughness` come from the extras, with `Garment`'s
+  defaults.
+- The loader serves the outfit as `<file>.body.glb#outfit`, its new meshes as labelled meshes;
+  `convert` writes `<plan>.outfit.ron` and the meshes to `<plan>.parts.gltf`.
+
+Checked through Blender: the woman in the peasant outfit comes back identical, plan and outfit;
+with the tunic loosened 5% (`scale:tunic:1.05`), only the tunic changes, to a new wrap-space mesh.
+
+Not yet: a garment brought back keeps only its first piece's shape (a sleeve modelled on the left
+arm is mirrored onto the right, as wrap space always does).
 
 ## Blender add-on (phase 5)
 
@@ -140,10 +158,12 @@ here* and export on save, so a running `editor` or `viewer` hot-reloads each sav
 
 ## Artist checklist
 
-- [ ] Export a body to model against: `cargo run --release --example export --features interchange -- mobs/woman.body.ron out.body.glb`.
+- [ ] Export a body to model against: `cargo run --release --example export --features interchange -- mobs/woman.body.ron out.body.glb [coat|-] [outfit]`.
 - [ ] Import it (Blender: File → Import → glTF; custom properties come in as the node's properties).
 - [ ] Move, rotate or scale part empties to place parts; edit their `ornisculpt` properties to
       change them; duplicate an empty to add a part; delete one to remove it.
+- [ ] Model parts as meshes nested under the part they grow from, garments on the body in their
+      real shape; mark them with `ornisculpt` properties (copy them from an exported one).
 - [ ] Leave the reference skeleton and skin alone: they are rebuilt from the plan.
 - [ ] Export as glTF binary with custom properties included (Blender: *Include → Custom
       Properties*), as `name.body.glb` under `assets/`.

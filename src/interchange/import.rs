@@ -13,7 +13,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::authored::{authored, base_frame, fingerprint, is_sculpt, scale_authored, set_authored, weld};
+use super::garment::{infer_on, unwrap_garment};
 use super::{GlbError, KEY, axis_coords, gltf_document, trimesh};
+use crate::clothing::{Garment, Outfit, garment_field};
 use crate::anatomy::{
     Anatomy, AnatomyError, AttachSlot, BodyPlan, PartAssets, PartLodRules, PartNode, PartOffset, PartPath, Repeat, Tone, TriMesh,
     path_matches,
@@ -59,6 +61,9 @@ pub struct ImportedBody {
     /// order. Whoever stores the plan stores these there (the loader serves them as labelled
     /// assets of the body file itself; `convert` writes a parts file).
     pub meshes: Vec<(String, TriMesh)>,
+    /// The garments in the file, when there are any: unchanged ones as exported, edited or new
+    /// ones brought back into wrap space (their meshes among [`Self::meshes`]).
+    pub outfit: Option<Outfit>,
 }
 
 /// Reads a body from glTF (`.glb` or `.gltf` text), placing moved parts where their nodes now are.
@@ -81,6 +86,21 @@ pub struct ReadBody {
     pub body: ImportedBody,
     /// Model-space transform of each moved part's node, parents first.
     nodes: Vec<(PartPath, Affine3A)>,
+    garments: Vec<GarmentNode>,
+    mesh_file: String,
+}
+
+/// A garment node found in the file.
+#[derive(Debug)]
+struct GarmentNode {
+    node_name: Option<String>,
+    /// `extras.ornisculpt.garment`.
+    garment: Value,
+    order: Option<u64>,
+    /// Its fitted geometry's fingerprint at export.
+    print: Option<String>,
+    /// Its mesh, stored model space.
+    mesh: Option<TriMesh>,
 }
 
 /// Reads the plan, its coat and which parts moved; no building.
@@ -106,7 +126,7 @@ pub fn read_body(bytes: &[u8], mesh_file: &str) -> Result<ReadBody, ImportError>
     };
     let (starts, root_extras) = root.and_then(node).map_or_else(scene_roots, |r| (children(r), ornisculpt(r)));
 
-    let mut cx = Cx { nodes, doc: &doc, buffers: &buffers, mesh_file, meshes: Vec::new(), warnings: Vec::new() };
+    let mut cx = Cx { nodes, doc: &doc, buffers: &buffers, mesh_file, meshes: Vec::new(), garments: Vec::new(), warnings: Vec::new() };
     let mut found = Vec::new();
     for s in starts {
         collect(&mut cx, s, Affine3A::IDENTITY, &mut found, 0)?;
@@ -131,8 +151,10 @@ pub fn read_body(bytes: &[u8], mesh_file: &str) -> Result<ReadBody, ImportError>
     let plan = BodyPlan { root: root_part.into_node(), tone };
     let meshes = cx.meshes.into_iter().map(|(_, path, mesh)| (path, mesh)).collect();
     let moved_paths = moved.iter().map(|(p, _)| p.clone()).collect();
-    let body = ImportedBody { plan, coat, moved: moved_paths, warnings: cx.warnings, meshes };
-    Ok(ReadBody { body, nodes: moved })
+    let mut garments = cx.garments;
+    garments.sort_by_key(|g| g.order.unwrap_or(u64::MAX));
+    let body = ImportedBody { plan, coat, moved: moved_paths, warnings: cx.warnings, meshes, outfit: None };
+    Ok(ReadBody { body, nodes: moved, garments, mesh_file: mesh_file.to_owned() })
 }
 
 /// Places every moved part where its node is, parents first: an `Along` or `Surface` part slides
@@ -142,7 +164,7 @@ pub fn read_body(bytes: &[u8], mesh_file: &str) -> Result<ReadBody, ImportError>
 ///
 /// When the plan, as moved so far, doesn't build.
 pub fn place_moved(read: ReadBody, assets: &PartAssets) -> Result<ImportedBody, ImportError> {
-    let ReadBody { mut body, nodes } = read;
+    let ReadBody { mut body, nodes, garments, mesh_file } = read;
     let rules = PartLodRules::default();
     let mut assets = assets.clone();
     for (path, mesh) in &body.meshes {
@@ -173,7 +195,69 @@ pub fn place_moved(read: ReadBody, assets: &PartAssets) -> Result<ImportedBody, 
             body.warnings.push(format!("`{path}`: a part scales evenly; its node's scale was averaged"));
         }
     }
+    if !garments.is_empty() {
+        let anatomy = Anatomy::from_plan(&body.plan, &rules, assets)?;
+        body.outfit = Some(bring_back(&mut body, &anatomy, garments, &mesh_file));
+    }
     Ok(body)
+}
+
+/// The outfit of `garments`, modelled on `anatomy` (the body as imported): unchanged ones as
+/// they were, edited or new ones brought back into wrap space, their meshes added to `body`.
+fn bring_back(body: &mut ImportedBody, anatomy: &Anatomy, garments: Vec<GarmentNode>, mesh_file: &str) -> Outfit {
+    let field = garment_field(anatomy);
+    let mut outfit = Outfit::default();
+    for node in garments {
+        let label = node.node_name.clone().unwrap_or_default();
+        let mut g: Garment = match serde_json::from_value(node.garment.clone()) {
+            Ok(g) => g,
+            Err(e) => {
+                body.warnings.push(format!("garment `{label}`: {e}; left out"));
+                continue;
+            }
+        };
+        if g.name.is_empty() {
+            g.name.clone_from(&label);
+        }
+        let Some(mesh) = node.mesh else {
+            if g.mesh.is_empty() {
+                body.warnings.push(format!("garment `{}`: no mesh; left out", g.name));
+            } else {
+                outfit.garments.push(g);
+            }
+            continue;
+        };
+        let now = format!("{:016x}", fingerprint(&mesh.positions, mesh.indices.len() / 3));
+        if !g.mesh.is_empty() && node.print.as_deref() == Some(now.as_str()) {
+            outfit.garments.push(g);
+            continue;
+        }
+        let given = |k: &str| node.garment.get(k).is_some_and(|v| v.as_str().is_none_or(|s| !s.is_empty()));
+        if !given("on") || !given("span") {
+            let Some((on, span)) = infer_on(&body.plan, anatomy, &mesh) else {
+                body.warnings.push(format!("garment `{}`: lies on no part; left out", g.name));
+                continue;
+            };
+            if !given("on") {
+                g.on = on;
+            }
+            if !given("span") {
+                g.span = span;
+            }
+        }
+        let Some(back) = unwrap_garment(anatomy, &field, &g, &mesh) else {
+            body.warnings.push(format!("garment `{}`: `{}` names no part with an axis; left out", g.name, g.on));
+            continue;
+        };
+        if back.worst > 0.005 {
+            body.warnings.push(format!("garment `{}`: a vertex lands {:.1} mm from where it was modelled (inside the body?)", g.name, back.worst * 1000.0));
+        }
+        let path = format!("{mesh_file}#Mesh{}/Primitive0", body.meshes.len());
+        body.meshes.push((path.clone(), back.mesh));
+        g.mesh = path;
+        outfit.garments.push(g);
+    }
+    outfit
 }
 
 /// Moves `node`'s attach to `t` (and `around` degrees, on the skin) along its parent. A series
@@ -251,6 +335,7 @@ struct Cx<'a> {
     /// Part meshes taken from the file: glTF mesh index, the path the plan refers to it by, and
     /// the mesh.
     meshes: Vec<(usize, String, TriMesh)>,
+    garments: Vec<GarmentNode>,
     warnings: Vec<String>,
 }
 
@@ -309,6 +394,20 @@ fn collect(cx: &mut Cx, i: usize, parent: Affine3A, out: &mut Vec<Found>, depth:
     let model = parent * local(n);
     let extras = ornisculpt(n);
     if extras.and_then(|o| o.get("reference")).and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    if let Some(garment) = extras.and_then(|o| o.get("garment")) {
+        let mesh = n.get("mesh").and_then(index).and_then(|m| cx.mesh(m)).map(|m| {
+            let positions = m.positions.iter().map(|p| model.transform_point3(*p)).collect();
+            TriMesh::new(positions, Vec::new(), m.indices)
+        });
+        cx.garments.push(GarmentNode {
+            node_name: n.get("name").and_then(Value::as_str).map(str::to_owned),
+            garment: garment.clone(),
+            order: extras.and_then(|o| o.get("order")).and_then(Value::as_u64),
+            print: extras.and_then(|o| o.get("mesh_print")).and_then(Value::as_str).map(str::to_owned),
+            mesh,
+        });
         return Ok(());
     }
     let kids = n.get("children").and_then(Value::as_array).map_or_else(Vec::new, |c| c.iter().filter_map(index).collect::<Vec<_>>());
@@ -434,7 +533,7 @@ fn close(a: &Affine3A, b: &Affine3A) -> bool {
 mod tests {
     use super::*;
     use crate::anatomy::{PartKind, referenced_assets, test_assets};
-    use crate::interchange::{export_body, read_glb, write_glb};
+    use crate::interchange::{BodyExport, export_body, read_glb, write_glb};
 
     fn sample(name: &str) -> BodyPlan {
         let path = format!("{}/assets/mobs/{name}.body.ron", env!("CARGO_MANIFEST_DIR"));
@@ -443,7 +542,7 @@ mod tests {
 
     fn export(plan: &BodyPlan) -> Vec<u8> {
         let anatomy = Anatomy::from_plan(plan, &PartLodRules::default(), &test_assets(plan)).unwrap();
-        export_body(plan, Some(&Coat::default()), &anatomy, &test_assets(plan), None).unwrap()
+        export_body(&BodyExport { plan, anatomy: &anatomy, assets: &test_assets(plan), coat: Some(&Coat::default()), outfit: None, skin: None }).unwrap()
     }
 
     fn ron(plan: &BodyPlan) -> String {

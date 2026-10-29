@@ -167,7 +167,7 @@ struct Chain {
 /// Wraps `outfit` onto `anatomy`: adds loose-cloth bones (springs, leg following) to the
 /// skeleton and returns the garments as one hero-detail cloth mesh in the dressed skeleton.
 pub fn fit_outfit(mut anatomy: Anatomy, outfit: &Outfit, assets: &PartAssets) -> (Anatomy, Option<BodyMeshData>) {
-    let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
+    let field = garment_field(&anatomy);
     let mut out = BodyMeshData::default();
     let mut cloth_bones: Vec<BoneId> = Vec::new();
     let mut new_bones: Vec<BoneDef> = Vec::new();
@@ -360,15 +360,74 @@ fn hang_influences(chains: &[Chain], theta: f32, along: f32) -> Option<([u16; 4]
 }
 
 /// Wraps one piece's mesh onto its part and appends it to `out`.
+/// Where wrap-space vertex `p` of `piece` sits in the rest pose (stored model space), with the
+/// body surface it rides on; hanging cloth hangs straight from its edge, as before its chains
+/// move. `None` where the part has no axis sample.
+fn place(piece: &Piece, field: &BodyField, p: Vec3) -> Option<(SurfacePoint, Vec3)> {
+    let g = piece.garment;
+    let theta = theta_of(p);
+    let height = (p.x.hypot(p.z) - 1.0) + g.ease;
+    let surf = piece.surface(field, p.y, theta, g.hang.is_none(), height)?;
+    let position = match g.hang {
+        Some(hang) if !(0.0..=1.0).contains(&p.y) => {
+            let start_edge = p.y < 0.0;
+            let beyond = if start_edge { -p.y } else { p.y - 1.0 };
+            let along = hang_edge(piece, start_edge).map_or(Vec3::NEG_Y, |(_, along)| along);
+            let (dir, radial) = drop_dir(piece, along, surf.normal, &hang);
+            let drop = beyond * hang.length;
+            surf.position + dir * drop + radial * drop * hang.flare
+        }
+        _ => surf.position,
+    };
+    Some((surf, position))
+}
+
+/// Where wrap-space vertex `wrap` of `garment` sits on part `part` of `anatomy` in the rest pose.
+///
+/// The result is stored model space: the fit of one vertex, which interchange inverts to bring
+/// garments modelled on a body back into wrap space. `field` is `anatomy`'s at hero detail
+/// ([`garment_field`]).
+#[must_use]
+pub fn garment_point(anatomy: &Anatomy, field: &BodyField, part: u16, garment: &Garment, wrap: Vec3) -> Option<Vec3> {
+    let piece = Piece { part: anatomy.parts.get(part.idx())?, limb: limb_of(anatomy, part), garment, palette: 0 };
+    place(&piece, field, wrap).map(|(_, p)| p)
+}
+
+/// The body field garments fit against.
+#[must_use]
+pub fn garment_field(anatomy: &Anatomy) -> BodyField {
+    BodyField::new(anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false })
+}
+
+/// The first part `garment` wraps (its logical copy), by index.
+#[must_use]
+pub fn first_piece(anatomy: &Anatomy, garment: &Garment) -> Option<u16> {
+    let pattern = PartPath(garment.on.clone());
+    (0u16..).zip(&anatomy.parts).find(|(_, p)| !p.axis.is_empty() && path_matches(&pattern, &p.path)).map(|(i, _)| i)
+}
+
+/// `garment` (wrap-space `mesh`) fitted to its first part alone, in the rest pose (stored model
+/// space), hanging cloth straight from its edge: what an artist models against.
+#[must_use]
+pub fn fit_first_piece(anatomy: &Anatomy, field: &BodyField, garment: &Garment, mesh: &TriMesh) -> Option<TriMesh> {
+    let part = first_piece(anatomy, garment)?;
+    let piece = Piece { part: anatomy.parts.get(part.idx())?, limb: limb_of(anatomy, part), garment, palette: 0 };
+    let positions = mesh.positions.iter().map(|p| place(&piece, field, *p).map_or(Vec3::ZERO, |(_, q)| q)).collect();
+    let mut indices = mesh.indices.clone();
+    if piece.part.mirrored {
+        indices.as_chunks_mut::<3>().0.iter_mut().for_each(|t| t.swap(1, 2));
+    }
+    Some(TriMesh::new(positions, Vec::new(), indices))
+}
+
 fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&[Chain]>, out: &mut BodyMeshData) {
     let base = out.positions.len().clamp_u32();
     let g = piece.garment;
     let start = out.positions.len();
     for p in &mesh.positions {
         let theta = theta_of(*p);
-        let height = (p.x.hypot(p.z) - 1.0) + g.ease;
         let hanging = !(0.0..=1.0).contains(&p.y);
-        let Some(surf) = piece.surface(field, p.y, theta, g.hang.is_none(), height) else {
+        let Some((surf, placed)) = place(piece, field, *p) else {
             // A part without an axis sample here: collapse the vertex (never happens for parts
             // with an axis, which every matched part has).
             out.positions.push(Vec3::ZERO);
@@ -379,19 +438,14 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
             out.cloth.push(piece.palette);
             continue;
         };
-        let at_edge = surf.position;
         let skin = (surf.info.bones.map(|b| u16::from(b.0)), surf.info.weights);
         // Without chains (no bones left) hanging cloth still hangs, rigid on the edge's skin.
         let (position, (joints, weights)) = match (hanging, g.hang) {
-            (true, Some(hang)) => {
-                let start_edge = p.y < 0.0;
-                let beyond = if start_edge { -p.y } else { p.y - 1.0 };
-                let along = hang_edge(piece, start_edge).map_or(Vec3::NEG_Y, |(_, along)| along);
-                let (dir, radial) = drop_dir(piece, along, surf.normal, &hang);
-                let drop = beyond * hang.length;
-                (at_edge + dir * drop + radial * drop * hang.flare, chains.and_then(|c| hang_influences(c, theta, beyond)).unwrap_or(skin))
+            (true, Some(_)) => {
+                let beyond = if p.y < 0.0 { -p.y } else { p.y - 1.0 };
+                (placed, chains.and_then(|c| hang_influences(c, theta, beyond)).unwrap_or(skin))
             }
-            _ => (at_edge, skin),
+            _ => (placed, skin),
         };
         out.positions.push(position);
         out.normals.push(surf.normal);
