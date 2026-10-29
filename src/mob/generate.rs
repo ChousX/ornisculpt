@@ -379,11 +379,12 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
     let anatomy = times.stage("anatomy", || build_anatomy(&live, &rules, &assets)).map_err(|e| e.to_string())?;
     let (anatomy, cloth) =
         if outfit.garments.is_empty() { (anatomy, None) } else { times.stage("fit_outfit", || fit_outfit(anatomy, &outfit, &assets)) };
-    // Crowd levels simplify hard: give the simplifier the coat's markings, baked on the full mesh,
-    // so the triangles it keeps go where the colour changes (a Hereford's white face and socks)
-    // rather than wherever the shape alone allows. Hero meshes are dense enough as they are.
-    let keep = |dense: &BodyMeshData, level: LodLevel| {
-        (level != LodLevel::Hero && !coat.markings.is_empty()).then(|| {
+    // Give the simplifier the coat's markings, baked on the full mesh, so the triangles it keeps
+    // go where the colour changes (a Hereford's white face and socks, a zebra's stripes) rather
+    // than wherever the shape alone allows: crowd levels simplify hard, and even the hero's half
+    // leaves triangles several centimetres across on a flat flank.
+    let keep = |dense: &BodyMeshData, _level: LodLevel| {
+        (!coat.markings.is_empty()).then(|| {
             let mut painted = dense.clone();
             // Bones are still the full skeleton's here (crowd levels remap them after).
             crate::coat::paint(&mut painted, &coat, &anatomy, LodLevel::Hero);
