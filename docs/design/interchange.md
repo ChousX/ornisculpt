@@ -27,7 +27,11 @@ in `extras`, which every DCC that reads glTF keeps as custom properties.
 - **Round trip is the test.** Every sample plan, exported and imported unchanged, must come back
   equal (`round_trip_every_sample_plan`). Anything in a plan is therefore reachable from a DCC.
 - RON stays the canonical text form. `*.body.glb` loads directly as a `BodyPlan` (hot reload works
-  on save from the DCC), and the `convert` example writes RON from it and back.
+  on save from the DCC), and ornisculpter's `convert` writes RON from it.
+- The format, the importer, `export_body` and the loader are ornisculpt's (`interchange`
+  feature): a game loads `.body.glb` files with them. The tools that use them (`export`,
+  `convert`, `templates`, the Blender add-on and its checks) live in **ornisculpter**, the
+  authoring app.
 - Units are metres, Y up, +Z forward: glTF's own convention, which Blender's importer and exporter
   convert to and from its Z up.
 
@@ -79,14 +83,14 @@ some DCCs can't store them.
 
 ### Checked with Blender
 
-`tools/blender/round_trip.py` imports a `.body.glb` into Blender 5.2 headless, optionally moves a
+ornisculpter's `tools/blender/round_trip.py` imports a `.body.glb` into Blender 5.2 headless, optionally moves a
 part, and exports it again; `convert` turns the result back into RON. With nothing moved the
 woman, and the beast with its sculpted feet and mesh crest, come back identical. With her arm moved 2 cm up, only the arm changes: its `Surface` attach
 slides up the torso (`t` 0.9 → 0.94) and its offset takes up the rest (3.5 → 4.2 cm out).
 
 ```text
-blender -b --python tools/blender/round_trip.py -- woman.body.glb out.body.glb arm 0.02
-cargo run --release --example convert --features interchange -- out.body.glb /tmp/woman.body.ron
+blender -b --python tools/blender/round_trip.py -- woman.body.glb out.body.glb move:arm:0.02
+ornisculpter convert out.body.glb /tmp/woman.body.ron
 ```
 
 ## Parts with an authored mesh
@@ -152,14 +156,15 @@ arm is mirrored onto the right, as wrap space always does).
 
 ## Blender add-on
 
-Optional: plain glTF with hand-typed custom properties works the same. `tools/blender/ornisculpt/`
+Optional: plain glTF with hand-typed custom properties works the same. ornisculpter's
+`tools/blender/ornisculpt/`
 installs as an add-on (zip the folder; it carries a `blender_manifest.toml` and `bl_info`). In
 the Object properties it adds:
 
 - **Add Part**: a part from a template under the active part, with what hangs off it (an arm with
   its fingers), named apart from its siblings. The templates (`templates.json`) are one part of
-  each kind, role, hard kind or shape lifted from the sample plans, written by the `templates`
-  example; run it after changing the part types or the sample plans.
+  each kind, role, hard kind or shape lifted from the sample plans, written by `ornisculpter
+  templates`; run it after changing the part types or the sample plans.
 - **Mark as Part** (Sculpt or Mesh): the selected meshes become parts modelled in place, nested
   under the active part.
 - **Mark as Garment**: the selected meshes become garments; with a part active they wrap it,
@@ -168,7 +173,7 @@ the Object properties it adds:
 In the Scene properties it sets the `.body.glb` to export to, and **Export on Save** writes it on
 every save of the `.blend`, so a running `editor` or `viewer` on that file hot-reloads.
 
-`tools/blender/test_addon.py` checks it headless: on the exported woman it adds a spike from a
+ornisculpter's `tools/blender/test_addon.py` checks it headless: on the exported woman it adds a spike from a
 template, marks an ico sphere on her back as a sculpt and a cylinder round her waist as a garment,
 and exports; `convert` then reads back the spike, the sculpt (its mesh from the file) and the
 garment (on `torso`, its span inferred).
@@ -178,7 +183,7 @@ scene): it is placed relative to the root all the same.
 
 ## Artist checklist
 
-- [ ] Export a body to model against: `cargo run --release --example export --features interchange -- mobs/woman.body.ron out.body.glb [coat|-] [outfit]`.
+- [ ] Export a body to model against: `ornisculpter export mobs/woman.body.ron out.body.glb [coat|-] [outfit]`.
 - [ ] Import it (Blender: File → Import → glTF; custom properties come in as the node's properties).
 - [ ] Move, rotate or scale part empties to place parts; edit their `ornisculpt` properties to
       change them; duplicate an empty to add a part; delete one to remove it.

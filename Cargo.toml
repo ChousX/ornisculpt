@@ -16,6 +16,10 @@ soft-tissue = []
 # Creatures as DNA (`anatomy::genome`): body, coat and form in one genome, with the traits a
 # design lets vary, through the `genetics` crate.
 genetics = ["dep:genetics"]
+# The live GPU preview of a body while it's edited (`surface::SdfPreview`): the packed body field,
+# ray-marched and baked into distance bricks by shaders that mirror the CPU field. For authoring
+# tools (ornisculpter); games leave it off.
+preview = []
 # Interchange (`interchange`): body plans, authored parts and garments to and from glTF, so artists
 # can author in their own tools (`docs/design/interchange.md`).
 interchange = ["dep:serde_json", "dep:base64"]
@@ -51,7 +55,7 @@ gltf = { version = "1.4", default-features = false, features = ["extras", "names
 serde_json = "1"
 
 # For the examples: hot reload (not in the browser, where Bevy rejects `file_watcher`) and the
-# editor's text panel.
+# UI cameras the headless screenshots retarget (`examples/common`).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 bevy = { version = "0.20", default-features = false, features = ["file_watcher", "bevy_ui_render", "default_font"] }
 
@@ -86,15 +90,3 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 as_conversions = "deny"
-
-[[example]]
-name = "export"
-required-features = ["interchange"]
-
-[[example]]
-name = "convert"
-required-features = ["interchange"]
-
-[[example]]
-name = "templates"
-required-features = ["interchange"]

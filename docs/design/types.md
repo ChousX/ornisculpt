@@ -59,7 +59,7 @@
 | Physics | **User's choice.** The plugin has no physics dependency, and the game fills foot ground hits. |
 | Part LOD | Parts have detail levels. Small parts drop out of the mesh, skeleton and ECS at coarser tiers (§2.10). |
 | Cache | postcard + zstd. |
-| Tooling | No standalone editor: the `editor` example edits a plan live. **Examples** for testing and **benches** for performance (§12). |
+| Tooling | Authoring tools live in **ornisculpter**, a separate app: the live editor, glTF export and convert, the Blender add-on. The GPU preview the editor draws with is ornisculpt's `preview` feature. **Examples** for testing and **benches** for performance (§12). |
 
 ---
 

@@ -16,7 +16,9 @@ mod mesh_data;
 mod mesher;
 mod muscle;
 mod octree;
+#[cfg(feature = "preview")]
 mod preview;
+#[cfg(feature = "preview")]
 mod preview_material;
 mod process;
 pub mod sdf;
@@ -38,7 +40,9 @@ pub use mesh_data::{
 pub use mesher::{MeshSettings, Mesher, RawMesh, SurfaceNets};
 pub use muscle::muscle_flex;
 pub use octree::AdaptiveContour;
+#[cfg(feature = "preview")]
 pub use preview::{BRICK_VOXELS, Brick, PRIM_WORDS, PreviewField, PreviewSheets};
+#[cfg(feature = "preview")]
 pub use preview_material::{
     SdfPreview, SdfPreviewAssets, SdfPreviewBake, SdfPreviewExt, SdfPreviewMaterial, SdfPreviewPlugin, SdfPreviewUniform, SlotBrick,
 };

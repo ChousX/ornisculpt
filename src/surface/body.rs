@@ -333,6 +333,7 @@ impl Attachment {
 
 /// Where a limb attaches, for the GPU preview: its balls (centre, radius), margin and whether it
 /// blends into other limbs where both attach (see [`BodyField::attachment`]).
+#[cfg(feature = "preview")]
 pub(super) type AttachmentView<'a> = (&'a [(Vec3A, f32)], f32, bool);
 
 /// A primitive moved into model space at rest pose, ready for evaluation.
@@ -894,6 +895,7 @@ impl BodyField {
 
     /// Where `limb` attaches: its balls (centre, radius), margin and whether it blends into other
     /// limbs where both attach (`None` if it doesn't attach), for the GPU preview.
+    #[cfg(feature = "preview")]
     pub(super) fn attachment(&self, limb: u16) -> Option<AttachmentView<'_>> {
         self.attach.get(usize::from(limb)).and_then(Option::as_ref).map(|a| (&a.balls[..], a.margin, a.pairs))
     }
@@ -1451,6 +1453,7 @@ mod apart_tests {
     /// Where each wing and tail attaches: its root joints' depth in the body, its balls and margin.
     #[test]
     #[ignore = "probe"]
+    #[cfg(feature = "preview")]
     fn wing_tail_roots() {
         for body in ["bat", "dragon", "wyvern", "bird", "horse", "quadruped", "beetle", "hexapod", "dragonfly"] {
             let (a, field) = field_of(body);
