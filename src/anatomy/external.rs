@@ -8,7 +8,7 @@
 //! `Orient::Model` a part keeps that orientation on the creature; mirrored copies are reflected.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -231,8 +231,9 @@ pub struct PartAssets {
     sdfs: SdfCache,
 }
 
-/// Converted SDFs by (mesh hash, resolution).
-type SdfCache = Arc<Mutex<HashMap<(u64, u16), Arc<SdfGrid>>>>;
+/// Converted SDFs by (mesh hash, resolution). Each entry is filled once: builds that ask for one
+/// while it is being converted wait for that conversion instead of starting their own.
+type SdfCache = Arc<Mutex<HashMap<(u64, u16), Arc<OnceLock<Arc<SdfGrid>>>>>>;
 
 impl PartAssets {
     pub fn insert(&mut self, path: impl Into<String>, mesh: Arc<TriMesh>) {
@@ -248,13 +249,8 @@ impl PartAssets {
     #[must_use]
     pub fn sdf(&self, path: &str, resolution: u16) -> Option<Arc<SdfGrid>> {
         let mesh = self.meshes.get(path)?;
-        let key = (mesh.hash, resolution);
-        if let Some(g) = self.sdfs.lock().ok()?.get(&key) {
-            return Some(g.clone());
-        }
-        let grid = Arc::new(SdfGrid::from_mesh(mesh, resolution));
-        self.sdfs.lock().ok()?.insert(key, grid.clone());
-        Some(grid)
+        let entry = self.sdfs.lock().ok()?.entry((mesh.hash, resolution)).or_default().clone();
+        Some(entry.get_or_init(|| Arc::new(SdfGrid::from_mesh(mesh, resolution))).clone())
     }
 
     /// A copy restricted to `paths`, sharing the SDF cache.
@@ -312,5 +308,45 @@ mod tests {
         assert!(g.sample(Vec3::ZERO) < -0.4);
         assert!(g.sample(Vec3::new(2.0, 0.0, 0.0)) > 1.0);
         assert!(g.sample(Vec3::new(0.5, 0.0, 0.0)).abs() < 0.05);
+    }
+
+    /// Builds that ask for the same SDF at once share one conversion.
+    #[test]
+    fn concurrent_requests_share_one_conversion() {
+        let mut assets = PartAssets::default();
+        assets.insert("cube", Arc::new(cube()));
+        let start = std::sync::Barrier::new(4);
+        let grids: Vec<Arc<SdfGrid>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        assets.sdf("cube", 48).unwrap()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(grids.windows(2).all(|w| Arc::ptr_eq(&w[0], &w[1])), "every caller gets the one converted grid");
+    }
+
+    /// Timing (ignored): four builds asking for the sculpted head's SDF at once.
+    #[test]
+    #[ignore = "timing"]
+    fn concurrent_head_sdf_timing() {
+        let plan: crate::anatomy::BodyPlan = ron::from_str(include_str!("../../assets/mobs/man.body.ron")).unwrap();
+        let assets = crate::anatomy::test_assets(&plan);
+        let path = assets.meshes.keys().next().unwrap().clone();
+        let start = std::sync::Barrier::new(4);
+        let t = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    start.wait();
+                    assets.sdf(&path, 128).unwrap();
+                });
+            }
+        });
+        eprintln!("4 concurrent head SDFs: {:?}", t.elapsed());
     }
 }

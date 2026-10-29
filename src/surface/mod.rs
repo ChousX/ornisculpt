@@ -29,7 +29,7 @@ pub use body::{BodyField, BodyFieldOptions, ChunkView, Sheet, SheetField};
 pub(crate) use body::limb_of;
 pub use combinators::{Displace, Intersect, RegionClip};
 pub use field::{Field, Influences, SurfaceInfo};
-pub use lod::{LodSpec, SurfaceSettings, mesh_all_lods, mesh_lod};
+pub use lod::{KeepFn, LodSpec, SurfaceSettings, mesh_all_lods, mesh_all_lods_keeping, mesh_lod, mesh_lod_keeping};
 pub use mesh_data::{
     ATTRIBUTE_COR, ATTRIBUTE_CROWD_JOINT_INDEX, ATTRIBUTE_CROWD_JOINT_WEIGHT, ATTRIBUTE_MOB_DATA, ATTRIBUTE_MUSCLE, ATTRIBUTE_MUSCLE_JOINT,
     ATTRIBUTE_PAINT, ATTRIBUTE_SOFT, BodyMeshData, MaterialSlot, MobVertexData, MuscleFlex,
@@ -42,7 +42,7 @@ pub use preview::{BRICK_VOXELS, Brick, PRIM_WORDS, PreviewField, PreviewSheets};
 pub use preview_material::{
     SdfPreview, SdfPreviewAssets, SdfPreviewBake, SdfPreviewExt, SdfPreviewMaterial, SdfPreviewPlugin, SdfPreviewUniform, SlotBrick,
 };
-pub use process::{merge, remap_to_crowd, simplify, skin_and_attrs, smooth, weld};
+pub use process::{merge, remap_to_crowd, simplify, simplify_keeping, skin_and_attrs, smooth, weld};
 
 use bevy::prelude::*;
 use thiserror::Error;

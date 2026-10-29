@@ -17,7 +17,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{GarmentCover, MobOutfit, Outfit, cover_skin, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods, muscle_flex};
+use crate::surface::{AdaptiveContour, BodyMeshData, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -379,8 +379,19 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
     let anatomy = times.stage("anatomy", || build_anatomy(&live, &rules, &assets)).map_err(|e| e.to_string())?;
     let (anatomy, cloth) =
         if outfit.garments.is_empty() { (anatomy, None) } else { times.stage("fit_outfit", || fit_outfit(anatomy, &outfit, &assets)) };
+    // Crowd levels simplify hard: give the simplifier the coat's markings, baked on the full mesh,
+    // so the triangles it keeps go where the colour changes (a Hereford's white face and socks)
+    // rather than wherever the shape alone allows. Hero meshes are dense enough as they are.
+    let keep = |dense: &BodyMeshData, level: LodLevel| {
+        (level != LodLevel::Hero && !coat.markings.is_empty()).then(|| {
+            let mut painted = dense.clone();
+            // Bones are still the full skeleton's here (crowd levels remap them after).
+            crate::coat::paint(&mut painted, &coat, &anatomy, LodLevel::Hero);
+            painted.paint
+        })
+    };
     let mut lods = times
-        .stage("mesh", || mesh_all_lods(&AdaptiveContour, &anatomy, &settings, seed))
+        .stage("mesh", || mesh_all_lods_keeping(&AdaptiveContour, &anatomy, &settings, seed, Some(&keep)))
         .map_err(|e| e.to_string())?;
     if let Some(cloth) = &cloth {
         times.stage("garments", || {

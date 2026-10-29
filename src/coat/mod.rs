@@ -16,7 +16,7 @@ mod material;
 
 pub use geometry::{CoatMeshes, annotate, build_coat_meshes};
 pub use self::HairCards as Hair;
-pub use markings::{Bands, Facing, Marking, Patches};
+pub use markings::{Bands, Facing, Marking, Patches, paint};
 pub use material::{CoatExt, CoatKey, CoatLayer, MobMaterial};
 
 use bevy::prelude::*;
