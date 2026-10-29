@@ -94,6 +94,16 @@ fn cellular_fast(p: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(f1, f2, id);
 }
 
+// Whether a feature point of `cellular` lies within `r` of `p`. For r < 0.5 only the 2×2×2 cells
+// nearest the point can hold one (each cell's point lies inside it, and every other cell is at
+// least half a cell away), so the cheap search gives exactly the full search's answer.
+fn cellular_within(p: vec3<f32>, r: f32) -> bool {
+    if r < 0.5 {
+        return cellular_fast(p).x <= r;
+    }
+    return cellular(p).x <= r;
+}
+
 fn hash1(p: vec3<f32>) -> f32 {
     return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
 }
@@ -360,19 +370,13 @@ fn fragment(out_v: CoatOutput, @builtin(front_facing) is_front: bool) -> Fragmen
         }
         pelt = 1.0;
     } else {
-        // Single strands get the full search; clumps are blurred anyway and take the cheap one.
         let l0 = floor(level);
         let f = level - l0;
         let k0 = exp2(l0);
-        var fine = false;
-        if l0 < 0.5 {
-            fine = cellular(rest * coat.fur.y).x <= radius * sqrt(1.0 - f);
-        } else {
-            fine = cellular_fast(rest * coat.fur.y / k0).x <= radius * sqrt(1.0 - f);
-        }
+        let fine = cellular_within(rest * coat.fur.y / k0, radius * sqrt(1.0 - f));
         var coarse = false;
         if f > 0.02 {
-            coarse = cellular_fast(rest * coat.fur.y / (k0 * 2.0)).x <= radius * sqrt(f);
+            coarse = cellular_within(rest * coat.fur.y / (k0 * 2.0), radius * sqrt(f));
         }
         if !(fine || coarse) {
             discard;
