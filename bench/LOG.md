@@ -69,7 +69,7 @@ no shadows). Experiments: `max_hero = 0` 69 → 63 ms. The near tier is the cost
 Halving the near mesh (simplify ratio 0.22 → 0.11, man 5046 → 2519 triangles, ox 8766 → 4443)
 took the crowd to 54 ms (−21 %) at the same tier counts, but the crowd image moved 5.4 % of pixels
 (33.7 dB). The ox's coat markings, painted per vertex, change shape at the near tier's top size.
-Not landed: a look decision.
+Landed at 0.15 instead, with the markings kept (below).
 
 Sequential runs drift a few percent as the laptop warms over an hour of benching; for small
 effects, alternate the two builds (`ab-A-*`, `ab-B-*` below) with an unaffected case as control.
@@ -135,6 +135,7 @@ widens their image gates accordingly.
 
 | Date | Change | Scenario / case | Metric | Before → after | Images | Note |
 |---|---|---|---|---|---|---|
+| 2026-10-29 | Near meshes at 0.15 of their triangles, simplified keeping the coat's markings | crowd (2 runs vs early-shell-1,2) | steady p50 | 72.4 / 71.6 → 61.4 / 60.9 ms (−15 %); gen totals and cold start within the v5 baselines' spread | crowd 5.7 % pixels, 32.4 dB (look change) | Near triangles −32 % (man 5046 → 3439, ox 8766 → 6015). Crowd levels hand meshoptimizer the markings baked on the full mesh (`simplify_keeping`), so the ox's socks, face and shoulder band keep sharper edges than at 0.22. Results `near015-{1,2}` |
 | 2026-10-29 | Part SDFs: builds asking at once share one conversion (5869fca) | (unit timing) | 4 concurrent head SDFs | 7.4 / 8.4 → 2.0 / 2.3 s | grids unchanged | `concurrent_head_sdf_timing` (ignored test). A crowd's first men and women each converted the head side by side; crowd cold total moved 28.6 / 24.4 → 23.0 / 22.3 s with the next change, inside its 17 % noise |
 | 2026-10-29 | Fur shells: single strands take the 2×2×2 cell search, exactly (cfdd3b3) | hero (v5, 2 runs vs v5-base-1,2) | p50 | spider eye 96.3 → 67.9 / 67.5 ms, spider head 80.8 → 62.5 / 62.2, horse eye 49.0 → 34.7 / 34.5, ox eye 22.2 → 17.7 / 18.1; full-body cases within noise | within the baselines' spread (bare man identical) | Results `fast-strand-{1,2}`. For radius < 0.5 cell only the 8 nearest cells can hold a point that close |
 | 2026-10-29 | Fur shells: the strand test runs before the lighting setup (f8a37eb) | hero (3 interleaved rounds) | p50, B/A per round | spider eye −5.9 / −6.5 / −5.6 %, horse eye −7.1 / −10.5 / −3.7 %, ox eye −3.4 / −10.7 / −2.5 %, spider head −3.3 / −4.2 / −0.9 % | ≤ 0.28 % pixels, ≥ 42.6 dB (the unchanged darner differs as much) | Results `ab-{A,B}-{1,2,3}`; the darner control moved ±8 %, as did every case near 13 ms |

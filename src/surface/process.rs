@@ -154,20 +154,41 @@ pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> Bo
 /// single-submesh data (call before merging hard parts).
 #[must_use]
 pub fn simplify(data: &BodyMeshData, target_ratio: f32, max_error: f32) -> BodyMeshData {
+    simplify_keeping(data, target_ratio, max_error, None)
+}
+
+/// How much a colour step of 1 weighs against positional error (relative to the mesh's extent)
+/// when [`simplify_keeping`] decides which edges to collapse.
+const KEEP_WEIGHT: f32 = 0.5;
+
+/// As [`simplify`], also keeping `keep` (one RGBA value per vertex, such as coat markings) where
+/// it changes: the triangle budget goes to its edges rather than to where it is uniform.
+#[must_use]
+pub fn simplify_keeping(data: &BodyMeshData, target_ratio: f32, max_error: f32, keep: Option<&[[f32; 4]]>) -> BodyMeshData {
     let stride = std::mem::size_of::<Vec3>();
     let bytes = meshopt::typed_to_bytes(&data.positions);
     let Ok(adapter) = meshopt::VertexDataAdapter::new(bytes, stride, 0) else {
         return data.clone();
     };
     let target = ((data.indices.len().to_f32() * target_ratio).sat_usize() / 3) * 3;
-    let simplified = meshopt::simplify(
-        &data.indices,
-        &adapter,
-        target.max(3),
-        max_error,
-        meshopt::SimplifyOptions::None,
-        None,
-    );
+    let plain = || meshopt::simplify(&data.indices, &adapter, target.max(3), max_error, meshopt::SimplifyOptions::None, None);
+    let simplified = keep.filter(|k| k.len() == data.positions.len()).map_or_else(plain, |keep| {
+        let attributes: Vec<f32> = keep.iter().flatten().copied().collect();
+        // No locked vertices (meshoptimizer reads the lock array whenever it is given one).
+        let locks = vec![false; data.positions.len()];
+        meshopt::simplify_with_attributes_and_locks(
+            &data.indices,
+            &adapter,
+            &attributes,
+            &[KEEP_WEIGHT; 4],
+            std::mem::size_of::<[f32; 4]>(),
+            &locks,
+            target.max(3),
+            max_error,
+            meshopt::SimplifyOptions::None,
+            None,
+        )
+    });
     let ordered = meshopt::optimize_vertex_cache(&simplified, data.positions.len());
     compact(data, &ordered)
 }
@@ -349,5 +370,56 @@ mod cxx_alloc {
                 dealloc(base, layout);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::Vertex;
+
+    /// A flat `n` × `n` grid on the unit square, painted dark left of x = 0.5 and pale right of it.
+    fn painted_grid(n: u32) -> BodyMeshData {
+        let mut data = BodyMeshData::default();
+        for y in 0..=n {
+            for x in 0..=n {
+                let p = Vec3::new(x.to_f32() / n.to_f32(), y.to_f32() / n.to_f32(), 0.0);
+                data.push_vertex(Vertex { position: p, normal: Vec3::Z, joints: [0; 4], weights: [1.0, 0.0, 0.0, 0.0], mob_data: [0; 2] });
+                data.paint.push(if p.x < 0.5 { [0.2, 0.05, 0.0, 1.0] } else { [0.9, 0.9, 0.9, 1.0] });
+            }
+        }
+        let at = |x: u32, y: u32| y * (n + 1) + x;
+        for y in 0..n {
+            for x in 0..n {
+                data.indices.extend([at(x, y), at(x + 1, y), at(x + 1, y + 1), at(x, y), at(x + 1, y + 1), at(x, y + 1)]);
+            }
+        }
+        data.submeshes.push(Submesh { indices: 0..data.indices.len().clamp_u32(), slot: MaterialSlot::Skin });
+        data
+    }
+
+    /// The widest triangle (in x) spanning the colour step: how far its edge is smeared.
+    fn smear(data: &BodyMeshData) -> f32 {
+        let dark = |i: u32| data.paint.get(i.idx()).is_some_and(|c| c[0] < 0.5);
+        let x = |i: u32| data.positions.get(i.idx()).map_or(0.0, |p| p.x);
+        data.indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|t| t.iter().any(|&i| dark(i)) && t.iter().any(|&i| !dark(i)))
+            .map(|t| t.iter().map(|&i| x(i)).fold(f32::MIN, f32::max) - t.iter().map(|&i| x(i)).fold(f32::MAX, f32::min))
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn simplifying_keeps_a_colour_edge_it_is_given() {
+        let grid = painted_grid(40);
+        let plain = simplify(&grid, 0.1, 0.01);
+        let kept = simplify_keeping(&grid, 0.1, 0.01, Some(&grid.paint));
+        let cell = 1.0 / 40.0;
+        // A flat sheet collapses to a few long triangles; given the paint, the edge stays sharp.
+        assert!(smear(&kept) <= 2.0f32.mul_add(cell, 1e-4), "kept edge smeared over {}", smear(&kept));
+        assert!(smear(&plain) > 4.0 * smear(&kept), "plain {} vs kept {}", smear(&plain), smear(&kept));
+        assert!(kept.indices.len() <= grid.indices.len() / 5, "the budget still applies");
     }
 }

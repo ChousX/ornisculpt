@@ -5,7 +5,7 @@ use super::mesh_data::vertex_normals;
 use super::{
     BindSettings, BodyField, BodyFieldOptions, BodyMeshData, VoxelBinding, Field, MaterialSlot, MeshSettings, Mesher, MobVertexData, RawMesh,
     Submesh, SurfaceError, merge,
-    remap_to_crowd, simplify, skin_and_attrs, smooth, weld,
+    remap_to_crowd, simplify_keeping, skin_and_attrs, smooth, weld,
 };
 use crate::anatomy::{Anatomy, BoneId, LodLevel, PrimLayer, Sheet};
 use crate::num::{Clamp, Idx, ToF32};
@@ -53,7 +53,7 @@ impl Default for SurfaceSettings {
                 // Detail levels: cells halve (to 2 mm close up) where the body is thin, so fingers and
                 // ears keep their shape without meshing the whole body finer.
                 spec(0.008, 2, 0.5, 0.0012, false, true), // Hero
-                spec(0.02, 1, 0.22, 0.01, false, true),   // Near
+                spec(0.02, 1, 0.15, 0.01, false, true),   // Near
                 spec(0.05, 0, 0.35, 0.01, false, false),  // Far
             ],
         }
@@ -107,6 +107,26 @@ pub fn mesh_lod<M: Mesher>(
     spec: &LodSpec,
     seed: u64,
 ) -> Result<BodyMeshData, SurfaceError> {
+    mesh_lod_keeping(mesher, anatomy, level, spec, seed, None)
+}
+
+/// Per-vertex RGBA values for a level's full-resolution skin (bones still full-skeleton) that its
+/// simplification should keep, such as coat markings; `None` keeps nothing in particular.
+pub type KeepFn<'a> = &'a (dyn Fn(&BodyMeshData, LodLevel) -> Option<Vec<[f32; 4]>> + Sync);
+
+/// As [`mesh_lod`], simplifying so that what `keep` gives survives ([`simplify_keeping`]).
+///
+/// # Errors
+///
+/// As [`mesh_lod`].
+pub fn mesh_lod_keeping<M: Mesher>(
+    mesher: &M,
+    anatomy: &Anatomy,
+    level: LodLevel,
+    spec: &LodSpec,
+    seed: u64,
+    keep: Option<KeepFn<'_>>,
+) -> Result<BodyMeshData, SurfaceError> {
     let opts = BodyFieldOptions { level, seed, geometric_folds: spec.geometric_folds, spread: true };
     let field = BodyField::new(anatomy, &opts);
     if field.primitive_count() == 0 {
@@ -127,7 +147,8 @@ pub fn mesh_lod<M: Mesher>(
     VoxelBinding::new(&field, anatomy, &bind).apply(&mut data, &sheets, &field);
     field.unbind(&mut data);
     if spec.simplify_ratio < 1.0 {
-        data = simplify(&data, spec.simplify_ratio, spec.max_error);
+        let kept = keep.and_then(|k| k(&data, level));
+        data = simplify_keeping(&data, spec.simplify_ratio, spec.max_error, kept.as_deref());
     }
     if spec.hard_parts {
         let owner = hard_part_owners(anatomy);
@@ -165,9 +186,24 @@ pub fn mesh_all_lods<M: Mesher>(
     settings: &SurfaceSettings,
     seed: u64,
 ) -> Result<[BodyMeshData; 3], SurfaceError> {
+    mesh_all_lods_keeping(mesher, anatomy, settings, seed, None)
+}
+
+/// As [`mesh_all_lods`], each level simplified keeping what `keep` gives ([`mesh_lod_keeping`]).
+///
+/// # Errors
+///
+/// As [`mesh_all_lods`].
+pub fn mesh_all_lods_keeping<M: Mesher>(
+    mesher: &M,
+    anatomy: &Anatomy,
+    settings: &SurfaceSettings,
+    seed: u64,
+    keep: Option<KeepFn<'_>>,
+) -> Result<[BodyMeshData; 3], SurfaceError> {
     // Near and far on their own threads while hero (most of the work) runs on this one (one after
     // another on the web).
-    let level = |l: LodLevel| mesh_lod(mesher, anatomy, l, settings.get(l), seed);
+    let level = |l: LodLevel| mesh_lod_keeping(mesher, anatomy, l, settings.get(l), seed, keep);
     let (hero, near, far) = super::scope(|scope| {
         let near = scope.spawn(|| level(LodLevel::Near));
         let far = scope.spawn(|| level(LodLevel::Far));
@@ -223,7 +259,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
 mod stage_probe {
     use super::*;
     use crate::anatomy::build_src;
-    use crate::surface::{AdaptiveContour};
+    use crate::surface::{AdaptiveContour, simplify};
 
     /// Where `mesh_lod`'s time goes, per level and stage.
     #[test]
