@@ -39,7 +39,9 @@ The scene has three kinds of node.
 2. **Part nodes**, one empty per *authored* part, nested as the part tree, named by the part's
    name. Each carries `extras.ornisculpt.part`: the `PartNode` without `children` (its kind and
    params, `attach`, `offset`, `mirror`, `repeat`, `detail`, `tone`, `stamps`, `density`), and
-   `extras.ornisculpt.frame`: the node's model-space transform as exported (a column-major 4×4).
+   `extras.ornisculpt.frame`: the node's model-space transform as exported (a column-major 4×4),
+   and `extras.ornisculpt.order`: its place among its siblings (DCCs reorder them, Blender by
+   name, and the build order, so bone order and the body's cache key, depends on it).
    The node sits at the part's **frame**: its attach point on the parent, times its offset. That
    is the frame every part kind builds from (`at.model * cx.offset`).
    - Empties, not bones: not every part has a bone of its own (a hard part rides on its parent's),
@@ -69,8 +71,22 @@ some DCCs can't store them.
   offset. A `Series` slides its `from` and `to` together, as the editor does.
 - Renaming a node renames the part. A node deleted removes the part, a node duplicated (with its
   extras) adds one: Blender's Shift+D on an empty with custom properties is "add a part".
+- Offsets recomputed for a moved part (and its children) are rounded to a micrometre and a
+  ten-thousandth of a degree, so float noise from the DCC doesn't show in the plan.
 - Not yet (v2): edits to the reference skeleton's bones (segment lengths into limb and chain
   ratios, bone rolls into rest angles).
+
+### Checked with Blender
+
+`tools/blender/round_trip.py` imports a `.body.glb` into Blender 5.2 headless, optionally moves a
+part, and exports it again; `convert` turns the result back into RON. With nothing moved the
+woman comes back identical. With her arm moved 2 cm up, only the arm changes: its `Surface` attach
+slides up the torso (`t` 0.9 → 0.94) and its offset takes up the rest (3.5 → 4.2 cm out).
+
+```text
+blender -b --python tools/blender/round_trip.py -- woman.body.glb out.body.glb arm 0.02
+cargo run --release --example convert --features interchange -- out.body.glb /tmp/woman.body.ron
+```
 
 ## Parts (phase 3)
 

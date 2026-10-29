@@ -42,7 +42,7 @@ pub fn export_body(plan: &BodyPlan, coat: Option<&Coat>, anatomy: &Anatomy, skin
     }
     let root = doc.node(json!({ "name": KEY, "extras": { KEY: extras } }));
 
-    let part = part_node(&mut doc, anatomy, &plan.root, &PartPath::root(&plan.root.name), Affine3A::IDENTITY)?;
+    let part = part_node(&mut doc, anatomy, &plan.root, &PartPath::root(&plan.root.name), Affine3A::IDENTITY, 0)?;
     doc.child(root, part);
 
     if let Some(skin) = skin {
@@ -66,8 +66,9 @@ pub fn export_body(plan: &BodyPlan, coat: Option<&Coat>, anatomy: &Anatomy, skin
 }
 
 /// The empty for authored part `node` at `path` (and its children's), placed relative to its
-/// parent's frame `parent` (model space).
-fn part_node(doc: &mut Doc, anatomy: &Anatomy, node: &PartNode, path: &PartPath, parent: Affine3A) -> Result<usize, ExportError> {
+/// parent's frame `parent` (model space). `order` is its place among its siblings, which DCCs
+/// don't keep (Blender sorts by name) but the build order depends on.
+fn part_node(doc: &mut Doc, anatomy: &Anatomy, node: &PartNode, path: &PartPath, parent: Affine3A, order: usize) -> Result<usize, ExportError> {
     // The first copy is the logical one: `.l` before `.r`, `.0` before the rest.
     let built = anatomy.parts.iter().find(|p| path_matches(path, &p.path)).ok_or_else(|| ExportError::NotBuilt(path.clone()))?;
     let frame = built.attach.compute_affine() * node.offset.to_transform().compute_affine();
@@ -79,10 +80,10 @@ fn part_node(doc: &mut Doc, anatomy: &Anatomy, node: &PartNode, path: &PartPath,
     }
     let mut n = trs(&local);
     n.insert("name".into(), json!(node.name));
-    n.insert("extras".into(), json!({ KEY: { "part": part, "frame": Mat4::from(frame).to_cols_array() } }));
+    n.insert("extras".into(), json!({ KEY: { "part": part, "frame": Mat4::from(frame).to_cols_array(), "order": order } }));
     let index = doc.node(Value::Object(n));
-    for child in &node.children {
-        let c = part_node(doc, anatomy, child, &path.child(&child.name), frame)?;
+    for (order, child) in node.children.iter().enumerate() {
+        let c = part_node(doc, anatomy, child, &path.child(&child.name), frame, order)?;
         doc.child(index, c);
     }
     Ok(index)

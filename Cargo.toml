@@ -90,3 +90,7 @@ as_conversions = "deny"
 [[example]]
 name = "export"
 required-features = ["interchange"]
+
+[[example]]
+name = "convert"
+required-features = ["interchange"]

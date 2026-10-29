@@ -156,7 +156,9 @@ pub fn place_moved(read: ReadBody, assets: &PartAssets) -> Result<ImportedBody, 
 /// Moves `node`'s attach to `t` (and `around` degrees, on the skin) along its parent. A series
 /// moves as a whole, within the parent. `false` for slots that don't slide.
 fn slide(node: &mut PartNode, t: f32, around: f32) -> bool {
-    let t = t.clamp(0.0, 1.0);
+    // Rounded as offsets are (see `offset_of`).
+    let t = ((t * 1e6).round() / 1e6).clamp(0.0, 1.0);
+    let around = (around * 1e4).round() / 1e4;
     match (&mut node.attach, &mut node.repeat) {
         (AttachSlot::Along(_) | AttachSlot::Surface { .. }, Repeat::Series { from, to, .. }) => {
             let shift = (t - *from).clamp(-from.min(*to), 1.0 - from.max(*to));
@@ -177,10 +179,12 @@ fn offset_of(m: &Affine3A) -> (PartOffset, bool) {
     let (scale, rotation, translation) = m.to_scale_rotation_translation();
     let (x, y, z) = rotation.to_euler(EulerRot::XYZ);
     let even = scale.element_sum() / 3.0;
-    let tidy = |v: Vec3| Vec3::select(v.abs().cmplt(Vec3::splat(1e-5)), Vec3::ZERO, v);
+    // Recomputed through a DCC's floats: round off the noise (a micrometre, a ten-thousandth of
+    // a degree), so an untouched child of a moved part comes back as it was.
+    let tidy = |v: Vec3, step: f32| (v / step).round() * step + Vec3::ZERO;
     let offset = PartOffset {
-        translate: tidy(translation),
-        rotate_deg: tidy(Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI)),
+        translate: tidy(translation, 1e-6),
+        rotate_deg: tidy(Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI), 1e-4),
         scale: if (even - 1.0).abs() < 1e-5 { 1.0 } else { even },
     };
     (offset, (scale - Vec3::splat(even)).abs().max_element() < 0.01 * even.abs().max(1e-6))
@@ -193,6 +197,8 @@ struct Found {
     frame: Option<Affine3A>,
     /// Where it is now (model space).
     model: Affine3A,
+    /// Its place among its siblings at export (`None` for a part added since).
+    order: Option<u64>,
     children: Vec<Self>,
 }
 
@@ -237,11 +243,14 @@ fn collect(nodes: &[Value], i: usize, parent: Affine3A, out: &mut Vec<Found>, de
         data.name = name;
     }
     let frame = extras.and_then(|o| o.get("frame")).and_then(matrix);
+    let order = extras.and_then(|o| o.get("order")).and_then(Value::as_u64);
     let mut children = Vec::new();
     for c in kids {
         collect(nodes, c, model, &mut children, depth + 1)?;
     }
-    out.push(Found { data, frame, model, children });
+    // Siblings in their exported order (DCCs reorder them), parts added since after them.
+    children.sort_by_key(|c| c.order.unwrap_or(u64::MAX));
+    out.push(Found { data, frame, model, order, children });
     Ok(())
 }
 
@@ -385,6 +394,21 @@ mod tests {
         let want = parent_frame * Affine3A::from_translation(shift) * parent_frame.inverse() * original;
         let got = frame(&back.plan, &path);
         assert!(Vec3::from(got.translation).distance(Vec3::from(want.translation)) < 1e-3, "{got:?} vs {want:?}");
+    }
+
+    /// DCCs reorder siblings (Blender sorts them by name); the plan keeps its order.
+    #[test]
+    fn sibling_order_survives_reordering() {
+        let plan = sample("quadruped");
+        let bytes = edited(&export(&plan), |doc| {
+            for n in doc["nodes"].as_array_mut().unwrap() {
+                if let Some(c) = n.get_mut("children").and_then(Value::as_array_mut) {
+                    c.reverse();
+                }
+            }
+        });
+        let back = import_body(&bytes, &test_assets(&plan)).unwrap();
+        assert_eq!(ron(&back.plan), ron(&plan));
     }
 
     /// A part written by hand in a DCC: a RON string, its name from the node.
