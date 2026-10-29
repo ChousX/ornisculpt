@@ -23,6 +23,9 @@
 //! pose on every run. Runs on battery are refused (`--allow-battery` to
 //! override; the report records it).
 //!
+//! `ORNISCULPT_CAPTURE=<case>:<frame>` (`crowd4000:600`, `spider.eye:300`) saves a `RenderDoc` capture
+//! of that measured frame when the bench runs under `renderdoccmd capture` (see `bench/LOG.md`).
+//!
 //! `compare` takes one or more baseline result directories (several = their spread is the noise
 //! floor) and a new one, prints per-metric deltas, diffs same-named PNGs, and exits non-zero when
 //! a median, mean or total time regresses beyond max(3 %, 2 × noise) or an image changes beyond the gate (widened by the
@@ -32,6 +35,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use bevy::app::ScheduleRunnerPlugin;
@@ -519,7 +523,7 @@ fn run_app(scenario: &str, out: PathBuf) {
     // CPU back, so submissions would queue up without bound (and fill memory), and frame times
     // would measure submission rather than rendering.
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
-        render.add_systems(Render, wait_for_gpu.in_set(RenderSystems::Cleanup));
+        render.add_systems(Render, (wait_for_gpu, graphics_capture).chain().in_set(RenderSystems::Cleanup));
     }
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
@@ -584,6 +588,106 @@ fn setup(
 fn wait_for_gpu(device: Res<RenderDevice>) {
     if let Err(e) = device.poll(PollType::wait_indefinitely()) {
         error!("bench: waiting for the GPU: {e}");
+    }
+}
+
+/// `ORNISCULPT_CAPTURE=<case>:<frame>` (`crowd4000:600`, `spider.eye:300`): a graphics-debugger
+/// capture of that measured frame, for a run under `RenderDoc` (its in-application API brackets
+/// the frame, so it works without a window). Capture state: 0 idle, 1 requested, 2 capturing,
+/// 3 done.
+static CAPTURE: AtomicU8 = AtomicU8::new(0);
+
+/// Raises the capture request when the named case reaches its frame.
+fn request_capture(bench: &Bench, n: u32) {
+    let Ok(spec) = std::env::var("ORNISCULPT_CAPTURE") else { return };
+    let Some((case, frame)) = spec.rsplit_once(':') else { return };
+    if frame.parse() == Ok(n) && bench.case_name() == case {
+        _ = CAPTURE.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
+    }
+}
+
+/// Starts a requested capture once the frame before it has finished on the GPU, and stops it
+/// after the next one (the render world runs after `wait_for_gpu`, so exactly one frame is in it).
+fn graphics_capture() {
+    let state = CAPTURE.load(Ordering::Relaxed);
+    if state != 1 && state != 2 {
+        return;
+    }
+    let Some(api) = renderdoc::api() else {
+        error!("bench: ORNISCULPT_CAPTURE needs the app run under RenderDoc (renderdoccmd capture)");
+        CAPTURE.store(3, Ordering::Relaxed);
+        return;
+    };
+    if state == 1 {
+        api.start();
+        CAPTURE.store(2, Ordering::Relaxed);
+        info!("bench: graphics capture started");
+    } else {
+        api.end();
+        CAPTURE.store(3, Ordering::Relaxed);
+        info!("bench: graphics capture done");
+    }
+}
+
+/// `RenderDoc`'s in-application API, found in the process once its Vulkan layer has loaded it.
+/// (wgpu's own capture calls look for the library when the instance is created, before the
+/// layer brings it in, so under `renderdoccmd` they do nothing.)
+mod renderdoc {
+    use std::ffi::{c_char, c_int, c_void};
+
+    unsafe extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    const RTLD_NOW: c_int = 2;
+    const RTLD_NOLOAD: c_int = 4;
+    /// `eRENDERDOC_API_Version_1_1_2`.
+    const VERSION: c_int = 10102;
+    /// Indices of `StartFrameCapture` and `EndFrameCapture` in `RENDERDOC_API_1_1_2`.
+    const START: usize = 19;
+    const END: usize = 21;
+
+    type GetApi = unsafe extern "C" fn(c_int, *mut *mut c_void) -> c_int;
+    type Frame = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32;
+
+    pub struct Api(*const *const c_void);
+
+    pub fn api() -> Option<Api> {
+        // SAFETY: plain libdl calls on a library already in the process (RTLD_NOLOAD); the table
+        // `RENDERDOC_GetAPI` fills is `RenderDoc`'s static API struct, valid while it is loaded.
+        unsafe {
+            let lib = dlopen(c"librenderdoc.so".as_ptr(), RTLD_NOW | RTLD_NOLOAD);
+            if lib.is_null() {
+                return None;
+            }
+            let get = dlsym(lib, c"RENDERDOC_GetAPI".as_ptr());
+            if get.is_null() {
+                return None;
+            }
+            let get: GetApi = std::mem::transmute::<*mut c_void, GetApi>(get);
+            let mut table: *mut c_void = std::ptr::null_mut();
+            (get(VERSION, &raw mut table) == 1 && !table.is_null()).then(|| Api(table.cast()))
+        }
+    }
+
+    impl Api {
+        fn call(&self, index: usize) {
+            // SAFETY: entries `START` and `END` of the 1.1.2 table take (device, window); null for
+            // both captures whichever device is active, which headless is the only one.
+            unsafe {
+                let f: Frame = std::mem::transmute::<*const c_void, Frame>(*self.0.add(index));
+                f(std::ptr::null_mut(), std::ptr::null_mut());
+            }
+        }
+
+        pub fn start(&self) {
+            self.call(START);
+        }
+
+        pub fn end(&self) {
+            self.call(END);
+        }
     }
 }
 
@@ -799,7 +903,10 @@ fn drive(
         Phase::Warm(n) => {
             bench.phase = if n > 1 { Phase::Warm(n - 1) } else { Phase::Measure(0) };
         }
-        Phase::Measure(n) => measure(&mut commands, &mut bench, &target.0, &case, n + 1, &mobs),
+        Phase::Measure(n) => {
+            request_capture(&bench, n + 1);
+            measure(&mut commands, &mut bench, &target.0, &case, n + 1, &mobs);
+        }
         Phase::Settle(n, next) if n > 1 => bench.phase = Phase::Settle(n - 1, next),
         Phase::Settle(_, next) => match next {
             Next::Framing => {

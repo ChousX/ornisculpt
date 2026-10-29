@@ -45,6 +45,32 @@ The crowd's steady state is GPU-bound: over 10 s of it the main thread used 2.6 
 the render thread 3.9 %. Turning off muscle flex (`ORNISCULPT_NO_MUSCLE`) or the crowd tiers'
 deformation (centres of rotation and muscles) each moved it by under 3 %. Rendering at 960×540
 also changes the tiers (they go by on-screen size), so it can't split pixel from vertex cost.
+### Profiling with RenderDoc (tir, 2026-10-29)
+
+`renderdoccmd capture` with this build's layer (the one registered in `/etc` points at a store
+path that is gone) and `ORNISCULPT_CAPTURE` saves one measured frame, headless:
+
+```text
+R=$(dirname $(dirname $(readlink -f $(which renderdoccmd))))
+WGPU_DEBUG=1 VK_IMPLICIT_LAYER_PATH=$R/share/vulkan/implicit_layer.d ORNISCULPT_CAPTURE=crowd4000:600 \
+  renderdoccmd capture -w -c /tmp/crowd ./target/release/examples/bench crowd --out /tmp/x
+qrenderdoc -platform offscreen --python script.py   # the `renderdoc` module, for scripted replay
+```
+
+`WGPU_DEBUG=1` names the pipelines. Don't `LD_PRELOAD` librenderdoc: its `dlopen` hook then hides
+`libvulkan` from wgpu ("Unable to find a GPU"). On this tiler, per-draw GPU durations are
+meaningless (draws run in bins at the end of the pass), and Bevy's GPU-built indirect draws get no
+pipeline statistics; index and instance counts per draw are reliable.
+
+Crowd steady frame (v5, frame 600): 9.9 M indices × instances in the main pass over 1630
+instances; 10.8 M in shadow cascades 2 and 3, all from the 32 hero-tier mobs (crowd tiers cast
+no shadows). Experiments: `max_hero = 0` 69 → 63 ms. The near tier is the cost: `near_px` 160 /
+80 / 40 gives 1573 / 2436 / 3421 near mobs at 48.2 / ~68 / 93.5 ms, about 24.5 µs per near mob.
+Halving the near mesh (simplify ratio 0.22 → 0.11, man 5046 → 2519 triangles, ox 8766 → 4443)
+took the crowd to 54 ms (−21 %) at the same tier counts, but the crowd image moved 5.4 % of pixels
+(33.7 dB). The ox's coat markings, painted per vertex, change shape at the near tier's top size.
+Not landed: a look decision.
+
 Sequential runs drift a few percent as the laptop warms over an hour of benching; for small
 effects, alternate the two builds (`ab-A-*`, `ab-B-*` below) with an unaffected case as control.
 
