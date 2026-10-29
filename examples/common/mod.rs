@@ -2,6 +2,8 @@
 //! crowd workload (`crowd` and `bench`), and small helpers. Each example uses only part of it.
 #![allow(dead_code)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bevy::app::{PluginGroupBuilder, ScheduleRunnerPlugin};
@@ -9,7 +11,7 @@ use bevy::camera::{ImageRenderTarget, RenderTarget};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::window::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::{ExitCondition, PresentMode};
 use bevy::winit::WinitPlugin;
 use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules};
@@ -154,7 +156,7 @@ pub fn screenshot(target: Option<&ShotTarget>) -> Screenshot {
     target.map_or_else(Screenshot::primary_window, |t| Screenshot::image(t.0.clone()))
 }
 
-/// `ORNISCULPT_SCREENSHOT=out.png`: saves a screenshot at `frame` and exits 20 frames later.
+/// `ORNISCULPT_SCREENSHOT=out.png`: saves a screenshot at `frame` and exits once it is saved.
 pub fn screenshot_at(frame: u32) -> impl FnMut(Commands, Option<Res<ShotTarget>>, MessageWriter<AppExit>) {
     screenshots(vec![frame], frame)
 }
@@ -172,16 +174,23 @@ pub fn shot_frames(default: u32) -> Vec<u32> {
     std::env::var("ORNISCULPT_SHOT_FRAME").unwrap_or_else(|_| default.to_string()).split(',').filter_map(|s| s.trim().parse().ok()).collect()
 }
 
+/// Exits once every shot is saved: the capture arrives some frames after the request, more when
+/// frames are fast or a body is generating, so a fixed frame count can quit before it lands.
 fn screenshots(frames: Vec<u32>, last: u32) -> impl FnMut(Commands, Option<Res<ShotTarget>>, MessageWriter<AppExit>) {
     let mut frame = 0u32;
+    let saved = Arc::new(AtomicUsize::new(0));
     move |mut commands: Commands, target: Option<Res<ShotTarget>>, mut exit: MessageWriter<AppExit>| {
         let Ok(path) = std::env::var("ORNISCULPT_SCREENSHOT") else { return };
         frame += 1;
         if frames.contains(&frame) {
             let path = if frames.len() > 1 { format!("{path}.{frame}.png") } else { path };
-            commands.spawn(screenshot(target.as_deref())).observe(save_to_disk(path));
+            let saved = saved.clone();
+            commands
+                .spawn(screenshot(target.as_deref()))
+                .observe(save_to_disk(path))
+                .observe(move |_: On<ScreenshotCaptured>| _ = saved.fetch_add(1, Ordering::Relaxed));
         }
-        if frame == last + 20 {
+        if frame > last && saved.load(Ordering::Relaxed) >= frames.len() {
             exit.write(AppExit::Success);
         }
     }
