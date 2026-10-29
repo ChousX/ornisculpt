@@ -2,7 +2,7 @@
 // pushed toward a strongman's: very broad shoulders and a barrel chest, a thick neck sloping into
 // massive trapezii, arms and thighs heavy with muscle, big hands. The head is human in plan but
 // coarse: a jutting brow ridge, a broad flat nose, heavy cheekbones and a wide, square jaw with
-// tusks rising from it; pointed ears swept back. Carried slightly stooped, knees soft.
+// tusks rising from it (an authored head, the human one warped); pointed ears swept back. Carried slightly stooped, knees soft.
 //
 // The torso stands vertically (t = 0 pelvis, 1 shoulders; around 0 = back, 90 = left, 180 = front).
 (
@@ -44,18 +44,25 @@
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.088, 0.112, 0.105)),
+                            // The authored orc head (parts/head_orc.gltf, tools/gen_head_orc.py:
+                            // the MakeHuman head warped), 24 cm tall.
+                            skull: (shape: Ellipsoid, size: (0.092, 0.12, 0.11)),
                             snout: 0.0,
-                            jaw: Some((segments: 1, length: 0.1)),
                             eye_spacing: 0.46,
-                            face: Some((nose: 1.2, brow: 2.4, cheekbones: 1.5, lips: 1.25, chin: 1.45, jaw_width: 1.6, cheeks: 1.1)),
+                            sculpt: Some((
+                                mesh: "parts/head_orc.gltf#Mesh0/Primitive0",
+                                eye: (0.032, 0.0943, 0.0495),
+                                nostril: (0.0204, 0.0452, 0.0763),
+                                nose: (0.0001, 0.0515, 0.083),
+                                mouth: (0.0, 0.0314, 0.0838),
+                            )),
                         )),
                         offset: (rotate_deg: (-18.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.011, sclera: 0.5)), attach: Eye, mirror: true),
                             // Pointed ears, swept back.
-                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.1, radius: (curve: [(0.0, 1.0), (0.4, 0.9), (1.0, 0.1)], scale: 0.024, cross: Flat(aspect: 2.6)), blend: 0.006))), attach: Ear, offset: (rotate_deg: (-70.0, 0.0, 15.0)), mirror: true),
+                            (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.1, radius: (curve: [(0.0, 1.0), (0.4, 0.9), (1.0, 0.1)], scale: 0.024, cross: Flat(aspect: 2.6)), blend: 0.006))), attach: Ear, mirror: true),
                             // Tusks from the lower jaw, up past the upper lip, splayed a little.
                             (name: "tusk", kind: Hard((kind: Horn, size: 0.056, curve: 0.4)), attach: Mouth, offset: (translate: (0.025, -0.018, 0.02), rotate_deg: (-70.0, 0.0, 18.0)), mirror: true),
                             // Long black hair gathered in a crest from brow to nape.
