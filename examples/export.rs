@@ -22,10 +22,11 @@ fn run() -> Result<String, String> {
     let read = |p: &str| std::fs::read_to_string(format!("{}/assets/{p}", env!("CARGO_MANIFEST_DIR"))).map_err(|e| format!("{p}: {e}"));
     let plan: BodyPlan = ron::from_str(&read(&plan_path)?).map_err(|e| format!("{plan_path}: {e}"))?;
     let coat = common::asset_arg(3).map(|c| ron::from_str::<Coat>(&read(&c)?).map_err(|e| format!("{c}: {e}"))).transpose()?;
-    let anatomy = common::build_plan(&plan, PartLodRules::default(), &common::part_assets(&plan))?;
+    let assets = common::part_assets(&plan);
+    let anatomy = common::build_plan(&plan, PartLodRules::default(), &assets)?;
     let settings = SurfaceSettings::default();
     let skin = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 0).map_err(|e| e.to_string())?;
-    let bytes = export_body(&plan, coat.as_ref(), &anatomy, Some(&skin)).map_err(|e| e.to_string())?;
+    let bytes = export_body(&plan, coat.as_ref(), &anatomy, &assets, Some(&skin)).map_err(|e| e.to_string())?;
     std::fs::write(&out, &bytes).map_err(|e| format!("{out}: {e}"))?;
     Ok(format!("{out}: {} parts, {} bones, {} triangles, {} KB", anatomy.parts.len(), anatomy.skeleton.len(), skin.triangle_count(), bytes.len() / 1024))
 }

@@ -80,7 +80,7 @@ some DCCs can't store them.
 
 `tools/blender/round_trip.py` imports a `.body.glb` into Blender 5.2 headless, optionally moves a
 part, and exports it again; `convert` turns the result back into RON. With nothing moved the
-woman comes back identical. With her arm moved 2 cm up, only the arm changes: its `Surface` attach
+woman, and the beast with its sculpted feet and mesh crest, come back identical. With her arm moved 2 cm up, only the arm changes: its `Surface` attach
 slides up the torso (`t` 0.9 → 0.94) and its offset takes up the rest (3.5 → 4.2 cm out).
 
 ```text
@@ -88,19 +88,33 @@ blender -b --python tools/blender/round_trip.py -- woman.body.glb out.body.glb a
 cargo run --release --example convert --features interchange -- out.body.glb /tmp/woman.body.ron
 ```
 
-## Parts (phase 3)
+## Parts with an authored mesh
 
-A mesh node with `extras.ornisculpt.part` whose `kind` is `Sculpt` or `Hard` with `Mesh`, and no
-mesh path, is an **authored part modelled in place** on the reference body.
+A sculpt or a mesh hard part is a **mesh node**: the part node carries its mesh, scaled by the
+part's `scale`, in the frame the part builds it in (the attach frame times the offset, or just the
+attach position for `Orient::Model`). The artist edits that mesh, or models a new part on the
+reference body.
 
-- Its parent is the part node it is nested under, or else the part owning the body surface
-  nearest the mesh's centroid.
-- Its attach follows the import rules above, from the mesh node's transform.
-- Its mesh is baked into the authored frame (origin at the attach point, `Orient::Slot` or
-  `Model`), welded at UV seams and hard edges (a sculpt's SDF sign needs a closed surface), and
-  written into the plan's parts file as `#MeshN/Primitive0`.
-- `blend`, `resolution`, `region`, `own_bone` and `orient` come from the extras, with the
-  defaults of `SculptParams` when absent.
+- **Unchanged** (its geometry's fingerprint is still the exported `mesh_print`: distinct positions
+  to 10 µm and the triangle count, so a DCC re-ordering or splitting vertices doesn't count), the
+  part keeps its mesh path exactly.
+- **Edited or new**, the mesh is taken from the file (all its triangle primitives), welded for a
+  sculpt (its SDF needs a closed surface), and referred to as `{mesh file}#Mesh{n}/Primitive0`
+  with `scale: 1`. The loader serves those as labelled meshes of the `.body.glb` itself;
+  `convert` writes them to `<plan>.parts.gltf` beside the RON.
+- A new part is a mesh node nested under the part it grows from, with
+  `extras.ornisculpt.part = { kind: { Sculpt: {} }, attach: … }` (or `Hard` with `kind: { Mesh: {
+  path: "" } }`). It has no frame, so it is placed like a moved part: where its node is.
+- A node's scale goes into the part's `scale` (a sculpt's frame scale is replaced by it).
+
+### Names
+
+Blender keeps object names unique across the whole file, so the hind leg's `foot` comes in as
+`foot.001`. A node named its part's name plus such a suffix keeps the part's name; any other name
+renames the part. A part duplicated in the DCC (Shift+D copies its extras, `order` included) gets
+its node's name with `.` made `_` (`horn_001`), since `.1` would read as a copy suffix.
+
+Not yet: heads' sculpts (`Head { sculpt }`) and digit tips export without their meshes.
 
 ## Garments (phase 4)
 

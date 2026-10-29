@@ -3,15 +3,20 @@
 //! The part tree is the nesting of nodes carrying `extras.ornisculpt.part`. A node still at the
 //! frame it was exported at keeps its attach and offset exactly; a moved one slides over its
 //! parent (`Along` and `Surface` attaches) and its offset takes up the rest of the move.
+//!
+//! A part with an authored mesh is a mesh node: while its geometry is as exported it keeps its
+//! mesh's path, and an edited or new one is taken from the file (see [`ImportedBody::meshes`]).
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use serde_json::Value;
 use thiserror::Error;
 
-use super::{GlbError, KEY, axis_coords, gltf_document};
+use super::authored::{authored, base_frame, fingerprint, is_sculpt, scale_authored, set_authored, weld};
+use super::{GlbError, KEY, axis_coords, gltf_document, trimesh};
 use crate::anatomy::{
-    Anatomy, AnatomyError, AttachSlot, BodyPlan, PartAssets, PartLodRules, PartNode, PartOffset, PartPath, Repeat, Tone, path_matches,
+    Anatomy, AnatomyError, AttachSlot, BodyPlan, PartAssets, PartLodRules, PartNode, PartOffset, PartPath, Repeat, Tone, TriMesh,
+    path_matches,
 };
 use crate::coat::Coat;
 
@@ -49,18 +54,25 @@ pub struct ImportedBody {
     pub moved: Vec<PartPath>,
     /// Things kept as they were or approximated (a non-uniform scale on a part node).
     pub warnings: Vec<String>,
+    /// Part meshes modelled in the DCC (new, or edited since export), by the asset path the plan
+    /// now refers to them by: `{mesh_file}#Mesh{n}/Primitive0`, `n` counting from 0 in this
+    /// order. Whoever stores the plan stores these there (the loader serves them as labelled
+    /// assets of the body file itself; `convert` writes a parts file).
+    pub meshes: Vec<(String, TriMesh)>,
 }
 
-/// Reads a body from glTF (`.glb` or `.gltf` text), placing moved parts where their nodes now
-/// are. `assets` holds the meshes the plan references (see
+/// Reads a body from glTF (`.glb` or `.gltf` text), placing moved parts where their nodes now are.
+///
+/// `assets` holds the meshes the plan references (see
 /// [`referenced_assets`](crate::anatomy::referenced_assets)); it is only used when a part moved.
+/// Part meshes modelled in the file are referred to in `mesh_file` (see [`ImportedBody::meshes`]).
 ///
 /// # Errors
 ///
 /// When the file isn't glTF, holds no single root part, a part's data doesn't parse, or a moved
 /// part's plan doesn't build.
-pub fn import_body(bytes: &[u8], assets: &PartAssets) -> Result<ImportedBody, ImportError> {
-    place_moved(read_body(bytes)?, assets)
+pub fn import_body(bytes: &[u8], mesh_file: &str, assets: &PartAssets) -> Result<ImportedBody, ImportError> {
+    place_moved(read_body(bytes, mesh_file)?, assets)
 }
 
 /// The plan as the file states it, before moved parts are placed: what [`place_moved`] finishes.
@@ -76,8 +88,8 @@ pub struct ReadBody {
 /// # Errors
 ///
 /// As [`import_body`], except for building.
-pub fn read_body(bytes: &[u8]) -> Result<ReadBody, ImportError> {
-    let (doc, _) = gltf_document(bytes).ok_or(ImportError::NotGltf)?;
+pub fn read_body(bytes: &[u8], mesh_file: &str) -> Result<ReadBody, ImportError> {
+    let (doc, buffers) = gltf_document(bytes).ok_or(ImportError::NotGltf)?;
     let empty = Vec::new();
     let nodes = doc.get("nodes").and_then(Value::as_array).unwrap_or(&empty);
     let node = |i: usize| nodes.get(i);
@@ -94,9 +106,10 @@ pub fn read_body(bytes: &[u8]) -> Result<ReadBody, ImportError> {
     };
     let (starts, root_extras) = root.and_then(node).map_or_else(scene_roots, |r| (children(r), ornisculpt(r)));
 
+    let mut cx = Cx { nodes, doc: &doc, buffers: &buffers, mesh_file, meshes: Vec::new(), warnings: Vec::new() };
     let mut found = Vec::new();
     for s in starts {
-        collect(nodes, s, Affine3A::IDENTITY, &mut found, 0)?;
+        collect(&mut cx, s, Affine3A::IDENTITY, &mut found, 0)?;
     }
     let root_part = match found.len() {
         0 => return Err(ImportError::NoParts),
@@ -116,7 +129,9 @@ pub fn read_body(bytes: &[u8]) -> Result<ReadBody, ImportError> {
     let mut moved = Vec::new();
     root_part.moved(&PartPath::root(&root_part.data.name), &mut moved);
     let plan = BodyPlan { root: root_part.into_node(), tone };
-    let body = ImportedBody { plan, coat, moved: moved.iter().map(|(p, _)| p.clone()).collect(), warnings: Vec::new() };
+    let meshes = cx.meshes.into_iter().map(|(_, path, mesh)| (path, mesh)).collect();
+    let moved_paths = moved.iter().map(|(p, _)| p.clone()).collect();
+    let body = ImportedBody { plan, coat, moved: moved_paths, warnings: cx.warnings, meshes };
     Ok(ReadBody { body, nodes: moved })
 }
 
@@ -129,6 +144,11 @@ pub fn read_body(bytes: &[u8]) -> Result<ReadBody, ImportError> {
 pub fn place_moved(read: ReadBody, assets: &PartAssets) -> Result<ImportedBody, ImportError> {
     let ReadBody { mut body, nodes } = read;
     let rules = PartLodRules::default();
+    let mut assets = assets.clone();
+    for (path, mesh) in &body.meshes {
+        assets.insert(path.clone(), std::sync::Arc::new(mesh.clone()));
+    }
+    let assets = &assets;
     for (path, model) in nodes {
         let mut anatomy = Anatomy::from_plan(&body.plan, &rules, assets)?;
         let built = |a: &Anatomy| a.parts.iter().position(|p| path_matches(&path, &p.path));
@@ -141,13 +161,16 @@ pub fn place_moved(read: ReadBody, assets: &PartAssets) -> Result<ImportedBody, 
             anatomy = Anatomy::from_plan(&body.plan, &rules, assets)?;
             at = built(&anatomy).ok_or_else(|| ImportError::NotBuilt(path.clone()))?;
         }
-        let attach = anatomy.parts.get(at).map_or_default(|p| p.attach);
-        let (offset, uniform) = offset_of(&(attach.compute_affine().inverse() * model));
+        let Some(node) = body.plan.node_mut(&path) else { continue };
+        let attach = base_frame(&node.kind, anatomy.parts.get(at).map_or_default(|p| p.attach));
+        let (mut offset, uniform) = offset_of(&(attach.compute_affine().inverse() * model));
+        // An authored mesh scales by its own `scale` (a sculpt's frame scale is replaced by it).
+        if (offset.scale - 1.0).abs() > f32::EPSILON && scale_authored(&mut node.kind, offset.scale) {
+            offset.scale = 1.0;
+        }
+        node.offset = offset;
         if !uniform {
             body.warnings.push(format!("`{path}`: a part scales evenly; its node's scale was averaged"));
-        }
-        if let Some(node) = body.plan.node_mut(&path) {
-            node.offset = offset;
         }
     }
     Ok(body)
@@ -199,6 +222,8 @@ struct Found {
     model: Affine3A,
     /// Its place among its siblings at export (`None` for a part added since).
     order: Option<u64>,
+    /// The node's own name, for telling duplicated siblings apart.
+    node_name: Option<String>,
     children: Vec<Self>,
 }
 
@@ -217,14 +242,70 @@ impl Found {
     }
 }
 
+/// What [`collect`] reads from and gathers into.
+struct Cx<'a> {
+    nodes: &'a [Value],
+    doc: &'a Value,
+    buffers: &'a [Vec<u8>],
+    mesh_file: &'a str,
+    /// Part meshes taken from the file: glTF mesh index, the path the plan refers to it by, and
+    /// the mesh.
+    meshes: Vec<(usize, String, TriMesh)>,
+    warnings: Vec<String>,
+}
+
+impl Cx<'_> {
+    /// glTF mesh `index`, its triangle primitives merged.
+    fn mesh(&self, index: usize) -> Option<TriMesh> {
+        let prims = self.doc.pointer(&format!("/meshes/{index}/primitives"))?.as_array()?;
+        let (mut positions, mut normals, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        let mut all_normals = true;
+        for prim in prims.iter().filter(|p| p.get("mode").and_then(Value::as_u64).is_none_or(|m| m == 4)) {
+            let m = trimesh(self.doc, self.buffers, prim)?;
+            let base = u32::try_from(positions.len()).ok()?;
+            indices.extend(m.indices.iter().map(|i| i + base));
+            all_normals &= m.normals.len() == m.positions.len();
+            positions.extend(m.positions);
+            normals.extend(m.normals);
+        }
+        if !all_normals {
+            normals.clear();
+        }
+        (!indices.is_empty()).then(|| TriMesh::new(positions, normals, indices))
+    }
+
+    /// Takes part `data`'s mesh from glTF mesh `index`, unless its geometry is still the one
+    /// exported (`print`), which keeps the mesh it had.
+    fn take_mesh(&mut self, data: &mut PartNode, index: usize, print: Option<&str>) {
+        let Some((current, ..)) = authored(&data.kind) else { return };
+        let Some(mesh) = self.mesh(index) else {
+            self.warnings.push(format!("`{}`: mesh {index} has no triangles; the part keeps its own", data.name));
+            return;
+        };
+        let now = format!("{:016x}", fingerprint(&mesh.positions, mesh.indices.len() / 3));
+        if !current.is_empty() && print == Some(now.as_str()) {
+            return;
+        }
+        let path = if let Some((_, path, _)) = self.meshes.iter().find(|(i, ..)| *i == index) {
+            path.clone()
+        } else {
+            let path = format!("{}#Mesh{}/Primitive0", self.mesh_file, self.meshes.len());
+            let mesh = if is_sculpt(&data.kind) { weld(&mesh) } else { mesh };
+            self.meshes.push((index, path.clone(), mesh));
+            path
+        };
+        set_authored(&mut data.kind, path);
+    }
+}
+
 /// Collects the part nodes at and under node `i`, whose parent is at `parent` (model space).
 /// Nodes without a part are walked through; reference content is skipped.
-fn collect(nodes: &[Value], i: usize, parent: Affine3A, out: &mut Vec<Found>, depth: usize) -> Result<(), ImportError> {
+fn collect(cx: &mut Cx, i: usize, parent: Affine3A, out: &mut Vec<Found>, depth: usize) -> Result<(), ImportError> {
     // glTF nodes form a forest, but a broken file could loop.
     if depth > 256 {
         return Ok(());
     }
-    let Some(n) = nodes.get(i) else { return Ok(()) };
+    let Some(n) = cx.nodes.get(i) else { return Ok(()) };
     let model = parent * local(n);
     let extras = ornisculpt(n);
     if extras.and_then(|o| o.get("reference")).and_then(Value::as_bool) == Some(true) {
@@ -233,25 +314,60 @@ fn collect(nodes: &[Value], i: usize, parent: Affine3A, out: &mut Vec<Found>, de
     let kids = n.get("children").and_then(Value::as_array).map_or_else(Vec::new, |c| c.iter().filter_map(index).collect::<Vec<_>>());
     let Some(part) = extras.and_then(|o| o.get("part")) else {
         for c in kids {
-            collect(nodes, c, model, out, depth + 1)?;
+            collect(cx, c, model, out, depth + 1)?;
         }
         return Ok(());
     };
-    let name = n.get("name").and_then(Value::as_str).map(str::to_owned);
-    let mut data = parse_part(part, name.as_deref()).map_err(|message| ImportError::Part { node: name.clone().unwrap_or_else(|| format!("#{i}")), message })?;
-    if let Some(name) = name {
-        data.name = name;
+    let node_name = n.get("name").and_then(Value::as_str).map(str::to_owned);
+    let mut data = parse_part(part, node_name.as_deref())
+        .map_err(|message| ImportError::Part { node: node_name.clone().unwrap_or_else(|| format!("#{i}")), message })?;
+    // Renaming the node renames the part, but not the `.001` a DCC appends to keep object names
+    // unique across the file (Blender: the second `foot`).
+    if let Some(name) = &node_name
+        && !dcc_suffixed(name, &data.name)
+    {
+        data.name.clone_from(name);
+    }
+    if let Some(mesh) = n.get("mesh").and_then(index) {
+        cx.take_mesh(&mut data, mesh, extras.and_then(|o| o.get("mesh_print")).and_then(Value::as_str));
     }
     let frame = extras.and_then(|o| o.get("frame")).and_then(matrix);
     let order = extras.and_then(|o| o.get("order")).and_then(Value::as_u64);
     let mut children = Vec::new();
     for c in kids {
-        collect(nodes, c, model, &mut children, depth + 1)?;
+        collect(cx, c, model, &mut children, depth + 1)?;
     }
     // Siblings in their exported order (DCCs reorder them), parts added since after them.
     children.sort_by_key(|c| c.order.unwrap_or(u64::MAX));
-    out.push(Found { data, frame, model, order, children });
+    unique_names(&mut children);
+    out.push(Found { data, frame, model, order, node_name, children });
     Ok(())
+}
+
+/// Whether `node` is `name` with a DCC's de-duplicating suffix (`foot.001`).
+fn dcc_suffixed(node: &str, name: &str) -> bool {
+    node == name || node.strip_prefix(name).and_then(|s| s.strip_prefix('.')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Gives a part duplicated in the DCC (its extras copied, `order` included) its node's name
+/// instead, with `.` made `_` so it doesn't read as a copy suffix (`horn_001`). Siblings may
+/// share a name when their copies don't (an `eye` and a mirrored `eye`); those keep it.
+fn unique_names(siblings: &mut [Found]) {
+    let mut seen: Vec<(String, Option<u64>)> = Vec::new();
+    for f in siblings.iter_mut() {
+        if seen.contains(&(f.data.name.clone(), f.order)) {
+            let base = f.node_name.as_deref().unwrap_or(&f.data.name).replace('.', "_");
+            let taken = |name: &str| seen.iter().any(|(n, _)| n == name);
+            let mut name = base.clone();
+            let mut n = 1;
+            while taken(&name) {
+                name = format!("{base}_{n}");
+                n += 1;
+            }
+            f.data.name = name;
+        }
+        seen.push((f.data.name.clone(), f.order));
+    }
 }
 
 /// A part from its extras: a JSON object, or a string holding JSON or RON. The node's name
@@ -317,7 +433,7 @@ fn close(a: &Affine3A, b: &Affine3A) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::test_assets;
+    use crate::anatomy::{PartKind, referenced_assets, test_assets};
     use crate::interchange::{export_body, read_glb, write_glb};
 
     fn sample(name: &str) -> BodyPlan {
@@ -327,7 +443,7 @@ mod tests {
 
     fn export(plan: &BodyPlan) -> Vec<u8> {
         let anatomy = Anatomy::from_plan(plan, &PartLodRules::default(), &test_assets(plan)).unwrap();
-        export_body(plan, Some(&Coat::default()), &anatomy, None).unwrap()
+        export_body(plan, Some(&Coat::default()), &anatomy, &test_assets(plan), None).unwrap()
     }
 
     fn ron(plan: &BodyPlan) -> String {
@@ -339,7 +455,7 @@ mod tests {
     #[test]
     fn round_trip_every_sample_plan() {
         for (name, plan) in crate::interchange::sample_plans() {
-            let back = import_body(&export(&plan), &test_assets(&plan)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let back = import_body(&export(&plan), "test.body.glb", &test_assets(&plan)).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(back.moved.is_empty(), "{name}: moved {:?}", back.moved);
             assert_eq!(ron(&back.plan), ron(&plan), "{name}");
             assert_eq!(back.coat, Some(Coat::default()), "{name}");
@@ -358,10 +474,11 @@ mod tests {
     }
 
     /// The model-space frame `export_body` gives the part at `path` of `plan`.
-    fn frame(plan: &BodyPlan, path: &PartPath) -> Affine3A {
-        let anatomy = Anatomy::from_plan(plan, &PartLodRules::default(), &test_assets(plan)).unwrap();
+    fn frame(plan: &BodyPlan, path: &PartPath, assets: &PartAssets) -> Affine3A {
+        let anatomy = Anatomy::from_plan(plan, &PartLodRules::default(), assets).unwrap();
         let built = anatomy.parts.iter().find(|p| path_matches(path, &p.path)).unwrap();
-        built.attach.compute_affine() * plan.node(path).unwrap().offset.to_transform().compute_affine()
+        let node = plan.node(path).unwrap();
+        base_frame(&node.kind, built.attach).compute_affine() * node.offset.to_transform().compute_affine()
     }
 
     /// A part node moved over its parent slides its attach and lands where the node was put.
@@ -378,21 +495,22 @@ mod tests {
         let parent = path.parent().unwrap();
         // 4 cm along the parent's local Y, which runs along a segmented part.
         let shift = Vec3::new(0.0, 0.04, 0.0);
-        let original = frame(&plan, &path);
+        let assets = test_assets(&plan);
+        let original = frame(&plan, &path, &assets);
         let bytes = edited(&export(&plan), |doc| {
             let n = node_named(doc, &name);
             let t = n.get("translation").map_or(Vec3::ZERO, |t| Vec3::from_array(std::array::from_fn(|i| narrow(t[i].as_f64().unwrap()))));
             n["translation"] = serde_json::json!((t + shift).to_array());
         });
-        let back = import_body(&bytes, &test_assets(&plan)).unwrap();
+        let back = import_body(&bytes, "test.body.glb", &test_assets(&plan)).unwrap();
         // Its children (if any) moved with it, after it.
         assert_eq!(back.moved.first(), Some(&path));
         let node = back.plan.node(&path).unwrap();
         assert_ne!(node.attach, before, "a part on its parent's axis or skin slides");
         // The node's translation moved by `shift` in its parent's frame.
-        let parent_frame = frame(&plan, &parent);
+        let parent_frame = frame(&plan, &parent, &assets);
         let want = parent_frame * Affine3A::from_translation(shift) * parent_frame.inverse() * original;
-        let got = frame(&back.plan, &path);
+        let got = frame(&back.plan, &path, &assets);
         assert!(Vec3::from(got.translation).distance(Vec3::from(want.translation)) < 1e-3, "{got:?} vs {want:?}");
     }
 
@@ -407,8 +525,72 @@ mod tests {
                 }
             }
         });
-        let back = import_body(&bytes, &test_assets(&plan)).unwrap();
+        let back = import_body(&bytes, "test.body.glb", &test_assets(&plan)).unwrap();
         assert_eq!(ron(&back.plan), ron(&plan));
+    }
+
+    /// A part modelled in place: a mesh node nested under the torso, marked as a sculpt. It comes
+    /// back as a sculpt whose mesh is taken from the file, built where the node is.
+    #[test]
+    fn part_modelled_in_place() {
+        let plan = sample("beast");
+        let root = plan.root.name.clone();
+        let shift = Vec3::new(0.0, 0.1, 0.05);
+        let bytes = edited(&export(&plan), |doc| {
+            let nodes = doc["nodes"].as_array_mut().unwrap();
+            let mesh = nodes.iter().find_map(|n| n.get("mesh")).unwrap().clone();
+            nodes.push(serde_json::json!({
+                "name": "bump",
+                "mesh": mesh,
+                "translation": shift.to_array(),
+                "extras": { KEY: { "part": { "kind": { "Sculpt": {} }, "attach": { "Surface": { "t": 0.5, "around_deg": 0.0 } } } } },
+            }));
+            let bump = nodes.len() - 1;
+            let torso = nodes.iter_mut().find(|n| n["name"] == root.as_str()).unwrap();
+            torso["children"].as_array_mut().unwrap().push(serde_json::json!(bump));
+        });
+        let back = import_body(&bytes, "test.body.glb", &test_assets(&plan)).unwrap();
+        let path = PartPath::root(&root).child("bump");
+        assert_eq!(back.moved, vec![path.clone()], "a new part has no frame yet");
+        let node = back.plan.node(&path).unwrap();
+        let PartKind::Sculpt(sculpt) = &node.kind else { panic!("{:?}", node.kind) };
+        assert_eq!(sculpt.mesh, "test.body.glb#Mesh0/Primitive0");
+        assert_eq!(back.meshes.len(), 1);
+        assert_eq!(back.meshes[0].0, sculpt.mesh);
+        // Every other authored part kept its mesh.
+        assert_eq!(referenced_assets(&back.plan).len(), referenced_assets(&plan).len() + 1);
+
+        let mut assets = test_assets(&plan);
+        assets.insert(sculpt.mesh.clone(), std::sync::Arc::new(back.meshes[0].1.clone()));
+        let got = frame(&back.plan, &path, &assets);
+        let want = frame(&plan, &PartPath::root(&root), &test_assets(&plan)) * Affine3A::from_translation(shift);
+        assert!(Vec3::from(got.translation).distance(Vec3::from(want.translation)) < 1e-3, "{got:?} vs {want:?}");
+    }
+
+    /// Blender keeps object names unique across the file (`foot.001`); a duplicated part (its
+    /// extras copied) becomes a part of its own.
+    #[test]
+    fn dcc_names() {
+        assert!(dcc_suffixed("foot.001", "foot"));
+        assert!(dcc_suffixed("foot", "foot"));
+        assert!(!dcc_suffixed("paw", "foot"));
+        assert!(!dcc_suffixed("foot.l", "foot"));
+        let plan = sample("quadruped");
+        let first = plan.root.children[0].name.clone();
+        let bytes = edited(&export(&plan), |doc| {
+            let nodes = doc["nodes"].as_array_mut().unwrap();
+            let original = nodes.iter().position(|n| n["name"] == first.as_str()).unwrap();
+            let mut copy = nodes[original].clone();
+            copy["name"] = serde_json::json!(format!("{first}.001"));
+            copy.as_object_mut().unwrap().remove("children");
+            nodes.push(copy);
+            let index = nodes.len() - 1;
+            let parent = nodes.iter_mut().find(|n| n["children"].as_array().is_some_and(|c| c.contains(&serde_json::json!(original)))).unwrap();
+            parent["children"].as_array_mut().unwrap().push(serde_json::json!(index));
+        });
+        let back = import_body(&bytes, "test.body.glb", &test_assets(&plan)).unwrap();
+        let names: Vec<&str> = back.plan.root.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&first.as_str()) && names.contains(&format!("{first}_001").as_str()), "{names:?}");
     }
 
     /// A part written by hand in a DCC: a RON string, its name from the node.

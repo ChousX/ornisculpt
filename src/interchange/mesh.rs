@@ -109,3 +109,50 @@ fn scalars(doc: &Value, buffers: &[Vec<u8>], index: u64) -> Option<Vec<u32>> {
         .collect();
     (out.len() == count).then_some(out)
 }
+
+/// A `.gltf` holding `meshes` as `Mesh{n}/Primitive0`, its buffer embedded as a base64 data URI
+/// (as `tools/` write part meshes, so every reader of `assets/parts` takes it).
+#[must_use]
+pub fn write_meshes_gltf(meshes: &[TriMesh]) -> Vec<u8> {
+    use base64::Engine;
+    use serde_json::json;
+    let mut bin: Vec<u8> = Vec::new();
+    let (mut views, mut accessors, mut out) = (Vec::new(), Vec::new(), Vec::new());
+    let mut push = |bytes: &[u8], accessor: Value, bin: &mut Vec<u8>| {
+        views.push(json!({ "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len() }));
+        bin.extend_from_slice(bytes);
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        let mut a = accessor;
+        if let Some(o) = a.as_object_mut() {
+            o.insert("bufferView".into(), json!(views.len() - 1));
+        }
+        accessors.push(a);
+        accessors.len() - 1
+    };
+    for (i, m) in meshes.iter().enumerate() {
+        let (lo, hi) = m.positions.iter().fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        let n = m.positions.len();
+        let mut attributes = serde_json::Map::new();
+        let position = push(
+            bytemuck::cast_slice(&m.positions),
+            json!({ "componentType": 5126, "type": "VEC3", "count": n, "min": lo.to_array(), "max": hi.to_array() }),
+            &mut bin,
+        );
+        attributes.insert("POSITION".into(), json!(position));
+        if m.normals.len() == n {
+            let normal = push(bytemuck::cast_slice(&m.normals), json!({ "componentType": 5126, "type": "VEC3", "count": n }), &mut bin);
+            attributes.insert("NORMAL".into(), json!(normal));
+        }
+        let indices = push(bytemuck::cast_slice(&m.indices), json!({ "componentType": 5125, "type": "SCALAR", "count": m.indices.len() }), &mut bin);
+        out.push(json!({ "name": format!("part{i}"), "primitives": [{ "attributes": attributes, "indices": indices }] }));
+    }
+    let uri = format!("data:application/octet-stream;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bin));
+    let doc = json!({
+        "asset": { "version": "2.0", "generator": concat!("ornisculpt ", env!("CARGO_PKG_VERSION")) },
+        "meshes": out,
+        "accessors": accessors,
+        "bufferViews": views,
+        "buffers": [{ "byteLength": bin.len(), "uri": uri }],
+    });
+    serde_json::to_vec_pretty(&doc).unwrap_or_default()
+}

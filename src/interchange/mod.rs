@@ -7,6 +7,7 @@
 //! plan back from the part empties, so an unedited file round-trips to an equal plan.
 
 mod attach;
+mod authored;
 mod export;
 mod glb;
 mod import;
@@ -20,7 +21,7 @@ pub use export::{ExportError, export_body};
 pub use glb::{GlbError, read_glb, write_glb};
 pub use import::{ImportError, ImportedBody, ReadBody, import_body, place_moved, read_body};
 pub use loader::{BodyGltfLoader, BodyGltfLoaderError};
-pub use mesh::{gltf_document, read_trimesh, trimesh};
+pub use mesh::{gltf_document, read_trimesh, trimesh, write_meshes_gltf};
 
 /// Version of the `extras.ornisculpt` layout written by [`export_body`].
 pub const FORMAT: u32 = 1;

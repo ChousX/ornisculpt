@@ -5,8 +5,9 @@ use bevy::prelude::*;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
+use super::authored::{authored, base_frame, fingerprint};
 use super::{FORMAT, GlbError, KEY, write_glb};
-use crate::anatomy::{Anatomy, BodyPlan, PartNode, PartPath, path_matches};
+use crate::anatomy::{Anatomy, BodyPlan, PartAssets, PartNode, PartPath, path_matches};
 use crate::coat::Coat;
 use crate::surface::{BodyMeshData, MaterialSlot};
 
@@ -24,15 +25,22 @@ pub enum ExportError {
 ///
 /// The file holds an empty per authored part at its frame, carrying the part, and, when given,
 /// the reference content: `anatomy`'s skeleton in rest pose and `skin` (a hero mesh of the same
-/// body) skinned to it. `coat` rides along on the root.
+/// body) skinned to it. `coat` rides along on the root. A part with an authored mesh (a sculpt, a
+/// mesh hard part) is a mesh node instead, with its mesh from `assets`, scaled, in its frame.
 ///
-/// `anatomy` must be built from `plan` in its default form (`Anatomy::from_plan`): the part frames
-/// come from it.
+/// `anatomy` must be built from `plan` in its default form (`Anatomy::from_plan`), with `assets`:
+/// the part frames come from it.
 ///
 /// # Errors
 ///
 /// When a part of the plan isn't in `anatomy`.
-pub fn export_body(plan: &BodyPlan, coat: Option<&Coat>, anatomy: &Anatomy, skin: Option<&BodyMeshData>) -> Result<Vec<u8>, ExportError> {
+pub fn export_body(
+    plan: &BodyPlan,
+    coat: Option<&Coat>,
+    anatomy: &Anatomy,
+    assets: &PartAssets,
+    skin: Option<&BodyMeshData>,
+) -> Result<Vec<u8>, ExportError> {
     let mut doc = Doc::default();
     let mut extras = Map::new();
     extras.insert("format".into(), json!(FORMAT));
@@ -42,7 +50,8 @@ pub fn export_body(plan: &BodyPlan, coat: Option<&Coat>, anatomy: &Anatomy, skin
     }
     let root = doc.node(json!({ "name": KEY, "extras": { KEY: extras } }));
 
-    let part = part_node(&mut doc, anatomy, &plan.root, &PartPath::root(&plan.root.name), Affine3A::IDENTITY, 0)?;
+    let cx = PartCx { anatomy, assets };
+    let part = part_node(&mut doc, &cx, &plan.root, &PartPath::root(&plan.root.name), Affine3A::IDENTITY, 0)?;
     doc.child(root, part);
 
     if let Some(skin) = skin {
@@ -68,10 +77,10 @@ pub fn export_body(plan: &BodyPlan, coat: Option<&Coat>, anatomy: &Anatomy, skin
 /// The empty for authored part `node` at `path` (and its children's), placed relative to its
 /// parent's frame `parent` (model space). `order` is its place among its siblings, which DCCs
 /// don't keep (Blender sorts by name) but the build order depends on.
-fn part_node(doc: &mut Doc, anatomy: &Anatomy, node: &PartNode, path: &PartPath, parent: Affine3A, order: usize) -> Result<usize, ExportError> {
+fn part_node(doc: &mut Doc, cx: &PartCx, node: &PartNode, path: &PartPath, parent: Affine3A, order: usize) -> Result<usize, ExportError> {
     // The first copy is the logical one: `.l` before `.r`, `.0` before the rest.
-    let built = anatomy.parts.iter().find(|p| path_matches(path, &p.path)).ok_or_else(|| ExportError::NotBuilt(path.clone()))?;
-    let frame = built.attach.compute_affine() * node.offset.to_transform().compute_affine();
+    let built = cx.anatomy.parts.iter().find(|p| path_matches(path, &p.path)).ok_or_else(|| ExportError::NotBuilt(path.clone()))?;
+    let frame = base_frame(&node.kind, built.attach).compute_affine() * node.offset.to_transform().compute_affine();
     let local = parent.inverse() * frame;
     let data = PartNode { children: Vec::new(), ..node.clone() };
     let mut part = strip_nulls(serde_json::to_value(&data)?);
@@ -80,13 +89,32 @@ fn part_node(doc: &mut Doc, anatomy: &Anatomy, node: &PartNode, path: &PartPath,
     }
     let mut n = trs(&local);
     n.insert("name".into(), json!(node.name));
-    n.insert("extras".into(), json!({ KEY: { "part": part, "frame": Mat4::from(frame).to_cols_array(), "order": order } }));
+    let mut extras = Map::new();
+    extras.insert("part".into(), part);
+    extras.insert("frame".into(), json!(Mat4::from(frame).to_cols_array()));
+    extras.insert("order".into(), json!(order));
+    if let Some((mesh_path, _, scale)) = authored(&node.kind)
+        && let Some(mesh) = cx.assets.meshes.get(mesh_path)
+    {
+        let positions: Vec<Vec3> = mesh.positions.iter().map(|p| *p * scale).collect();
+        // Import keeps the mesh's path while its geometry is unchanged (see `fingerprint`).
+        extras.insert("mesh_print".into(), json!(format!("{:016x}", fingerprint(&positions, mesh.indices.len() / 3))));
+        let index = doc.mesh(&node.name, &positions, &mesh.normals, &mesh.indices, MaterialSlot::Hard);
+        n.insert("mesh".into(), json!(index));
+    }
+    n.insert("extras".into(), json!({ KEY: extras }));
     let index = doc.node(Value::Object(n));
     for (order, child) in node.children.iter().enumerate() {
-        let c = part_node(doc, anatomy, child, &path.child(&child.name), frame, order)?;
+        let c = part_node(doc, cx, child, &path.child(&child.name), frame, order)?;
         doc.child(index, c);
     }
     Ok(index)
+}
+
+/// What parts are exported from.
+struct PartCx<'a> {
+    anatomy: &'a Anatomy,
+    assets: &'a PartAssets,
 }
 
 /// The reference skeleton (joints in rest pose) and the skin bound to it, under one empty that
@@ -181,6 +209,21 @@ impl Doc {
         self.accessors.len() - 1
     }
 
+    /// A one-primitive mesh of `positions` (and `normals`, when there is one per position).
+    fn mesh(&mut self, name: &str, positions: &[Vec3], normals: &[Vec3], indices: &[u32], slot: MaterialSlot) -> usize {
+        let (lo, hi) = positions.iter().fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        let n = positions.len();
+        let mut attributes = Map::new();
+        attributes.insert("POSITION".into(), json!(self.accessor(bytemuck::cast_slice(positions), FLOAT, "VEC3", n, Some((lo, hi)))));
+        if normals.len() == n {
+            attributes.insert("NORMAL".into(), json!(self.accessor(bytemuck::cast_slice(normals), FLOAT, "VEC3", n, None)));
+        }
+        let indices = self.accessor(bytemuck::cast_slice(indices), UNSIGNED_INT, "SCALAR", indices.len(), None);
+        let material = self.material(slot);
+        self.meshes.push(json!({ "name": name, "primitives": [{ "attributes": attributes, "indices": indices, "material": material }] }));
+        self.meshes.len() - 1
+    }
+
     /// A plain material per slot, so the reference reads as skin, horn, eye and cloth.
     fn material(&mut self, slot: MaterialSlot) -> usize {
         if let Some((_, m)) = self.slots.iter().find(|(s, _)| *s == slot) {
@@ -259,7 +302,7 @@ mod tests {
     #[test]
     fn every_sample_plan_exports() {
         for (name, plan) in crate::interchange::sample_plans() {
-            let bytes = export_body(&plan, None, &built(&plan), None).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let bytes = export_body(&plan, None, &built(&plan), &test_assets(&plan), None).unwrap_or_else(|e| panic!("{name}: {e}"));
             let gltf = gltf::Gltf::from_slice(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             let parts = gltf
                 .nodes()
@@ -278,7 +321,7 @@ mod tests {
         let anatomy = built(&plan);
         let settings = SurfaceSettings::default();
         let skin = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Far, settings.get(LodLevel::Far), 0).unwrap();
-        let bytes = export_body(&plan, Some(&Coat::default()), &anatomy, Some(&skin)).unwrap();
+        let bytes = export_body(&plan, Some(&Coat::default()), &anatomy, &test_assets(&plan), Some(&skin)).unwrap();
         let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
         let s = gltf.skins().next().unwrap();
         assert_eq!(s.joints().count(), anatomy.skeleton.len());
