@@ -347,9 +347,9 @@ pub(super) struct PreparedPrim {
     /// Local anchor point and reach for blend fading (see `Primitive::blend_anchor`).
     pub(super) anchor: Option<(Vec3A, f32)>,
     pub(super) op: PrimOp,
-    layer: PrimLayer,
+    pub(super) layer: PrimLayer,
     region: RegionId,
-    bone: BoneId,
+    pub(super) bone: BoneId,
     /// The part this primitive belongs to (index into [`Anatomy::parts`]).
     pub(super) part: u16,
     /// The limb (part index) this primitive belongs to, if it is on one: different limbs meet
