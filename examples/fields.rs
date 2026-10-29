@@ -6,9 +6,6 @@
 //! cargo run --release --example fields [mobs/plan.body.ron]
 //! ```
 //!
-//! Plans with authored part meshes (the sculpted heads of the man and woman) need the asset
-//! server, which this example does without.
-//!
 //! Front row, sweeps by cross-section: round · ellipse · flat · teardrop.
 //! Back row, the body: plain · `Intersect` with a ball · `Displace` by noise · `RegionClip` to the
 //! torso.
@@ -25,7 +22,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::shape::Aabb3d;
 use ornisculpt::anatomy::{
-    Anatomy, BodyPlan, CrossSection, LodLevel, PartAssets, PartLodRules, PrimLayer, RegionId, RegionKind, RegionSelector,
+    Anatomy, BodyPlan, CrossSection, LodLevel, PartLodRules, PrimLayer, RegionId, RegionKind, RegionSelector,
 };
 use ornisculpt::num::Saturate;
 use ornisculpt::random::{Noise, NoiseSettings};
@@ -150,7 +147,7 @@ fn voxel_mesh(field: &impl Field, cell: f32) -> Mesh {
 fn load_anatomy(path: &str) -> Result<Anatomy, String> {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(path)).map_err(|e| format!("{path}: {e}"))?;
     let plan: BodyPlan = ron::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
-    build_plan(&plan, PartLodRules::default(), &PartAssets::default())
+    build_plan(&plan, PartLodRules::default(), &common::part_assets(&plan))
 }
 
 fn sweeps() -> Vec<Shown> {
@@ -219,7 +216,7 @@ fn bodies(anatomy: &Anatomy) -> Vec<Shown> {
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut exit: MessageWriter<AppExit>) {
-    let plan = std::env::args().nth(1).unwrap_or_else(|| "mobs/orc.body.ron".into());
+    let plan = std::env::args().nth(1).unwrap_or_else(|| "mobs/man.body.ron".into());
     let anatomy = match load_anatomy(&plan) {
         Ok(a) => a,
         Err(e) => {

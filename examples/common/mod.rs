@@ -14,7 +14,7 @@ use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::window::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::{ExitCondition, PresentMode};
 use bevy::winit::WinitPlugin;
-use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules};
+use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules, TriMesh, referenced_assets};
 use ornisculpt::mob::{MobTier, QualityProfile};
 
 pub mod crowd;
@@ -241,6 +241,53 @@ pub fn cycle_quality(keys: &ButtonInput<KeyCode>, profile: &mut QualityProfile, 
 /// Mobs at each tier, hero first.
 pub fn tier_counts(tiers: &Query<&MobTier>) -> [usize; 3] {
     LodLevel::ALL.map(|level| tiers.iter().filter(|t| t.0 == level).count())
+}
+
+/// The authored part meshes `plan` references, read from `assets/` without the asset server:
+/// the labelled primitive's positions, normals and indices from an embedded little-endian buffer,
+/// as `tools/` write them. A part that can't be read is left out (building then says which).
+pub fn part_assets(plan: &BodyPlan) -> PartAssets {
+    let mut assets = PartAssets::default();
+    for path in referenced_assets(plan) {
+        if let Some(mesh) = read_part(&path) {
+            assets.insert(path, Arc::new(mesh));
+        }
+    }
+    assets
+}
+
+/// `file#MeshN/PrimitiveM` (`Mesh0/Primitive0` without a label).
+fn read_part(path: &str) -> Option<TriMesh> {
+    use base64::Engine;
+    let (file, label) = path.split_once('#').unwrap_or((path, ""));
+    let number = |prefix: &str| label.split('/').find_map(|l| l.strip_prefix(prefix)?.parse::<usize>().ok()).unwrap_or(0);
+    let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(file)).ok()?;
+    let gltf: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let at = |pointer: String| gltf.pointer(&pointer);
+    let (_, data) = at("/buffers/0/uri".into())?.as_str()?.split_once(',')?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    let index = |v: &serde_json::Value| v.as_u64().and_then(|i| usize::try_from(i).ok());
+    let view = |accessor: &serde_json::Value| -> Option<(&[u8], u64)> {
+        let acc = at(format!("/accessors/{}", index(accessor)?))?;
+        let v = at(format!("/bufferViews/{}", index(acc.get("bufferView")?)?))?;
+        let o = v.get("byteOffset").and_then(index).unwrap_or(0);
+        let l = index(v.get("byteLength")?)?;
+        Some((bytes.get(o..o + l)?, acc.get("componentType")?.as_u64()?))
+    };
+    let prim = at(format!("/meshes/{}/primitives/{}", number("Mesh"), number("Primitive")))?;
+    let f32s = |c: &[u8; 12]| c.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<_>>();
+    let vec3s = |name: &str| -> Option<Vec<Vec3>> {
+        let (b, _) = view(prim.pointer(&format!("/attributes/{name}"))?)?;
+        Some(b.as_chunks::<12>().0.iter().map(|c| Vec3::from_slice(&f32s(c))).collect())
+    };
+    let positions = vec3s("POSITION")?;
+    let normals = vec3s("NORMAL").unwrap_or_default();
+    let (ib, kind) = view(prim.get("indices")?)?;
+    let indices = match kind {
+        5125 => ib.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
+        _ => ib.as_chunks::<2>().0.iter().map(|c| u32::from(u16::from_le_bytes(*c))).collect(),
+    };
+    Some(TriMesh::new(positions, normals, indices))
 }
 
 /// The anatomy of `plan` in its default form.

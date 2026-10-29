@@ -50,7 +50,7 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use ornisculpt::OrnisculptPlugin;
-use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartAssets, PartLodRules, apply_form};
+use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
 use ornisculpt::mob::{
     BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, StageTimes, TierCamera,
@@ -347,7 +347,7 @@ fn gen_input(plan: &str, coat: Option<&str>) -> Result<GenInput, String> {
     Ok(GenInput {
         live: apply_form(&plan_def, &Form::default()).map_err(|e| e.to_string())?,
         rules: PartLodRules::default(),
-        assets: PartAssets::default(),
+        assets: common::part_assets(&plan_def),
         settings: SurfaceSettings::default(),
         seed: 0,
         coat,

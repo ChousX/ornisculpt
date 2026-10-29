@@ -1,7 +1,7 @@
 //! Viability checks: runs the built-in checks on every body plan in `assets/mobs`, then on broken
 //! variants that each check must reject (a hip raised out of reach of the ground, feet moved out
-//! from under the body, a skeleton over the bone budget). Headless. Plans with authored part
-//! meshes need the asset server, so they are skipped.
+//! from under the body, a skeleton over the bone budget). Headless; authored part meshes are read
+//! straight from `assets/parts`.
 //!
 //! ```text
 //! cargo run --release --example viability
@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use bevy::prelude::*;
 use ornisculpt::anatomy::{
-    Anatomy, BodyPlan, BoneBudget, FeetReachGround, MAX_BONES, PartAssets, PartLodRules, StaticBalance, Viability, ViabilityCheck, ViabilityChecks,
+    Anatomy, BodyPlan, BoneBudget, FeetReachGround, MAX_BONES, PartLodRules, StaticBalance, Viability, ViabilityCheck, ViabilityChecks,
 };
 
 mod common;
@@ -22,7 +22,7 @@ mod common;
 fn build(path: &Path) -> Result<Anatomy, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let plan: BodyPlan = ron::from_str(&text).map_err(|e| e.to_string())?;
-    common::build_plan(&plan, PartLodRules::default(), &PartAssets::default())
+    common::build_plan(&plan, PartLodRules::default(), &common::part_assets(&plan))
 }
 
 fn describe(v: &Viability) -> String {
@@ -88,10 +88,6 @@ fn main() -> ExitCode {
         let name = path.file_name().map_or_default(|n| n.to_string_lossy().trim_end_matches(".body.ron").to_owned());
         let anatomy = match build(path) {
             Ok(a) => a,
-            Err(e) if e.contains("needs mesh asset") => {
-                println!("{name:<10} skipped (needs authored part meshes)");
-                continue;
-            }
             Err(e) => {
                 println!("{name:<10} does not build: {e}");
                 problems += 1;
