@@ -81,7 +81,7 @@ fn main() -> ExitCode {
     plans.sort();
     let checks = ViabilityChecks::with_builtins();
     let mut problems = 0usize;
-    let mut quadruped = None;
+    let mut horse = None;
 
     println!("== shipped plans");
     for path in &plans {
@@ -105,14 +105,14 @@ fn main() -> ExitCode {
             println!("    {check:<24} {}", describe(result));
         }
         problems += usize::from(!report.viable());
-        if name == "quadruped" {
-            quadruped = Some(anatomy);
+        if name == "horse" {
+            horse = Some(anatomy);
         }
     }
 
-    println!("\n== broken quadrupeds (each must fail its check)");
-    let Some(base) = quadruped else {
-        println!("no quadruped plan to break");
+    println!("\n== broken horses (each must fail its check)");
+    let Some(base) = horse else {
+        println!("no horse plan to break");
         return ExitCode::FAILURE;
     };
     for broken in broken_variants() {

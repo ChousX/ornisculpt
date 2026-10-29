@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{Side, SocketKind};
+use ornisculpt::coat::MobCoat;
 use ornisculpt::equip::{HeldBy, Holding, SocketSel};
 use ornisculpt::mob::{BodyReady, ForceTier, GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::motion::MobIntent;
@@ -24,7 +25,13 @@ use ornisculpt::num::{Saturate, ToF32};
 mod common;
 use common::{Orbit, TIER_KEYS, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_env};
 
-const BODIES: [&str; 4] = ["mobs/biped.body.ron", "mobs/quadruped.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
+/// (body plan, coat).
+const BODIES: [(&str, &str); 4] = [
+    ("mobs/man.body.ron", "coats/skin_fair.coat.ron"),
+    ("mobs/horse.body.ron", "coats/bay.coat.ron"),
+    ("mobs/woman.body.ron", "coats/skin_woman.coat.ron"),
+    ("mobs/spider.body.ron", "coats/wolf_spider.coat.ron"),
+];
 
 fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(16);
@@ -92,10 +99,11 @@ fn setup(
 
     let forced = tier_env("ORNISCULPT_TIER");
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
-    for (i, path) in BODIES.iter().cycle().take(count.0).enumerate() {
-        let centre = Vec3::new((i % side).to_f32() * 2.5, 0.0, (i / side).to_f32() * 2.5) - Vec3::new(side.to_f32() * 1.25, 0.0, side.to_f32() * 1.25);
+    for (i, (path, coat)) in BODIES.iter().cycle().take(count.0).enumerate() {
+        let centre = Vec3::new((i % side).to_f32() * 3.5, 0.0, (i / side).to_f32() * 3.5) - Vec3::new(side.to_f32() * 1.75, 0.0, side.to_f32() * 1.75);
         let mut mob = commands.spawn((
             Mob::new(assets.load(*path)),
+            MobCoat(assets.load(*coat)),
             Wanderer { centre, seed: i.to_f32() * 1.7 },
             Transform::from_translation(centre),
         ));

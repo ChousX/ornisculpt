@@ -6,6 +6,9 @@
 //! cargo run --release --example fields [mobs/plan.body.ron]
 //! ```
 //!
+//! Plans with authored part meshes (the sculpted heads of the man and woman) need the asset
+//! server, which this example does without.
+//!
 //! Front row, sweeps by cross-section: round · ellipse · flat · teardrop.
 //! Back row, the body: plain · `Intersect` with a ball · `Displace` by noise · `RegionClip` to the
 //! torso.
@@ -216,7 +219,7 @@ fn bodies(anatomy: &Anatomy) -> Vec<Shown> {
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut exit: MessageWriter<AppExit>) {
-    let plan = std::env::args().nth(1).unwrap_or_else(|| "mobs/biped.body.ron".into());
+    let plan = std::env::args().nth(1).unwrap_or_else(|| "mobs/orc.body.ron".into());
     let anatomy = match load_anatomy(&plan) {
         Ok(a) => a,
         Err(e) => {

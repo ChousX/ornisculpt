@@ -28,8 +28,8 @@ mod common;
 use common::{Orbit, ShotTarget, TIER_KEYS, asset_arg, cam_env, default_plugins, orbit_camera, shoot_when_ready, spawn_stage, tier_env};
 
 fn main() {
-    let path = asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
-    let coat = asset_arg(2);
+    // With no plan given, the Hereford ox in its coat.
+    let (path, coat) = asset_arg(1).map_or_else(|| ("mobs/ox.body.ron".into(), Some("coats/hereford.coat.ron".into())), |p| (p, asset_arg(2)));
     App::new()
         .add_plugins((
             default_plugins(Window { title: "Ornisculpt viewer".into(), ..default() })
@@ -38,7 +38,7 @@ fn main() {
         ))
         .insert_resource(Viewer::new(path, coat))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
-        .insert_resource(Orbit::from_env(0.9, 0.35, 3.0, Vec3::new(0.0, 0.5, 0.0), (0.3, 30.0)))
+        .insert_resource(Orbit::from_env(0.9, 0.35, 5.0, Vec3::new(0.0, 0.8, 0.0), (0.3, 30.0)))
         .init_resource::<Focus>()
         .add_observer(on_ready)
         .add_systems(Startup, setup)

@@ -19,6 +19,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::save_to_disk;
 use ornisculpt::OrnisculptPlugin;
+use ornisculpt::coat::MobCoat;
 use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
@@ -26,13 +27,14 @@ use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGrap
 mod common;
 use common::{Orbit, ShotTarget, default_plugins, shot_frames, spawn_stage};
 
-const BODIES: [&str; 6] = [
-    "mobs/biped.body.ron",
-    "mobs/quadruped.body.ron",
-    "mobs/horse.body.ron",
-    "mobs/dragon.body.ron",
-    "mobs/bird.body.ron",
-    "mobs/hexapod.body.ron",
+/// (body plan, coat).
+const BODIES: [(&str, Option<&str>); 6] = [
+    ("mobs/man.body.ron", Some("coats/skin_fair.coat.ron")),
+    ("mobs/ox.body.ron", Some("coats/hereford.coat.ron")),
+    ("mobs/horse.body.ron", Some("coats/bay.coat.ron")),
+    ("mobs/dragon.body.ron", Some("coats/chimera.coat.ron")),
+    ("mobs/bird.body.ron", Some("coats/bird.coat.ron")),
+    ("mobs/spider.body.ron", Some("coats/wolf_spider.coat.ron")),
 ];
 /// Leg lengths per second.
 const SPEEDS: [(&str, f32); 4] = [("stand", 0.0), ("walk", 1.0), ("trot", 2.5), ("gallop", 4.5)];
@@ -43,7 +45,7 @@ fn main() {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
-        .insert_resource(Orbit::from_env(0.3, 0.35, 13.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 100.0)))
+        .insert_resource(Orbit::from_env(0.3, 0.35, 19.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, drive, orbit_camera.after(drive), screenshot, frame_stats))
@@ -94,14 +96,17 @@ fn setup(
     spawn_stage(&mut commands, &mut meshes, &mut materials, 80.0, Quat::from_rotation_y(light_yaw) * Vec3::new(3.0, 6.0, 2.0));
     // One graph for every body.
     let graph = graphs.add(library::standard());
-    for (i, path) in BODIES.iter().enumerate() {
-        let centre = Vec3::new(i.to_f32().mul_add(4.5, -11.25), 0.0, 0.0);
-        commands.spawn((
+    for (i, (path, coat)) in BODIES.iter().enumerate() {
+        let centre = Vec3::new(i.to_f32().mul_add(6.0, -15.0), 0.0, 0.0);
+        let mut mob = commands.spawn((
             Mob::new(assets.load(*path)),
             MobMotion::new(graph.clone()),
             Walker { index: i, centre },
             Transform::from_translation(centre + Vec3::X * 1.6),
         ));
+        if let Some(coat) = coat {
+            mob.insert(MobCoat(assets.load(*coat)));
+        }
     }
     info!("Space speed, 1-5 actions (attack shake rear wave flare), H happy, Y flying");
 }
@@ -114,7 +119,7 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut demo: ResMut<Demo>, mut mobs: Q
     }
     if keys.just_pressed(KeyCode::Tab) {
         demo.focus = Some(demo.focus.map_or(0, |f| (f + 1) % BODIES.len()));
-        info!("following {}", BODIES.get(demo.focus.unwrap_or(0)).unwrap_or(&"?"));
+        info!("following {}", BODIES.get(demo.focus.unwrap_or(0)).map_or("?", |b| b.0));
     }
     if keys.just_pressed(KeyCode::Escape) {
         demo.focus = None;

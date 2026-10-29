@@ -61,7 +61,7 @@ mod script;
 use script::{Script, scripted_edits};
 
 fn main() {
-    let path = common::asset_arg(1).unwrap_or_else(|| "mobs/quadruped.body.ron".into());
+    let path = common::asset_arg(1).unwrap_or_else(|| "mobs/ox.body.ron".into());
     let test = std::env::var_os("ORNISCULPT_EDITOR_TEST").is_some();
     let mut app = App::new();
     app.add_plugins((
@@ -119,7 +119,7 @@ Tab part  Up/Down field  Left/Right adjust (Shift x10, Ctrl x0.1)  Delete part  
 
 #[derive(Resource)]
 struct Editor {
-    /// Asset path (`mobs/quadruped.body.ron`).
+    /// Asset path (`mobs/ox.body.ron`).
     path: String,
     handle: Handle<BodyPlan>,
     mob: Entity,

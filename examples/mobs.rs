@@ -1,4 +1,4 @@
-//! A field of mobs spawned through the plugin: async generation, shared bodies, tiers by
+//! A field of bay horses spawned through the plugin: async generation, shared bodies, tiers by
 //! on-screen size, and runtime levers.
 //!
 //! ```text
@@ -13,6 +13,7 @@
 
 use bevy::prelude::*;
 use ornisculpt::OrnisculptPlugin;
+use ornisculpt::coat::MobCoat;
 use ornisculpt::num::{Saturate, ToF32, usize_to_u64};
 use ornisculpt::anatomy::{
     AttachSlot, Form, FormPatch, HardKind, HardParams, Lever, PartKind, PartNode, PartPath,
@@ -31,12 +32,15 @@ fn main() {
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(Count(count))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
-        .insert_resource(Orbit::from_env(0.6, 0.45, 12.0, Vec3::ZERO, (0.5, 200.0)))
+        .insert_resource(Orbit::from_env(0.6, 0.45, 18.0, Vec3::ZERO, (0.5, 200.0)))
         .add_observer(on_ready)
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, orbit_camera, report, screenshot_at(300)))
         .run();
 }
+
+/// Metres between neighbouring horses.
+const SPACING: f32 = 3.5;
 
 #[derive(Resource)]
 struct Count(usize);
@@ -55,7 +59,8 @@ fn setup(
     commands.spawn((Camera3d::default(), TierCamera));
     spawn_stage(&mut commands, &mut meshes, &mut materials, 200.0, Vec3::new(3.0, 6.0, 2.0));
 
-    let body = assets.load("mobs/quadruped.body.ron");
+    let body = assets.load("mobs/horse.body.ron");
+    let coat = assets.load("coats/bay.coat.ron");
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
     for i in 0..count.0 {
         // A handful of distinct builds, so the cache shares bodies between mobs.
@@ -71,13 +76,14 @@ fn setup(
             ],
         };
         let (x, z) = ((i % side).to_f32(), (i / side).to_f32());
-        let offset = (side.to_f32() - 1.0) * 0.5 * 2.5;
+        let offset = (side.to_f32() - 1.0) * 0.5 * SPACING;
         commands.spawn((
             Mob::new(body.clone()),
+            MobCoat(coat.clone()),
             form,
             MobSeed(usize_to_u64(i)),
             Index(i),
-            Transform::from_xyz(f32::mul_add(x, 2.5, -offset), 0.0, f32::mul_add(z, 2.5, -offset))
+            Transform::from_xyz(f32::mul_add(x, SPACING, -offset), 0.0, f32::mul_add(z, SPACING, -offset))
                 .with_rotation(Quat::from_rotation_y(i.to_f32() * 0.7)),
         ));
     }

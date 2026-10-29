@@ -65,19 +65,19 @@ use common::crowd::{self, Wander};
 use common::spawn_stage;
 
 /// Bump whenever a workload parameter below changes.
-const BENCH_VERSION: u32 = 4;
+const BENCH_VERSION: u32 = 5;
 
 /// (case name, body plan, coat): the hero and generation set.
 const MOBS: [(&str, &str, Option<&str>); 6] = [
-    ("biped", "mobs/biped.body.ron", None),
-    ("quadruped_furry", "mobs/quadruped.body.ron", Some("coats/furry.coat.ron")),
-    ("horse_furry", "mobs/horse.body.ron", Some("coats/furry.coat.ron")),
-    ("bird", "mobs/bird.body.ron", Some("coats/bird.coat.ron")),
-    ("dragon_chimera", "mobs/dragon.body.ron", Some("coats/chimera.coat.ron")),
-    ("beetle_lizard", "mobs/beetle.body.ron", Some("coats/lizard.coat.ron")),
+    ("man", "mobs/man.body.ron", Some("coats/skin_fair.coat.ron")),
+    ("woman", "mobs/woman.body.ron", Some("coats/skin_woman.coat.ron")),
+    ("horse_bay", "mobs/horse.body.ron", Some("coats/bay.coat.ron")),
+    ("ox_hereford", "mobs/ox.body.ron", Some("coats/hereford.coat.ron")),
+    ("spider", "mobs/spider.body.ron", Some("coats/wolf_spider.coat.ron")),
+    ("darner", "mobs/darner.body.ron", Some("coats/green_darner.coat.ron")),
 ];
 /// Indices into [`MOBS`] for the motion scenario.
-const MOTION_MOBS: [usize; 2] = [4, 1];
+const MOTION_MOBS: [usize; 2] = [1, 2];
 
 const GEN_RUNS: usize = 5;
 const STILL_WARM: u32 = 120;
@@ -243,7 +243,7 @@ fn input_hashes(paths: &[&str]) -> BTreeMap<String, String> {
 
 fn scenario_inputs(scenario: &str) -> Vec<&'static str> {
     let mut v: Vec<&str> = match scenario {
-        "crowd" => crowd::BODIES.iter().copied().chain(crowd::COATS.iter().flatten().copied()).collect(),
+        "crowd" => crowd::BODIES.iter().chain(&crowd::COATS).copied().collect(),
         "motion" => MOTION_MOBS.iter().filter_map(|&i| MOBS.get(i)).flat_map(|(_, p, c)| std::iter::once(*p).chain(*c)).collect(),
         _ => MOBS.iter().flat_map(|(_, p, c)| std::iter::once(*p).chain(*c)).collect(),
     };

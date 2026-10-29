@@ -69,9 +69,9 @@ cargo run --release --example bench -- compare BASE[,BASE...] NEW [--accept]
 
 | Id | Arg | Workload | Measured | Frames |
 |---|---|---|---|---|
-| **G** | `gen` | `generate_body` on one thread for the 6 `MOBS`: `biped`, `quadruped`+furry, `horse`+furry, `bird`+bird, `dragon`+chimera, `beetle`+lizard | Median per stage (`anatomy`, `mesh` = 3 LODs, `annotate`, `centres_of_rotation`, `muscle_flex`, `bake_motion`, `coat_meshes`); total median and min; verts/tris per LOD; mesh and coat-mesh KB | 1 warm-up + 5 runs |
+| **G** | `gen` | `generate_body` on one thread for the 6 `MOBS` (bench v5): `man`+skin_fair, `woman`+skin_woman, `horse`+bay, `ox`+hereford, `spider`+wolf_spider, `darner`+green_darner (v4 and earlier: `biped`, `quadruped`+furry, `horse`+furry, `bird`+bird, `dragon`+chimera, `beetle`+lizard) | Median per stage (`anatomy`, `mesh` = 3 LODs, `annotate`, `centres_of_rotation`, `muscle_flex`, `bake_motion`, `coat_meshes`); total median and min; verts/tris per LOD; mesh and coat-mesh KB | 1 warm-up + 5 runs |
 | **H1** | `hero` | Each `MOBS` entry alone, `ForceTier(Hero)`, standing (idle). FOV 30°. Framings: **full** (fits body radius), **head** (3× head-bone length, 0.2–2 m, from the eye side), **eye** (5× eye size, ≥ 4 cm) | Frame time p50/p95/p99/max/mean; per-pass GPU medians; one PNG per framing | 120 warm-up (60 between framings), 600 measured |
-| **H2** | `motion` | `dragon`+chimera, `quadruped`+furry walking a 2.5 m circle; camera orbiting at 0.3 rad/s | Same stats; PNGs at measured frames 150/300/450 | 120 warm-up, 600 measured |
+| **H2** | `motion` | `woman`+skin_woman, `horse`+bay (v4: `dragon`+chimera, `quadruped`+furry) walking a 2.5 m circle; camera orbiting at 0.3 rad/s | Same stats; PNGs at measured frames 150/300/450 | 120 warm-up, 600 measured |
 | **C1** | `crowd` (phase 1) | 4000 mobs exactly as `examples/crowd.rs` with `ORNISCULPT_COATS=1`; camera yaw 0.6, pitch 0.5, 30 m, FOV 45°. Mobs stand still while generating | `cold.total_s` (until every mob is attached and nothing is in flight; cap 180 s), `cold.*_ms` stats, frames > 33 ms / > 100 ms, bodies | until done |
 | **C2** | `crowd` (phase 2) | Same scene with wandering on | `steady.*_ms` stats, GPU passes, tier counts, uploaded slots per frame; one PNG | 120 warm-up, 1200 measured |
 

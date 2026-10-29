@@ -7,9 +7,9 @@
 //! Hero-tier mobs (closest on screen) get joints and full procedural animation; the rest are
 //! single entities skinned on the GPU from baked motion. Frame time and tier counts are logged.
 //! Controls: left-drag orbit · scroll zoom · Q cycle quality profile.
-//! `ORNISCULPT_COATS=1` dresses a quarter each plain, scaly, furry and feathered
-//! (`=lizard|furry|bird` dresses every mob in one coat);
-//! `ORNISCULPT_OUTFITS=1` dresses bipeds (peasant/warrior) and quadrupeds (harness);
+//! `ORNISCULPT_COATS=1` dresses each body in its own coat, a quarter left plain
+//! (`=<name>` dresses every mob in `coats/<name>.coat.ron`);
+//! `ORNISCULPT_OUTFITS=1` dresses the men and women (peasant/warrior) and the oxen (harness);
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
@@ -71,8 +71,8 @@ fn setup(
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
     for (i, (path, root)) in BODIES.iter().zip(ROOTS).cycle().take(count.0).enumerate() {
         let mut mob = crowd::spawn(&mut commands, &assets, i, side, (*path, root));
-        // `ORNISCULPT_COATS=1`: a quarter each plain, scaly, furry and feathered.
-        // `=lizard|furry|bird` puts that coat on every mob instead.
+        // `ORNISCULPT_COATS=1`: each body its own coat, a quarter plain.
+        // `=<name>` puts that coat on every mob instead.
         match std::env::var("ORNISCULPT_COATS").as_deref() {
             Ok("1") => {
                 if let Some(coat) = crowd::coat(i) {
@@ -84,11 +84,11 @@ fn setup(
             }
             Err(_) => {}
         }
-        // `ORNISCULPT_OUTFITS=1`: bipeds wear peasant or warrior clothes, quadrupeds a harness.
+        // `ORNISCULPT_OUTFITS=1`: men and women wear peasant or warrior clothes, oxen a harness.
         if std::env::var("ORNISCULPT_OUTFITS").is_ok() {
             let outfit = match *path {
-                "mobs/biped.body.ron" => Some(if (i / BODIES.len()) % 2 == 0 { "outfits/peasant.outfit.ron" } else { "outfits/warrior.outfit.ron" }),
-                "mobs/quadruped.body.ron" => Some("outfits/harness.outfit.ron"),
+                "mobs/man.body.ron" | "mobs/woman.body.ron" => Some(if (i / BODIES.len()) % 2 == 0 { "outfits/peasant.outfit.ron" } else { "outfits/warrior.outfit.ron" }),
+                "mobs/ox.body.ron" => Some("outfits/harness.outfit.ron"),
                 _ => None,
             };
             if let Some(o) = outfit {

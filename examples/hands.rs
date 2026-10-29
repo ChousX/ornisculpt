@@ -1,4 +1,4 @@
-//! Hand posing: one standing biped whose hands take [`HandPose`] presets, single fingers, or a
+//! Hand posing: one standing woman whose hands take [`HandPose`] presets, single fingers, or a
 //! rippling "piano" of every digit in turn, over its idle animation.
 //!
 //! ```text
@@ -15,6 +15,7 @@
 use bevy::prelude::*;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::LodLevel;
+use ornisculpt::coat::MobCoat;
 use ornisculpt::mob::{ForceTier, Mob, TierCamera};
 use ornisculpt::motion::{Hand, HandPose};
 use ornisculpt::num::ToF32;
@@ -67,7 +68,13 @@ impl Default for Mode {
 fn setup(mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     commands.spawn((Camera3d::default(), TierCamera));
     spawn_stage(&mut commands, &mut meshes, &mut materials, 20.0, Vec3::new(-2.0, 5.0, 4.0));
-    commands.spawn((Mob::new(assets.load("mobs/biped.body.ron")), ForceTier(LodLevel::Hero), HandPose::default(), Transform::default()));
+    commands.spawn((
+        Mob::new(assets.load("mobs/woman.body.ron")),
+        MobCoat(assets.load("coats/skin_woman.coat.ron")),
+        ForceTier(LodLevel::Hero),
+        HandPose::default(),
+        Transform::default(),
+    ));
     info!("controls: 1-6 presets (relaxed, open, fist, grip, point, pinch), Q/W/E/R/T one digit, P piano, 0 animation");
 }
 

@@ -1,5 +1,5 @@
-//! Procedural locomotion: a dog-like quadruped, the authored-part bear, a biped, an insect, a
-//! horse, and a curvy and a thick woman (soft tissue with `--features soft-tissue`) walking.
+//! Procedural locomotion: an ox, the authored-part bear, a man, a wolf spider, a horse, and a
+//! woman and a thick woman (soft tissue with `--features soft-tissue`) walking, each in its coat.
 //!
 //! ```text
 //! cargo run --release --example walk
@@ -18,6 +18,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use ornisculpt::OrnisculptPlugin;
+use ornisculpt::coat::MobCoat;
 use ornisculpt::num::ToF32;
 use ornisculpt::mob::{Mob, TierCamera};
 use ornisculpt::motion::{Feet, MobIntent};
@@ -25,21 +26,22 @@ use ornisculpt::motion::{Feet, MobIntent};
 mod common;
 use common::{Orbit, default_plugins, screenshot_frames, spawn_stage};
 
-const BODIES: [&str; 7] = [
-    "mobs/quadruped.body.ron",
-    "mobs/beast.body.ron",
-    "mobs/biped.body.ron",
-    "mobs/hexapod.body.ron",
-    "mobs/horse.body.ron",
-    "mobs/curvy.body.ron",
-    "mobs/thick.body.ron",
+/// (body plan, coat).
+const BODIES: [(&str, Option<&str>); 7] = [
+    ("mobs/ox.body.ron", Some("coats/hereford.coat.ron")),
+    ("mobs/beast.body.ron", Some("coats/furry.coat.ron")),
+    ("mobs/man.body.ron", Some("coats/skin_fair.coat.ron")),
+    ("mobs/spider.body.ron", Some("coats/wolf_spider.coat.ron")),
+    ("mobs/horse.body.ron", Some("coats/bay.coat.ron")),
+    ("mobs/woman.body.ron", Some("coats/skin_woman.coat.ron")),
+    ("mobs/thick.body.ron", Some("coats/skin_woman.coat.ron")),
 ];
 
 fn main() {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
-        .insert_resource(Orbit::from_env(0.5, 0.4, 9.0, Vec3::new(0.0, 0.4, 0.0), (0.5, 100.0)))
+        .insert_resource(Orbit::from_env(0.3, 0.4, 24.0, Vec3::new(0.0, 0.4, 0.0), (0.5, 100.0)))
         .init_resource::<Demo>()
         .add_systems(Startup, setup)
         .add_systems(Update, (drive, orbit_camera, draw_feet, screenshot_frames(360)))
@@ -68,13 +70,12 @@ fn setup(
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
     spawn_stage(&mut commands, &mut meshes, &mut materials, 60.0, Vec3::new(3.0, 6.0, 2.0));
-    for (i, path) in BODIES.iter().enumerate() {
-        let centre = Vec3::new(i.to_f32().mul_add(4.0, -8.0), 0.0, 0.0);
-        commands.spawn((
-            Mob::new(assets.load(*path)),
-            Walker { index: i, centre },
-            Transform::from_translation(centre + Vec3::X * 1.5),
-        ));
+    for (i, (path, coat)) in BODIES.iter().enumerate() {
+        let centre = Vec3::new(i.to_f32().mul_add(5.5, -16.5), 0.0, 0.0);
+        let mut mob = commands.spawn((Mob::new(assets.load(*path)), Walker { index: i, centre }, Transform::from_translation(centre + Vec3::X * 1.5)));
+        if let Some(coat) = coat {
+            mob.insert(MobCoat(assets.load(*coat)));
+        }
     }
     info!("controls: left-drag orbit, scroll zoom, Tab select, WASD drive (Shift faster), L look at camera, F foot gizmos");
 }
@@ -88,7 +89,7 @@ fn drive(
 ) {
     if keys.just_pressed(KeyCode::Tab) {
         demo.selected = (demo.selected + 1) % BODIES.len();
-        info!("driving {}", BODIES.get(demo.selected).unwrap_or(&"?"));
+        info!("driving {}", BODIES.get(demo.selected).map_or("?", |b| b.0));
     }
     if keys.just_pressed(KeyCode::KeyL) {
         demo.look = !demo.look;
@@ -169,7 +170,7 @@ fn report_viability(ready: On<ornisculpt::mob::BodyReady>, mobs: Query<(&Walker,
     let Ok((w, body)) = mobs.get(ready.entity) else { return };
     let Some(b) = bodies.get(&body.0) else { return };
     let soles: Vec<String> = sole_heights(&b.anatomy).iter().map(|s| format!("{s:.3}")).collect();
-    info!("{}: soles at rest [{}]", BODIES.get(w.index).unwrap_or(&"?"), soles.join(", "));
+    info!("{}: soles at rest [{}]", BODIES.get(w.index).map_or("?", |b| b.0), soles.join(", "));
     for (name, v) in ViabilityChecks::with_builtins().run(&b.anatomy).results {
         info!("  {name}: {v:?}");
     }

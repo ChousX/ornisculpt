@@ -7,11 +7,11 @@ use ornisculpt::mob::{Mob, MobSeed};
 use ornisculpt::motion::MobIntent;
 use ornisculpt::num::{ToF32, usize_to_u64};
 
-pub const BODIES: [&str; 4] = ["mobs/quadruped.body.ron", "mobs/beast.body.ron", "mobs/biped.body.ron", "mobs/hexapod.body.ron"];
+pub const BODIES: [&str; 4] = ["mobs/man.body.ron", "mobs/woman.body.ron", "mobs/ox.body.ron", "mobs/spider.body.ron"];
 /// Each body's root part (the trunk the girth patch widens), in `BODIES` order.
-pub const ROOTS: [&str; 4] = ["torso", "torso", "torso", "thorax"];
-/// Plain, scaly, furry and feathered, a quarter each (see [`coat`]).
-pub const COATS: [Option<&str>; 4] = [None, Some("coats/lizard.coat.ron"), Some("coats/furry.coat.ron"), Some("coats/bird.coat.ron")];
+pub const ROOTS: [&str; 4] = ["torso", "torso", "torso", "prosoma"];
+/// Each body's own coat, in `BODIES` order (see [`coat`]).
+pub const COATS: [&str; 4] = ["coats/skin_fair.coat.ron", "coats/skin_woman.coat.ron", "coats/hereford.coat.ron", "coats/wolf_spider.coat.ron"];
 const SPACING: f32 = 2.2;
 
 /// Walks a circle.
@@ -42,9 +42,10 @@ pub fn spawn<'a>(commands: &'a mut Commands, assets: &AssetServer, i: usize, sid
     ))
 }
 
-/// Mob `i`'s coat in the mixed crowd.
+/// Mob `i`'s coat in the mixed crowd: its body's own, on all but every fourth build (those stay
+/// plain, so coated and bare bodies share the scene).
 pub fn coat(i: usize) -> Option<&'static str> {
-    COATS.get((i / 7) % COATS.len()).copied().flatten()
+    COATS.get(i % BODIES.len()).copied().filter(|_| (i / BODIES.len()) % 4 != 3)
 }
 
 pub fn wander(time: Res<Time>, mut mobs: Query<(&Wander, &Transform, &mut MobIntent)>) {
