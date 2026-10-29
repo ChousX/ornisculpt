@@ -1,90 +1,135 @@
-// A six-limbed dragon: four legs plus bat-style membrane wings (three long fingers fanning a
-// scalloped membrane back to the hind legs, a clawed thumb at the wrist). Horse-sized body on
-// carnivore legs, long neck and tail. See docs/design/wings.md.
+// A western dragon, six-limbed: four legs plus bat-style membrane wings (three long fingers
+// fanning a scalloped membrane back to the hind legs, a clawed thumb at the wrist), the wings carried
+// half raised. A heavy, deep-chested body on clawed carnivore legs (shoulder ~1.5 m), a strong
+// S-curved neck, a long tail ending in a spade. Two horns sweep back from the brow over a row of
+// smaller ones; spines run from the skull down the neck, back and tail. See docs/design/wings.md.
 (
     root: (
         name: "torso",
         kind: Torso((
-            chain: (segments: 4, length: 1.6, radius: (curve: [(0.0, 0.8), (0.3, 0.74), (0.6, 0.95), (0.85, 1.0), (1.0, 0.85)], scale: 0.32, cross: Ellipse(aspect: 0.85))),
-            arch: [(0.0, 0.0), (0.6, 0.04), (1.0, 0.0)],
-            belly: 0.3,
+            // Hips → loin → ribcage → deep chest between the shoulders: a keel of a chest and
+            // a waist tucked up under the loin.
+            chain: (segments: 4, length: 1.75, radius: (
+                curve: [(0.0, 0.84), (0.25, 0.8), (0.55, 0.98), (0.82, 1.0), (1.0, 0.82)], scale: 0.36, cross: Ellipse(aspect: 0.85),
+                width: [(0.0, 1.05), (0.3, 0.9), (0.6, 1.05), (0.85, 1.0), (1.0, 0.85)],
+                depth: [(0.0, 1.0), (0.3, 0.92), (0.6, 1.15), (0.85, 1.25), (1.0, 1.05)],
+                drop: [(0.0, 0.0), (0.3, -0.05), (0.6, 0.12), (0.85, 0.22), (1.0, 0.06)],
+            )),
+            arch: [(0.0, 0.0), (0.45, 0.05), (1.0, 0.02)],
+            belly: 0.25,
         )),
         detail: Always,
         children: [
             (
+                // Raised in an S: up from the shoulders, the head turned level at the top.
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 4, length: 1.1, radius: (curve: [(0.0, 1.0), (1.0, 0.55)], scale: 0.2), curl: -30.0))),
+                kind: Chain((role: Neck, chain: (segments: 4, length: 0.92, radius: (curve: [(0.0, 1.0), (0.5, 0.7), (1.0, 0.56)], scale: 0.24, cross: Ellipse(aspect: 0.85)), curl: -45.0))),
                 attach: End,
-                offset: (rotate_deg: (-35.0, 0.0, 0.0)),
+                offset: (rotate_deg: (-40.0, 0.0, 0.0), translate: (0.0, 0.02, 0.0)),
                 detail: Always,
                 children: [
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.17, 0.15, 0.2)),
-                            snout: 0.38,
-                            jaw: Some((segments: 1, length: 0.45)),
-                            eye_spacing: 0.7,
-                            eye_lateral: 0.6,
-                            // A wide, flat, wedge-shaped snout with flared nostrils and heavy jaw muscles.
-                            muzzle: (base: (0.75, 0.55), tip: (0.55, 0.32), rise: 0.05, cheek: 0.6, nostrils: 0.5, jaw_width: 1.3),
+                            skull: (shape: Ellipsoid, size: (0.175, 0.15, 0.2)),
+                            snout: 0.4,
+                            jaw: Some((segments: 1, length: 0.48)),
+                            eye_spacing: 0.72,
+                            eye_lateral: 0.55,
+                            pitch: 10.0,
+                            // A long, flat-topped wedge: broad at the cheeks, narrowing to a
+                            // blunt nose with flared nostrils; a deep, heavy lower jaw.
+                            muzzle: (base: (0.78, 0.6), tip: (0.5, 0.34), rise: 0.12, drop: 4.0, cheek: 0.55, nostrils: 0.7, jaw_depth: 1.25, jaw_width: 1.25),
                         )),
-                        offset: (rotate_deg: (30.0, 0.0, 0.0)),
+                        offset: (rotate_deg: (42.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.045)), attach: Eye, mirror: true),
-                            (name: "horn", kind: Hard((kind: Horn, size: 0.4, curve: 0.5)), attach: Horn, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.04)), attach: Eye, mirror: true),
+                            // Heavy brow ridges over the eyes.
+                            (name: "brow", kind: Mass((shape: Ellipsoid, size: (0.05, 0.03, 0.08), blend: 0.03)), attach: Eye, offset: (translate: (0.0, 0.04, -0.01)), mirror: true),
+                            // The main horns sweep back from behind the brow, curving up at the tips.
+                            (name: "horn", kind: Hard((kind: Horn, size: 0.46, curve: 0.4, twist: 0.08)), attach: Horn, offset: (rotate_deg: (-88.0, 0.0, -15.0)), mirror: true),
+                            // A row of short horns down the back of the jaw.
+                            (name: "cheek_horn", kind: Hard((kind: Spike, size: 0.09, curve: 0.3)), attach: Jaw, offset: (translate: (0.11, 0.02, -0.05), rotate_deg: (-80.0, 0.0, -50.0)), mirror: true),
+                            (name: "fang", kind: Hard((kind: Fang, size: 0.05, curve: 0.1)), attach: Mouth, offset: (translate: (0.045, 0.0, -0.06), rotate_deg: (180.0, 0.0, 0.0)), mirror: true),
                         ],
                     ),
+                    // Spines down the crest of the neck.
+                    (name: "spine.neck", kind: Hard((kind: Spike, size: 0.12, curve: 0.25)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 5, from: 0.08, to: 0.92)),
                 ],
             ),
             (
                 name: "wing",
                 kind: Wing((
-                    kind: Membrane((fingers: 3, trailing: HindLeg, scallop: 0.25, thumb: true)),
-                    span: 2.6,
-                    chord: 1.3,
-                    fold: 1.0,
-                    sweep_deg: 12.0,
-                    radius: 0.07,
+                    kind: Membrane((fingers: 3, trailing: HindLeg, scallop: 0.28, billow: 0.08, thumb: true)),
+                    span: 3.6,
+                    chord: 1.6,
+                    fold: 0.42,
+                    sweep_deg: 14.0,
+                    radius: 0.085,
                 )),
                 attach: Surface(t: 0.82, around_deg: 60.0),
                 mirror: true,
                 detail: Always,
             ),
+            // Spines along the back, tallest over the shoulders.
+            (name: "spine.back", kind: Hard((kind: Spike, size: 0.16, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 7, from: 0.04, to: 0.96)),
             (
+                // Upper arm back, forearm forward and down onto a broad clawed forefoot.
                 name: "limb.front",
                 kind: Limb((
-                    chain: (segments: 3, length: 1.0, ratios: [1.0, 1.05, 0.4], radius: (curve: [(0.0, 1.0), (0.4, 0.62), (0.75, 0.5), (1.0, 0.45)], scale: 0.12)),
+                    chain: (segments: 3, length: 0.92, ratios: [1.0, 1.0, 0.38], radius: (curve: [(0.0, 1.15), (0.3, 0.8), (0.45, 0.85), (0.75, 0.6), (1.0, 0.55)], scale: 0.15)),
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    joints: Some((plan: Foreleg, swing: -25.0, flex: [30.0, -12.0])),
+                    joints: Some((plan: Foreleg, swing: -25.0, flex: [35.0, -18.0])),
                 )),
-                attach: Surface(t: 0.88, around_deg: 135.0),
+                attach: Surface(t: 0.88, around_deg: 128.0),
                 mirror: true,
                 detail: Always,
+                children: [
+                    (
+                        name: "toes",
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.11, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.03), curl: 260.0), spread_deg: 40.0, tip: Some((kind: Claw, size: 0.075, curve: 0.45)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
             ),
             (
+                // Massive thighs, the hock high off the ground, a long clawed hind foot.
                 name: "limb.hind",
                 kind: Limb((
-                    chain: (segments: 3, length: 1.2, ratios: [1.0, 1.1, 0.55], radius: (curve: [(0.0, 1.25), (0.35, 0.75), (0.7, 0.5), (1.0, 0.42)], scale: 0.12)),
+                    chain: (segments: 3, length: 1.12, ratios: [1.0, 1.05, 0.5], radius: (curve: [(0.0, 1.45), (0.3, 0.9), (0.55, 0.62), (0.75, 0.5), (1.0, 0.5)], scale: 0.15)),
                     role: Locomotor,
                     stance: Digitigrade,
                     end: Pad,
-                    joints: Some((plan: Hindleg, swing: 30.0, flex: [70.0, 46.0])),
+                    joints: Some((plan: Hindleg, swing: 28.0, flex: [70.0, 48.0])),
                 )),
-                attach: Surface(t: 0.1, around_deg: 120.0),
+                attach: Surface(t: 0.12, around_deg: 118.0),
                 mirror: true,
                 detail: Always,
+                children: [
+                    (
+                        name: "toes",
+                        kind: Digits((count: 4, chain: (segments: 1, length: 0.13, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.032), curl: 240.0), spread_deg: 36.0, tip: Some((kind: Claw, size: 0.08, curve: 0.45)))),
+                        attach: End,
+                        detail: UpTo(Hero),
+                    ),
+                ],
             ),
             (
                 name: "tail",
-                kind: Chain((role: Tail, chain: (segments: 6, length: 2.2, radius: (curve: [(0.0, 1.0), (1.0, 0.12)], scale: 0.16), curl: 10.0))),
+                kind: Chain((role: Tail, chain: (segments: 6, length: 2.6, radius: (curve: [(0.0, 1.0), (0.3, 0.6), (1.0, 0.1)], scale: 0.22, cross: Ellipse(aspect: 0.9)), curl: 12.0))),
                 attach: Start,
-                offset: (rotate_deg: (15.0, 0.0, 0.0)),
+                offset: (rotate_deg: (18.0, 0.0, 0.0)),
+                children: [
+                    (name: "spine.tail", kind: Hard((kind: Spike, size: 0.12, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-40.0, 0.0, 0.0)), repeat: Series(count: 7, from: 0.03, to: 0.8)),
+                    // The spade at the tip: a flat, leaf-shaped blade.
+                    (name: "spade", kind: Mass((shape: Flap, size: (0.15, 0.02, 0.18), blend: 0.04)), attach: End, offset: (translate: (0.0, 0.0, 0.08))),
+                ],
             ),
         ],
     ),
-    tone: (muscle: 0.6, fat: 0.15, landmarks: 0.5),
+    tone: (muscle: 0.75, fat: 0.12, landmarks: 0.55),
 )

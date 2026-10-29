@@ -1205,6 +1205,7 @@ fn planform(p: Planform, elytron: bool, u: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::anatomy::build_src as build;
+    use crate::anatomy::{Anatomy, BodyPlan, PartKind, PartLodRules, test_assets};
     use crate::num::Idx;
 
     /// Every winged sample builds, with mirrored sheets, a fold rig per wing, and skin weights
@@ -1245,6 +1246,7 @@ mod tests {
 
     /// Folded membrane wings lie along the flank: no part of the membrane stands far above the
     /// back or out from the side (the free trailing edge once rode the finger tip up into a sail).
+    /// The wings are folded here whatever the plan rests them at (the dragon holds them half up).
     #[test]
     fn folded_membranes_lie_along_the_flank() {
         for (name, src) in [
@@ -1252,7 +1254,13 @@ mod tests {
             ("wyvern", include_str!("../../assets/mobs/wyvern.body.ron")),
             ("bat", include_str!("../../assets/mobs/bat.body.ron")),
         ] {
-            let a = build(src);
+            let mut plan: BodyPlan = ron::from_str(src).unwrap();
+            plan.visit_mut(|_, n| {
+                if let PartKind::Wing(w) = &mut n.kind {
+                    w.fold = 1.0;
+                }
+            });
+            let a = Anatomy::from_plan(&plan, &PartLodRules::default(), &test_assets(&plan)).unwrap();
             let model = a.skeleton.model_from(&a.idle_pose());
             let skin: Vec<Mat4> = model.iter().zip(&a.skeleton.inverse_bind).map(|(m, inv)| Mat4::from(*m) * *inv).collect();
             // The shoulders: where the wings' first bones start.

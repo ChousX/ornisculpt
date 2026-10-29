@@ -1,0 +1,26 @@
+// A red dragon: deep crimson scales darkening to near black along the back, a belly of broad
+// pale-gold scutes in rings, wing membranes a dusky red that glows when backlit; horns, spines
+// and claws dark at the root, bone at the tips; molten gold eyes.
+(
+    base: (0.46, 0.08, 0.05),
+    secondary: (0.24, 0.04, 0.03),
+    accent: (0.85, 0.6, 0.3),
+    roughness: 0.5,
+    hard: (0.16, 0.12, 0.1),
+    iris: (0.95, 0.62, 0.08),
+    coverings: [
+        (regions: AllExcept([Kind(Hard), Kind(WingMembrane)]), kind: Scales((size: 0.034, relief: 0.7, contrast: 0.3))),
+    ],
+    markings: [
+        // Darker along the spine.
+        (color: (0.2, 0.03, 0.025), facing: Some((dir: (0.0, 1.0, 0.0), from: 0.45, to: 0.95)), strength: 0.7),
+        // Pale-gold belly and throat.
+        (color: (0.78, 0.58, 0.3), regions: AllExcept([Kind(Hard), Kind(Wing), Kind(LimbEnd), Kind(Digit)]), facing: Some((dir: (0.0, -1.0, 0.0), from: 0.35, to: 0.7))),
+        // The belly scutes: darker seams between broad transverse plates.
+        (color: (0.45, 0.28, 0.12), regions: Or([Kind(Belly), Kind(TorsoMid), Kind(TorsoFront), Kind(TorsoRear), Kind(Neck), Kind(TailBase), Kind(TailTip)]), facing: Some((dir: (0.0, -1.0, 0.0), from: 0.45, to: 0.75)), bands: Some((count: 14.0, width: 0.12, soft: 0.05))),
+        // Darker feet and claws' roots.
+        (color: (0.18, 0.04, 0.03), regions: Role(Locomotor), along: Some((0.6, 0.9)), strength: 0.6),
+        // Horn, spine and claw tips pale bone.
+        (color: (0.82, 0.76, 0.62), regions: Kind(Hard), tip: Some((0.45, 0.95))),
+    ],
+)
