@@ -66,9 +66,12 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
    - Bake the idles and actions a body's graph uses, and blend up to three masked layers in the
      compute pass, so crowd mobs can play idles and actions too.
    - Add an `eat` action to `motion::library` for grazing.
-3. **Measure on the target device.** `realism.md` and `contacts.md` both name the Steam Deck,
-   and nothing has been benched on it yet. Bench v5 runs there before more shader work. The
-   open questions are the contacts loop, SSAO and fur close-ups.
+3. **Measure on the target device.** Done on 2026-10-31: the bench v5 baseline for the Steam
+   Deck is in `bench/LOG.md`, and `tools/deck-bench.sh` reruns it. What it found:
+   - generation is about 5 times tir's, with centres of rotation and the head's SDF
+     conversion furthest behind, so the crowd's cold start takes two minutes;
+   - fur close-ups are over a 60 fps budget.
+   Those two come before more shader work. The contacts loop and SSAO are still to measure.
 4. **Crowd cost.**
    - Merge the cloth submesh into the skin mesh. A dressed mob costs an extra draw entity (23 to
      27 ms against 15 ms plain).

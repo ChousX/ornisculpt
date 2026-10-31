@@ -74,6 +74,52 @@ Landed at 0.15 instead, with the markings kept (below).
 Sequential runs drift a few percent as the laptop warms over an hour of benching; for small
 effects, alternate the two builds (`ab-A-*`, `ab-B-*` below) with an unaffected case as control.
 
+## Steam Deck, bench version 5 baseline (2026-10-31)
+
+Steam Deck OLED (Galileo: Zen 2, 4 cores and 8 threads; RDNA 2 Van Gogh under RADV, Mesa
+26.2.0-devel), SteamOS 3.9.5, Desktop mode, on mains. toth built it and `tools/deck-bench.sh`
+ran it: the binary carries nix's glibc, and Vulkan and the driver are SteamOS's. The target is the
+same 1920×1080 as everywhere else, although the Deck's screen is 1280×800 (0.49 of the pixels).
+Results: `bench/results/deck-v5-base-{1,2}`, tree at 93fea4f. That tree includes the fur-shell
+and near-mesh changes made after tir's v5 baseline, so compare against tir's change rows, not its
+baseline table.
+
+| Scenario | Case | Metric | Value (mean of 2) | Noise (spread of 2) |
+|---|---|---|---|---|
+| gen | man / woman / horse+bay / ox+hereford / spider / darner | total | 11828 / 14643 / 7808 / 6800 / 2014 / 411 ms | ≤ 1 % (darner 6 %) |
+| hero | man full / head / eye | frame | 16.0 / 28.6 / 24.9 ms | ≤ 1 % |
+| hero | woman full / head / eye | frame | 16.4 / 31.0 / 23.1 ms | ≤ 1.2 % |
+| hero | horse+bay full / head / eye | frame | 18.1 / 15.1 / 48.3 ms | < 1 % |
+| hero | ox+hereford full / head / eye | frame | 19.0 / 20.8 / 47.0 ms | < 1 % |
+| hero | spider full / head / eye | frame | 18.9 / 63.0 / 67.9 ms | < 1 % |
+| hero | darner full / head / eye | frame | 12.6 / 17.1 / 17.2 ms | ≤ 2.4 % |
+| motion | woman / horse+bay walking | frame | 16.0 / 18.0 ms | < 1 % |
+| crowd | 4000 cold start | total / p50 / p95 / frames > 33 ms / > 100 ms | 125–128 s / 105–106 ms / 179–182 ms / 1210–1242 / 680–681 | 2 % on the total |
+| crowd | 4000 steady | frame (main opaque pass) | 62.7–63.2 ms (23.8 ms) | 1 % |
+| (all) | | peak RSS | ≤ 0.92 GB (crowd), ≤ 0.52 GB (hero) | |
+
+Against tir, same models:
+- **Full-body hero frames and walks** are 1.2 to 1.3 times tir's.
+- **Bare-skin close-ups** are 1.6 to 1.8 times (man head 28.6 ms against 18.1).
+- **Fur close-ups** vary: the spider's eye matches tir after cfdd3b3 (67.5 ms), the horse's is 1.4
+  times and the ox's 2.6 times.
+- **The crowd's steady frame** matches tir's (63 ms against about 61 ms after 4ed7a52).
+- **Generation** is where the Deck falls behind, at 4.7 to 5.6 times tir's totals. By stage, for
+  the man:
+  - annotate, muscle flex and the motion bake run at tir's speed;
+  - meshing is 3.3 times, about what six worker threads at roughly half tir's per-core speed
+    predict;
+  - the head's SDF conversion (the anatomy stage) is 5.4 times and centres of rotation 9.5
+    times, both well beyond that. Those two need a profile on x86. `mul_add` isn't the cause:
+    compiler_builtins' `fmaf` dispatches to the Deck's hardware FMA.
+- **The crowd's cold start** is 125 to 128 s with about 680 frames over 100 ms (tir: 24 to 29 s
+  and 12 to 16), because generation shares 8 threads with the main thread.
+
+Against a 60 fps budget (16.7 ms), a single hero fits at full body and walking. Close-ups don't,
+and fur at the eye framing is far over. At the Deck's own 1280×800 the pixel-bound cases would
+cost less, but that hasn't been measured, because the resolution is fixed within a bench version.
+4000 mobs is a stress case, not a Deck target.
+
 ## Bench version 4 baseline (2026-10-24)
 
 Version 4 runs headless (no window or winit; see `docs/design/perf-and-look-plan.md` §1.1).
