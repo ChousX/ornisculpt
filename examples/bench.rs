@@ -23,6 +23,9 @@
 //! pose on every run. Runs on battery are refused (`--allow-battery` to
 //! override; the report records it).
 //!
+//! `ORNISCULPT_BENCH_ROOT=<checkout>` reads assets, goldens and git state from another checkout of
+//! the same commit, for a binary built elsewhere (the Steam Deck runs toth's build).
+//!
 //! `ORNISCULPT_CAPTURE=<case>:<frame>` (`crowd4000:600`, `spider.eye:300`) saves a `RenderDoc` capture
 //! of that measured frame when the bench runs under `renderdoccmd capture` (see `bench/LOG.md`).
 //!
@@ -198,10 +201,15 @@ struct CaseResult {
     images: Vec<String>,
 }
 
+/// The checkout the bench reads from: this one, or `ORNISCULPT_BENCH_ROOT`.
+fn root() -> PathBuf {
+    std::env::var_os("ORNISCULPT_BENCH_ROOT").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+}
+
 fn git(args: &[&str]) -> String {
     Command::new("git")
         .args(args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(root())
         .output()
         .ok()
         .map_or_default(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
@@ -210,7 +218,7 @@ fn git(args: &[&str]) -> String {
 fn default_out_dir() -> PathBuf {
     let sha = git(&["rev-parse", "--short", "HEAD"]);
     let dirty = !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty();
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/results").join(format!("{sha}{}", if dirty { "-dirty" } else { "" }))
+    root().join("bench/results").join(format!("{sha}{}", if dirty { "-dirty" } else { "" }))
 }
 
 fn on_mains() -> bool {
@@ -232,7 +240,7 @@ fn machine() -> String {
 }
 
 fn asset_path(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(rel)
+    root().join("assets").join(rel)
 }
 
 fn input_hashes(paths: &[&str]) -> BTreeMap<String, String> {
@@ -507,7 +515,7 @@ fn run_app(scenario: &str, out: PathBuf) {
     let mut app = App::new();
     app.add_plugins((
         DefaultPlugins
-            .set(AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into(), ..default() })
+            .set(AssetPlugin { file_path: root().join("assets").to_string_lossy().into_owned(), ..default() })
             .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
             .disable::<WinitPlugin>(),
         // With a window plugin, DefaultPlugins leaves the runner to winit. Uncapped: `wait_for_gpu`
@@ -1120,7 +1128,7 @@ fn compare(bases: &str, new: &Path, accept: bool) -> Result<(), String> {
         }
     }
     if accept {
-        let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/golden");
+        let golden = root().join("bench/golden");
         std::fs::create_dir_all(&golden).map_err(|e| e.to_string())?;
         for case in new_reports.values().flat_map(|r| &r.cases) {
             for image in &case.images {
