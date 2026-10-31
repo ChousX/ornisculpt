@@ -518,8 +518,9 @@ mod tests {
             PartKind::Limb(l) => l.end,
             k => panic!("{k:?}"),
         };
-        assert_eq!(pincer(left), crate::anatomy::LimbEnd::Pincer { size: 0.08 });
-        assert_eq!(pincer(right), crate::anatomy::LimbEnd::Pincer { size: 0.12 });
+        let shape = crate::anatomy::PincerShape::default();
+        assert_eq!(pincer(left), crate::anatomy::LimbEnd::Pincer { size: 0.08, shape });
+        assert_eq!(pincer(right), crate::anatomy::LimbEnd::Pincer { size: 0.12, shape });
         assert_eq!(left.offset, PartOffset::default());
         assert_eq!(right.offset.rotate_deg, Vec3::new(10.0, 0.0, 0.0));
         assert_eq!(names(&left.children), ["tooth"]);

@@ -576,14 +576,48 @@ pub enum LimbEnd {
     /// Soft pad (cats, dogs); add `Hard(Claw)` children for claws.
     Pad,
     /// Crab, lobster or scorpion claw (chela): a swollen palm and two fingers, the fixed one and
-    /// the hinged one, slightly open; grasps. `size` in metres (the claw is about twice as long).
-    Pincer { size: f32 },
+    /// the hinged one, slightly open; grasps. `size` in metres (the claw is about twice as long);
+    /// `shape` reproportions it, and its defaults are this claw.
+    Pincer {
+        size: f32,
+        #[serde(default)]
+        shape: PincerShape,
+    },
     /// Mantis-style blade. `length` in metres.
     Blade { length: f32 },
     /// Tapered tip (insect tarsus, spider leg).
     Point,
     /// Webbed paddle (ducks, frogs, seals). `width` in metres.
     Paddle { width: f32 },
+}
+
+/// The proportions of a [`LimbEnd::Pincer`] over the claw its `size` sets: every field is a
+/// multiple of the default claw, so `1.0` throughout builds it as it was.
+///
+/// In that claw the palm is about 1.4 `size` long, 1.0 wide and 0.6 deep; the fingers run on
+/// another 0.9 `size`, 0.2 `size` apart at the base and nearly meeting at the tips. A cutter is
+/// longer fingers on a flatter, narrower palm; a crusher a swollen palm with short, thick fingers.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct PincerShape {
+    /// Finger length relative to the palm: `1.0` is fingers about two thirds of the palm's length,
+    /// `1.5` fingers as long as the palm.
+    pub fingers: f32,
+    /// Palm width across the fingers' plane.
+    pub width: f32,
+    /// Palm depth, through the fingers' plane: under `1.0` a flat blade, over it a swollen fist.
+    pub depth: f32,
+    /// Finger thickness at the base; the tips stay fine.
+    pub thickness: f32,
+    /// How open the claw is: the fingers' spread beyond their base. `0.0` brings the tips
+    /// together.
+    pub gape: f32,
+}
+
+impl Default for PincerShape {
+    fn default() -> Self {
+        Self { fingers: 1.0, width: 1.0, depth: 1.0, thickness: 1.0, gape: 1.0 }
+    }
 }
 
 impl LimbEnd {

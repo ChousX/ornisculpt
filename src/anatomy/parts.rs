@@ -568,7 +568,7 @@ impl PartBuild for LimbParams {
         if matches!(self.role, LimbRole::Manipulator | LimbRole::Both) && self.end.grasps() {
             let size = match self.end {
                 LimbEnd::Hand { palm } => palm,
-                LimbEnd::Pincer { size } => size,
+                LimbEnd::Pincer { size, .. } => size,
                 _ => r * 2.0,
             };
             // Socket +Y = the held tool's axis: across the fist (forward when the arm hangs);
@@ -725,22 +725,28 @@ fn limb_end(end: LimbEnd, b: &mut AnatomyBuilder, last: BoneId, tip: Transform, 
             }
             moved(ground, Vec3::Y * r * 1.3)
         }
-        LimbEnd::Pincer { size } => {
+        LimbEnd::Pincer { size, shape } => {
             // Palm (propodus): swollen and flattened, the fingers' muscle inside it.
-            prim(b, PrimShape::Ellipsoid { radii: Vec3::new(size * 0.48, size * 0.68, size * 0.3) }, moved(tip, Vec3::Y * size * 0.62));
+            let palm = Vec3::new(size * 0.48 * shape.width, size * 0.68, size * 0.3 * shape.depth);
+            prim(b, PrimShape::Ellipsoid { radii: palm }, moved(tip, Vec3::Y * size * 0.62));
             // Fixed finger (pollex) and hinged finger (dactyl), tapering to points, slightly open:
-            // two cones each, bowing toward each other at the tips.
+            // two cones each, bowing toward each other at the tips. The fingers start where the
+            // palm ends and run `shape.fingers` of their default reach; the gape spreads the knee
+            // out from the base and the tips apart.
+            let (knee_y, point_y) = (0.38f32.mul_add(shape.fingers, 1.12), 0.88f32.mul_add(shape.fingers, 1.12));
+            let knee_x = 0.03f32.mul_add(shape.gape, 0.17);
+            let point_x = 0.07 * shape.gape;
             for (x, r0) in [(1.0f32, 0.19), (-1.0, 0.17)] {
                 let base = tip.translation + tip.rotation * Vec3::new(x * size * 0.17, size * 1.12, 0.0);
-                let knee = tip.translation + tip.rotation * Vec3::new(x * size * 0.2, size * 1.5, 0.0);
-                let point = tip.translation + tip.rotation * Vec3::new(x * size * 0.07, size * 2.0, 0.0);
+                let knee = tip.translation + tip.rotation * Vec3::new(x * size * knee_x, size * knee_y, 0.0);
+                let point = tip.translation + tip.rotation * Vec3::new(x * size * point_x, size * point_y, 0.0);
                 let up = tip.rotation * Vec3::Z;
                 let seg = |from: Vec3, to: Vec3| Transform::from_translation(from).with_rotation(frame_y_z(to - from, up));
-                let (ra, rb, rc) = (size * r0, size * r0 * 0.62, size * 0.03);
+                let (ra, rb, rc) = (size * r0 * shape.thickness, size * r0 * 0.62 * shape.thickness, size * 0.03);
                 b.base(last, PrimShape::RoundCone { r0: ra, r1: rb, len: base.distance(knee) }, seg(base, knee), size * 0.12, end_region);
                 b.base(last, PrimShape::RoundCone { r0: rb, r1: rc, len: knee.distance(point) }, seg(knee, point), size * 0.04, end_region);
             }
-            moved(tip, Vec3::Y * size * 2.0)
+            moved(tip, Vec3::Y * size * point_y)
         }
         LimbEnd::Blade { length } => {
             let m = Transform { scale: Vec3::new(0.3, 1.0, 1.0), ..tip };
@@ -1421,7 +1427,7 @@ impl PartBuild for SculptParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anatomy::{Anatomy, build_src, sample_axis};
+    use crate::anatomy::{Anatomy, HardPart, build_src, sample_axis};
 
     /// A lone torso (3 bones, 1 m, radius 0.2) with the given `Profile` fields.
     fn torso(profile: &str) -> Anatomy {
@@ -1506,6 +1512,79 @@ mod tests {
         let keel = cones(&teardrop)[1];
         assert!(keel.2 < cones(&ellipse)[0].2);
         assert!(teardrop.mass.total > ellipse.mass.total && teardrop.mass.total < ellipse.mass.total * 1.1);
+    }
+
+    /// Two mirrored claws of different sizes, a tooth at each claw's `End`.
+    const PINCERS: &str = r#"(root: (name: "torso", kind: Torso(()), children: [
+        (
+            name: "claw",
+            kind: Limb((chain: (segments: 2, length: 0.2, radius: (scale: 0.02)), role: Manipulator, end: Pincer(size: 0.08))),
+            attach: Surface(t: 0.8, around_deg: 110.0),
+            mirror: true,
+            children: [(name: "tooth", kind: Hard((kind: Tooth, size: 0.004)), attach: End)],
+            right: (kind: Some(Limb((chain: (segments: 2, length: 0.2, radius: (scale: 0.03)), role: Manipulator, end: Pincer(size: 0.12))))),
+        ),
+    ]))"#;
+
+    /// What the claws' last bones carry, in model space: the base-layer primitive count, the sum
+    /// of their origins and axis points, the sum of their dimensions, scales and blends, and the
+    /// hard parts' count and the sum of their origins and axis points.
+    fn claw_fingerprint(a: &Anatomy) -> (usize, f64, f64, usize, f64) {
+        let model = a.skeleton.model_rest();
+        let on_claw = |bone: BoneId| a.skeleton.get(bone).is_some_and(|b| b.name.starts_with("limb.") && b.name.ends_with(".1"));
+        let placed = |bone: BoneId, local: &Transform| {
+            let m = model[bone.index()] * local.compute_affine();
+            f64::from(m.transform_point3(Vec3::ZERO).element_sum() + m.transform_point3(Vec3::Y).element_sum())
+        };
+        let (mut n, mut pos, mut dims) = (0usize, 0.0f64, 0.0f64);
+        for p in a.primitives.iter().filter(|p| p.layer == PrimLayer::Base && on_claw(p.bone)) {
+            n += 1;
+            pos += placed(p.bone, &p.local);
+            let dim = match &p.shape {
+                PrimShape::Sphere { r } => *r,
+                PrimShape::Ellipsoid { radii } => radii.element_sum(),
+                PrimShape::RoundCone { r0, r1, len } => r0 + r1 + len,
+                PrimShape::RoundBox { half, round } => half.element_sum() + round,
+                PrimShape::Grid { .. } => 0.0,
+            };
+            dims += f64::from(dim + p.local.scale.element_sum() + p.blend);
+        }
+        let hard: Vec<&HardPart> = a.hard_parts.iter().filter(|h| on_claw(h.bone)).collect();
+        let hpos = hard.iter().map(|h| placed(h.bone, &h.local)).sum();
+        (n, pos, dims, hard.len(), hpos)
+    }
+
+    /// A pincer without a `shape` builds the claw it did before the shape had parameters.
+    #[test]
+    fn default_pincers_build_as_before() {
+        let (n, pos, dims, hn, hpos) = claw_fingerprint(&build_src(PINCERS));
+        assert_eq!((n, hn), (12, 2));
+        let (ep, ed, eh) = (0.111_186_891_794_204_71, 37.204_400_062_561_035, -0.334_682_673_215_866_1);
+        assert!((pos - ep).abs() < 1e-6 && (dims - ed).abs() < 1e-6 && (hpos - eh).abs() < 1e-6, "{pos} {dims} {hpos}");
+    }
+
+    /// Each field of the shape moves the claw's primitives; a shape of all `1.0` is the default.
+    #[test]
+    fn pincer_shape_changes_the_claw() {
+        let claw = |shape: &str| {
+            let plan = format!(
+                r#"(root: (name: "torso", kind: Torso(()), children: [(name: "claw", kind: Limb((chain: (segments: 2, length: 0.2, radius: (scale: 0.02)), role: Manipulator, end: Pincer(size: 0.08{shape}))), attach: Surface(t: 0.8, around_deg: 110.0), mirror: true, children: [(name: "tooth", kind: Hard((kind: Tooth, size: 0.004)), attach: End)])]))"#
+            );
+            claw_fingerprint(&build_src(&plan))
+        };
+        let plain = claw("");
+        assert_eq!(plain, claw(", shape: (fingers: 1.0, width: 1.0, depth: 1.0, thickness: 1.0, gape: 1.0)"));
+        for field in ["fingers", "width", "depth", "thickness", "gape"] {
+            let shaped = claw(&format!(", shape: ({field}: 1.4)"));
+            assert_eq!((shaped.0, shaped.3), (plain.0, plain.3), "{field}");
+            assert!((shaped.1 - plain.1).abs() > 1e-5 || (shaped.2 - plain.2).abs() > 1e-5, "{field} changed nothing");
+        }
+        // Longer fingers carry the claw's `End`, and the teeth on it, further out; the palm's
+        // width and depth don't.
+        let longer = claw(", shape: (fingers: 1.4)");
+        assert!((longer.4 - plain.4).abs() > 1e-4, "{} vs {}", longer.4, plain.4);
+        let fatter = claw(", shape: (width: 1.4, depth: 1.4, thickness: 1.4)");
+        assert!((fatter.4 - plain.4).abs() < 1e-6, "{} vs {}", fatter.4, plain.4);
     }
 }
 

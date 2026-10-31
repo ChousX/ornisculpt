@@ -45,8 +45,10 @@ as open. Items marked *done* say where they landed.
 3. **Mirrored copies that differ.** *Done* (e06c604).
    - A mirrored part takes `left` and `right` overrides, applied in `expand_symmetry`.
    - The lobster has a crusher claw and a cutter claw.
-   - Still open: `LimbEnd::Pincer` has no shape parameters, so the cutter differs only in size.
-     The crusher's molars could now be blunt with `HardShape`.
+   - *Done* (roadmap/pincer): `LimbEnd::Pincer` takes a `shape` (finger length, palm width and
+     depth, finger thickness, gape) whose defaults build the old claw. The lobster's cutter has
+     long slim fingers on a flat palm; its crusher a swollen palm, short thick fingers and domed
+     `HardShape` molars.
 4. **Later:** keeping more than 12 limbs apart (`LIMB_SLOTS`, `surface/body.rs` and
    `sdf_field.wesl`), when a centipede needs it.
 

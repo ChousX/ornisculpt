@@ -188,12 +188,13 @@ From the morphology of *Homarus americanus*:
 - The carapace (cephalothorax) is ≈ 0.4 L, with a toothed rostrum.
 - The abdomen is ≈ 0.6 L: six rings, wider than tall, and the tail fan (telson plus two pairs of
   uropods).
-- Two chelipeds. In big males the claws are as long as the carapace; they're dimorphic (a crusher
-  and a cutter, not modelled: mirrored copies match).
+- Two chelipeds. In big males the claws are as long as the carapace; they're dimorphic: a heavy
+  crusher with a swollen palm, short thick fingers and blunt molars, and a slimmer cutter with
+  long fine-toothed fingers (the `right` override, with `Pincer`'s `shape`).
 - Four pairs of thin walking legs.
 - Long second antennae (≈ L), two pairs of short antennules, and eyes on stalks.
 
-Applied (`lobster.body.ron`, L ≈ 0.5 m; `Pincer(size: 0.085)` ≈ 0.17 m claws).
+Applied (`lobster.body.ron`, L ≈ 0.5 m; the cutter `Pincer(size: 0.08)` ≈ 0.18 m long, the crusher `size: 0.105` ≈ 0.19 m).
 
 
 ## Sources

@@ -400,7 +400,7 @@ fn scale_end(end: &mut LimbEnd, f: f32) {
     match end {
         LimbEnd::Hand { palm: s }
         | LimbEnd::Foot { length: s }
-        | LimbEnd::Pincer { size: s }
+        | LimbEnd::Pincer { size: s, .. }
         | LimbEnd::Blade { length: s }
         | LimbEnd::Paddle { width: s } => *s *= f,
         LimbEnd::None | LimbEnd::Hoof { .. } | LimbEnd::Pad | LimbEnd::Point => {}
