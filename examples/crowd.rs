@@ -10,7 +10,10 @@
 //! `ORNISCULPT_COATS=1` dresses each body in its own coat, a quarter left plain
 //! (`=<name>` dresses every mob in `coats/<name>.coat.ron`);
 //! `ORNISCULPT_OUTFITS=1` dresses the men and women (peasant/warrior) and the oxen (harness);
-//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
+//! `ORNISCULPT_MOTION=1` gives every mob the standard motion graph (idles and actions play in
+//! crowd tiers from baked clips; a mob triggers an action every few seconds);
+//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits
+//! (`ORNISCULPT_SHOT_FRAME=n` picks the frame);
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -20,11 +23,12 @@ use ornisculpt::OrnisculptPlugin;
 use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::MobCoat;
 use ornisculpt::mob::{CrowdUploads, GenCache, Mob, MobTier, QualityProfile, TierCamera};
+use ornisculpt::motion::{MobMotion, MotionGraph, MotionParams, library};
 use ornisculpt::num::{Saturate, ToF32};
 
 mod common;
 use common::crowd::{self, BODIES, ROOTS};
-use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_counts};
+use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_frames, spawn_stage, tier_counts};
 
 fn main() {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(4000);
@@ -39,7 +43,7 @@ fn main() {
         .insert_resource(Orbit::from_env(0.6, 0.5, 30.0, Vec3::ZERO, (0.5, 400.0)))
         .init_resource::<UploadStats>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (crowd::wander, orbit_camera, controls, report, screenshot_at(600)))
+        .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, screenshot_frames(600)))
         .add_systems(Last, count_uploads)
         .run();
 }
@@ -59,18 +63,32 @@ fn count_uploads(uploads: Res<CrowdUploads>, mut stats: ResMut<UploadStats>) {
     stats.slots += uploads.instances.len();
 }
 
+/// `ORNISCULPT_MOTION=1`: a mob with the standard graph, triggering `action` every `every` seconds.
+#[derive(Component)]
+struct Actor {
+    action: &'static str,
+    every: f32,
+    next: f32,
+}
+
 fn setup(
     mut commands: Commands,
     count: Res<Count>,
     assets: Res<AssetServer>,
+    mut graphs: ResMut<Assets<MotionGraph>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((Camera3d::default(), TierCamera));
     spawn_stage(&mut commands, &mut meshes, &mut materials, 400.0, Vec3::new(3.0, 6.0, 2.0));
     let side = count.0.to_f32().sqrt().ceil().sat_usize();
+    let graph = std::env::var("ORNISCULPT_MOTION").is_ok().then(|| graphs.add(library::standard()));
     for (i, (path, root)) in BODIES.iter().zip(ROOTS).cycle().take(count.0).enumerate() {
         let mut mob = crowd::spawn(&mut commands, &assets, i, side, (*path, root));
+        if let Some(graph) = &graph {
+            let action = ["attack", "shake", "wave", "rear"].get(i % 4).copied().unwrap_or("attack");
+            mob.insert((MobMotion::new(graph.clone()), Actor { action, every: 6.0, next: (i % 60).to_f32().mul_add(0.1, 3.0) }));
+        }
         // `ORNISCULPT_COATS=1`: each body its own coat, a quarter plain.
         // `=<name>` puts that coat on every mob instead.
         match std::env::var("ORNISCULPT_COATS").as_deref() {
@@ -97,6 +115,17 @@ fn setup(
         }
     }
     info!("spawned {} mobs; controls: left-drag orbit, scroll zoom, Q quality", count.0);
+}
+
+/// Actors trigger their action on schedule (whether it fits their body is the graph's business).
+fn act(time: Res<Time>, mut actors: Query<(&mut Actor, &mut MotionParams)>) {
+    let t = time.elapsed_secs();
+    for (mut actor, mut params) in &mut actors {
+        if t >= actor.next {
+            actor.next = t + actor.every;
+            params.trigger(actor.action);
+        }
+    }
 }
 
 fn controls(keys: Res<ButtonInput<KeyCode>>, mut profile: ResMut<QualityProfile>, mut quality: Local<usize>) {

@@ -1,10 +1,10 @@
 # Motion authoring API (proposal)
 
-Status: **build steps 1–4 implemented** (`src/motion/`): `Cycle` with `Fit` and the track
+Status: **build steps 1–5 implemented** (`src/motion/`): `Cycle` with `Fit` and the track
 vocabulary, root motion, the built-in library (in Rust, `motion::library`, not
-`*.motionlib.ron` files) and `MotionGraph`. Not yet: step 5, crowd baking of a graph's cycles;
-crowd tiers still bake only `Gait` modes and the idle (`bake_motion`). It extends §6 of
-`types.md`. `Gait` keeps working as one locomotion cycle in this model.
+`*.motionlib.ron` files), `MotionGraph`, and crowd baking of a graph's idles and actions (§7, as
+built: `motion/crowd.rs`, `mob/crowd.rs`). It extends §6 of `types.md`. `Gait` keeps working as
+one locomotion cycle in this model.
 
 ## Goals and decisions so far
 
@@ -354,19 +354,36 @@ cached by `BodyKey`:
 
 ## 7. Crowd tier
 
-- **What gets baked.** Each body bakes only the cycles its graph references and fits, into the
-  existing clip atlas:
-  - one clip per gait;
-  - one per idle;
-  - one per action, as a non-looping clip.
-- **Instance data.** `CrowdInstance` grows from "A/B/idle" to **up to 3 layers**. Each layer
-  has a frame pair and a weight, and points at a per-body **mask row** (one weight per crowd
-  bone) baked with the clips. The compute pass blends per bone: `Σ layer_weight × mask[bone] ×
-  frame`.
-- **Coarser masks.** Masks resolve against the crowd skeleton, so `Arm(Left)` on a body whose
-  forearm folded into the upper arm moves the whole arm.
-- **Events** still fire for crowd mobs: they come from the state machine on the CPU, not from
-  the GPU.
+Built (2026-10-31). As it stands:
+
+- **What gets baked.** A body's gait modes are baked at generation as before (`bake_motion`:
+  the body's default `Gait`, not the graph's gait cycles). The first time a crowd mob's body
+  meets its graph set, a task on the compute pool bakes every (layer, cycle) the graph's
+  states play, where the cycle fits the body and isn't a gait (`bake_cycle`): `BAKE_FRAMES`
+  frames of the standing hero pose with the cycle on top, the layer's mask already applied,
+  looping for idles, start to end for actions. The block is appended to the clip atlas once
+  per (body, graph set) (`CrowdCycles`). Until it lands the mob plays its gait alone.
+- **Mask rows.** Each clip carries a row of 1s and 0s over the crowd slot: the entries that
+  move against the standing pose. A cycle driving neither `Root` nor `Legs` leaves the legs out
+  of its row, so an upper-body action over a walk lets the legs keep walking (a baked frame's
+  legs would otherwise freeze under the pitched spine).
+- **Instance data.** `CrowdInstance` is the idle pose plus **3 layers**, each a frame pair, a
+  packed `(t, weight)` and a mask row index (`MASK_ALL` for the gait layer). The compute pass
+  starts from the idle and lays each layer over it in turn: `m = mix(m, frame, w · row[bone])`,
+  or for an additive layer `m += (frame − idle) · w · row[bone]` (additive clips are stored as
+  their difference from the standing pose over the idle). Layer 0 is the gait at `1 − idle
+  weight`, as before; a standing mob with no graph is the idle alone and uploads nothing.
+- **Choosing layers.** Per frame, the runtime's playing graph cycles with their own clock
+  (idles, actions; gait-synced cycles play through the gait layer) become one layer per graph
+  layer: its heaviest cycle at the layer's summed weight. The two heaviest layers fill the two
+  slots over the gait; a third playing layer is dropped that frame.
+- **Coarser masks.** Rows are over the crowd skeleton, so `Arm(Left)` on a body whose forearm
+  folded into the upper arm moves the whole arm. Within a graph layer, a crossfade between two
+  cycles shows the heavier one (no two-cycle mix in one layer).
+- **Events** still fire for crowd mobs: the state machine runs on the CPU for every tier.
+- **Held tools** sample the same blend on the CPU (`CrowdSkin::blend_bone`).
+- Not yet: `PlayCycle` (direct plays) in crowd tiers; the graph's own gait cycles (the body's
+  default gait modes play instead); freeing a body's block when the body or graph goes.
 
 ## 8. Built-in library
 
@@ -443,4 +460,4 @@ Decided: **wings first** (`docs/design/wings.md`), then this API, in this order:
 3. **Built-in libraries:** biped, quadruped, hexapod, myriapod, and winged (fold, flare,
    flap).
 4. **`MotionGraph`** with layers, state machines and composition.
-5. **Crowd baking** of used cycles, with three masked layers on the GPU.
+5. **Crowd baking** of used cycles, with three masked layers on the GPU (built, §7).

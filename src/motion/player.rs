@@ -279,6 +279,25 @@ impl MotionRuntime {
         !self.active.is_empty()
     }
 
+    /// The composed graph and the graph set it came from, once bound.
+    pub(crate) fn composed(&self) -> Option<(&[AssetId<MotionGraph>], &Arc<ComposedGraph>)> {
+        self.graph.as_ref().map(|g| (self.key.as_slice(), g))
+    }
+
+    pub(crate) const fn rig(&self) -> Option<&Arc<MotionRig>> {
+        self.rig.as_ref()
+    }
+
+    /// The graph cycles playing on their own clock this frame, as `(layer, cycle, time, weight)`
+    /// in layer order (gait-synced cycles and direct plays are left out: crowd tiers play the
+    /// body's gait clips for those).
+    pub(crate) fn timed_actives(&self) -> impl Iterator<Item = (usize, usize, f32, f32)> + '_ {
+        self.active.iter().filter_map(|a| match (a.layer, a.src, a.t) {
+            (Src::Graph(layer), Src::Graph(cycle), Some(t)) => Some((layer, cycle, t, a.weight)),
+            _ => None,
+        })
+    }
+
     /// Current state name of a layer.
     #[must_use]
     pub fn state(&self, layer: &str) -> Option<&str> {

@@ -13,19 +13,20 @@
 //! repeatedly, `ORNISCULPT_PARAMS=happy,flying` sets bools,
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits,
 //! `ORNISCULPT_SHOT_FRAME=n` picks the frame, `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets
-//! the camera.
+//! the camera, `ORNISCULPT_TIER=hero|near|far` pins every mob to a tier (crowd tiers play the
+//! graph's idles and actions from baked clips).
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::save_to_disk;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::coat::MobCoat;
-use ornisculpt::mob::{GeneratedBody, Mob, MobBody, TierCamera};
+use ornisculpt::mob::{ForceTier, GeneratedBody, Mob, MobBody, TierCamera};
 use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::motion::{Footstep, MobIntent, MobMotion, MotionEvent, MotionGraph, MotionParams, library};
 
 mod common;
-use common::{Orbit, ShotTarget, default_plugins, shot_frames, spawn_stage};
+use common::{Orbit, ShotTarget, default_plugins, shot_frames, spawn_stage, tier_env};
 
 /// (body plan, coat).
 const BODIES: [(&str, Option<&str>); 6] = [
@@ -96,6 +97,7 @@ fn setup(
     spawn_stage(&mut commands, &mut meshes, &mut materials, 80.0, Quat::from_rotation_y(light_yaw) * Vec3::new(3.0, 6.0, 2.0));
     // One graph for every body.
     let graph = graphs.add(library::standard());
+    let tier = tier_env("ORNISCULPT_TIER");
     for (i, (path, coat)) in BODIES.iter().enumerate() {
         let centre = Vec3::new(i.to_f32().mul_add(6.0, -15.0), 0.0, 0.0);
         let mut mob = commands.spawn((
@@ -106,6 +108,9 @@ fn setup(
         ));
         if let Some(coat) = coat {
             mob.insert(MobCoat(assets.load(*coat)));
+        }
+        if let Some(tier) = tier {
+            mob.insert(ForceTier(tier));
         }
     }
     info!("Space speed, 1-5 actions (attack shake rear wave flare), H happy, Y flying");

@@ -987,9 +987,15 @@ impl Sim {
 
     /// One frame at constant velocity; returns the local pose.
     pub fn frame(&mut self, f: &Frame, target: Option<Vec3>) -> &[Transform] {
+        self.frame_with(f, None, target)
+    }
+
+    /// One frame at constant velocity with `cycles` (what playing cycles add) on top; returns
+    /// the local pose.
+    pub fn frame_with(&mut self, f: &Frame, cycles: Option<&LayerPose>, target: Option<Vec3>) -> &[Transform] {
         choose_step(f, &self.loco, &self.heft, &GaitOverride(None), &mut self.clock, &mut self.step);
         advance_clock(f, &self.loco, &self.heft, &self.step, Some(&self.feet), &mut self.clock);
-        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles: None, hands: None, ground: &[], look_at: target };
+        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles, hands: None, ground: &[], look_at: target };
         let state = PoseState { feet: &mut self.feet, springs: &mut self.springs, look: &mut self.look, torso: &mut self.torso, pose: &mut self.pose };
         pose_frame(f, &input, std::iter::repeat(Vec3::ONE), state);
         &self.pose.local
