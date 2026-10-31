@@ -12,6 +12,17 @@
 # Reads the checkout at ORNISCULPT_BENCH_ROOT (default ~/Projects/ornisculpt), which must be at
 # the commit the binary was built from.
 d=$(dirname "$(readlink -f "$0")")
+# Keep the Deck awake while it measures: logind's idle lock, and in Desktop mode Plasma's power
+# management too (an ssh session may hold neither a sleep lock nor Plasma's without asking).
+if [ -z "${ORNISCULPT_AWAKE:-}" ]; then
+	export ORNISCULPT_AWAKE=1
+	bus=/run/user/$(id -u)/bus
+	if [ -S "$bus" ] && command -v kde-inhibit >/dev/null && pgrep -x plasmashell >/dev/null; then
+		exec systemd-inhibit --what=idle --who=ornisculpt --why=bench \
+			env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" kde-inhibit --power --screenSaver "$0" "$@"
+	fi
+	exec systemd-inhibit --what=idle --who=ornisculpt --why=bench "$0" "$@"
+fi
 export ORNISCULPT_BENCH_ROOT="${ORNISCULPT_BENCH_ROOT:-$HOME/Projects/ornisculpt}"
 run() { "$d/lib/ld-linux-x86-64.so.2" --library-path "$d/lib:/usr/lib" "$d/bin/bench" "$@"; }
 if [ "$1" = all ]; then
