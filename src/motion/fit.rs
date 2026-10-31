@@ -45,6 +45,8 @@ pub enum Feature {
     /// A grasping hand or pincer on that side.
     Grip(Side),
     Wings,
+    /// The mouth reaches the ground: neck and head together span the neck's height (grazing).
+    GroundReach,
 }
 
 /// Bodies a cycle may play on. Empty lists mean "any".
@@ -197,6 +199,12 @@ impl BodyTraits {
             features.push(Feature::Neck);
             if neck >= leg_length {
                 features.push(Feature::LongNeck);
+            }
+            // Pivoting down from its base, does the neck with the head on it span the base's
+            // height above the ground (the body is grounded at y = 0)?
+            let base = a.skeleton.bones.iter().position(|b| b.name.starts_with("neck.")).and_then(|i| model.get(i)).map_or(f32::INFINITY, |m| m.translation.y);
+            if neck + chain_len("skull") >= 0.85 * base {
+                features.push(Feature::GroundReach);
             }
         }
         let tail = chain_len("tail.");

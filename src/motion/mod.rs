@@ -6,6 +6,10 @@
 //!
 //! Ground is the mob's root height unless the game writes [`FootGround`] (physics is the game's
 //! choice): read [`FootProbes`] (one ray origin per leg, cast straight down) and write the hits.
+//! Hero mobs plant their feet on the hits; crowd mobs sit on them through a [`CrowdGround`] fit
+//! (root lift and tilt, a vertical offset per foot) applied in the crowd blend. Probes are
+//! written for hero mobs and for any mob with a `FootGround`, so a game adds an empty one to the
+//! crowd mobs it wants on its terrain.
 
 mod bake;
 mod crowd;
@@ -14,6 +18,7 @@ mod eval;
 mod fit;
 mod gait;
 mod graph;
+mod ground;
 mod hand;
 mod heft;
 pub mod library;
@@ -25,7 +30,9 @@ mod state;
 #[cfg(test)]
 mod testing;
 
-pub use bake::{BAKE_FRAMES, BakedClip, BakedMotion, SkinFrame, bake_motion};
+pub use bake::{BAKE_FRAMES, BakedClip, BakedMotion, SkinFrame, bake_cycle, bake_motion, idle_frame, standing_frame};
+pub use crowd::{CrowdClip, CrowdCycles, GraphClips};
+pub use ground::{CrowdGround, ground_fit};
 pub use cycle::{
     Channel, Curve, Cycle, CycleError, CycleEvent, CycleKind, CycleLoader, CycleLoaderError, FootPlan, Joint, LegSel,
     RootMotion, Sides, Target, Track,
@@ -89,7 +96,9 @@ pub struct MobGait(pub Handle<Gait>);
 pub struct FootProbes(pub SmallVec<[Vec3; 8]>);
 
 /// Ground hit per leg, written by the game's physics. `None` (or no component) = root height.
+/// Crowd mobs with one get probes and a [`CrowdGround`] fit (add it empty to opt in).
 #[derive(Component, Clone, Debug, Default)]
+#[require(CrowdGround)]
 pub struct FootGround(pub SmallVec<[Option<Vec3>; 8]>);
 
 /// The motion systems, in order, inside [`MobSet::Motion`](crate::mob::MobSet::Motion).
@@ -119,6 +128,7 @@ impl Plugin for MotionPlugin {
             .init_asset_loader::<GraphLoader>()
             .init_resource::<player::MotionCache>()
             .init_resource::<player::MotionWarnings>()
+            .init_resource::<CrowdCycles>()
             .init_resource::<MotionTime>()
             .register_type::<MobIntent>()
             .register_type::<HandPose>()
@@ -132,7 +142,7 @@ impl Plugin for MotionPlugin {
                     (pose::choose_steps, pose::advance_clocks).chain().in_set(M::Clock),
                     (
                         (pose::write_probes, player::evaluate_cycles, pose::pose_heroes, pose::write_joints).chain(),
-                        crowd::crowd_animate,
+                        (crowd::bake_graph_clips, ground::crowd_ground, crowd::crowd_animate).chain(),
                     )
                         .in_set(M::Pose),
                 ),

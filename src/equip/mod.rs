@@ -18,7 +18,6 @@ use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 
 use crate::anatomy::{Anatomy, BoneId, Side, SocketDef, SocketKind};
-use crate::num::Idx;
 use crate::mob::{CrowdSkin, CrowdUploaded, GeneratedBody, MobBody, MobJoint, MobSkeleton};
 
 /// Which socket of the holder a tool goes in.
@@ -112,21 +111,12 @@ fn rest_model(anatomy: &Anatomy, bone: BoneId) -> Affine3A {
 }
 
 /// The socket bone's posed model-space transform for a crowd-tier mob: the GPU's blend of baked
-/// skin matrices, applied to the bone's rest transform.
-fn crowd_bone(body: &GeneratedBody, base: u32, up: &CrowdUploaded, bone: BoneId) -> Option<Affine3A> {
-    let i = up.0;
-    if i.bones == 0 {
-        return None;
-    }
+/// skin matrices (mirrored on the CPU by [`CrowdSkin::blend_bone`]), applied to the bone's rest
+/// transform.
+fn crowd_bone(body: &GeneratedBody, skin: &CrowdSkin, up: &CrowdUploaded, bone: BoneId) -> Option<Affine3A> {
     let crowd = u32::from(*body.anatomy.skeleton.crowd.map.get(bone.index())?);
-    let mut skin = Mat4::ZERO;
-    for (frame, w) in [(i.frame_a, i.weight_a), (i.frame_b, i.weight_b), (i.idle, i.weight_idle)] {
-        if w != 0.0 {
-            let m = body.motion.matrix(frame.checked_sub(base)?.idx() + crowd.idx())?;
-            skin += Mat4::from_cols_array(m) * w;
-        }
-    }
-    Some(Affine3A::from_mat4(skin * Mat4::from(rest_model(&body.anatomy, bone))))
+    let m = skin.blend_bone(&up.0, crowd)?;
+    Some(Affine3A::from_mat4(m * Mat4::from(rest_model(&body.anatomy, bone))))
 }
 
 type Holders<'a> = (&'a MobBody, Option<&'a MobSkeleton>, Option<&'a CrowdUploaded>);
@@ -169,8 +159,7 @@ pub(crate) fn place_held(
                 m
             }
             (None, Some(up)) => {
-                let Some(layout) = skin.layout(body_handle.0.id()) else { return };
-                let Some(m) = crowd_bone(body, layout.base, up, socket.bone) else { return };
+                let Some(m) = crowd_bone(body, &skin, up, socket.bone) else { return };
                 m
             }
             (None, None) => return,
