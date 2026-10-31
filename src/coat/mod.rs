@@ -257,6 +257,29 @@ impl Coat {
         self.first(|k| if let CoveringKind::Feathers(f) = k { Some(*f) } else { None })
     }
 
+    /// The markings' and coverings' selectors that pick no region of `anatomy` (a `Part(...)`
+    /// path left behind by a rename, a limb role the body hasn't got), each with what holds it:
+    /// `covering 2`, `marking 0`, in the coat's order.
+    #[must_use]
+    pub fn unmatched_selectors(&self, anatomy: &Anatomy) -> Vec<(String, &RegionSelector)> {
+        let coverings = self.coverings.iter().enumerate().map(|(i, c)| (format!("covering {i}"), &c.regions));
+        let markings = self.markings.iter().enumerate().map(|(i, m)| (format!("marking {i}"), &m.regions));
+        coverings.chain(markings).filter(|(_, s)| s.mask(anatomy) == RegionMask::NONE).collect()
+    }
+
+    /// Logs one warning naming `coat`, `body` and the selectors
+    /// [`unmatched_selectors`](Self::unmatched_selectors) finds, if there are any: generation
+    /// calls it once per body and coat baked.
+    pub fn warn_unmatched(&self, anatomy: &Anatomy, coat: &str, body: &str) {
+        let unmatched = self.unmatched_selectors(anatomy);
+        if unmatched.is_empty() {
+            return;
+        }
+        let list: Vec<String> =
+            unmatched.iter().map(|(what, s)| format!("{what} {}", ron::to_string(s).unwrap_or_else(|_| format!("{s:?}")))).collect();
+        warn!("{coat} on {body}: selectors that match no region of the body: {}", list.join(", "));
+    }
+
     /// Each covering's region mask on `anatomy`, for [`cover_at`](Self::cover_at).
     #[must_use]
     pub fn covering_masks(&self, anatomy: &Anatomy) -> Vec<RegionMask> {
@@ -371,6 +394,34 @@ mod tests {
     use crate::anatomy::{LimbRole, LodLevel, RegionKind, build_src};
     use crate::num::Idx;
     use crate::surface::{AdaptiveContour, BodyMeshData, MaterialSlot, SurfaceSettings, centres_of_rotation, mesh_all_lods, muscle_flex};
+
+    /// Selectors that pick nothing on the body a coat is baked onto are found and named: a
+    /// `Part(...)` path from before a rename, a limb role the body hasn't got. Ones that match
+    /// are not.
+    #[test]
+    fn unmatched_selectors_are_named() {
+        use crate::anatomy::{PartPath, RegionSelector};
+        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
+        let coat = Coat {
+            coverings: vec![
+                Covering { regions: RegionSelector::Kind(RegionKind::Skull), kind: CoveringKind::Fur(Fur::default()), facing: None },
+                Covering { regions: RegionSelector::Role(LimbRole::Manipulator), kind: CoveringKind::Scales(Scales::default()), facing: None },
+            ],
+            markings: vec![
+                Marking { regions: RegionSelector::Part(PartPath("torso/neck/head".into())), ..Marking::default() },
+                Marking { regions: RegionSelector::Part(PartPath("torso/noggin".into())), ..Marking::default() },
+            ],
+            ..Coat::default()
+        };
+        let unmatched = coat.unmatched_selectors(&anatomy);
+        let names: Vec<&str> = unmatched.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["covering 1", "marking 1"], "{unmatched:?}");
+        assert_eq!(unmatched.get(1).map(|(_, s)| ron::to_string(s).unwrap_or_default()), Some("Part(\"torso/noggin\")".into()));
+        assert_eq!(Coat::default().unmatched_selectors(&anatomy), []);
+        // Logs, and doesn't mind a coat with nothing wrong.
+        coat.warn_unmatched(&anatomy, "test coat", "quadruped");
+        Coat::default().warn_unmatched(&anatomy, "test coat", "quadruped");
+    }
 
     fn kinds(kinds: &[RegionKind]) -> RegionSelector {
         RegionSelector::Or(kinds.iter().map(|k| RegionSelector::Kind(*k)).collect())

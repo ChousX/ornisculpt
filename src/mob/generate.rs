@@ -294,6 +294,9 @@ pub struct GenCache {
     /// Assets whose load failed (a bad plan, coat, outfit or part mesh), each reported once;
     /// forgotten when the asset reloads (`reload_changed_assets`).
     failed_loads: HashSet<UntypedAssetId>,
+    /// What each in-flight body is for, by name: its plan's asset path and its coat's, for the
+    /// warnings about the coat once it is baked on the body.
+    labels: HashMap<BodyKey, (String, String)>,
 }
 
 /// Failure messages kept; past this the oldest are forgotten (they are read within a frame).
@@ -508,6 +511,11 @@ fn fail_load(commands: &mut Commands, cache: &mut GenCache, entity: Entity, asse
     commands.entity(entity).remove::<(GenRequest, WaitingKey)>().trigger(move |entity| BodyFailed { entity, error });
 }
 
+/// `handle`'s asset path, or `fallback` for one made in code.
+fn asset_name(server: &AssetServer, handle: &UntypedHandle, fallback: &str) -> String {
+    server.get_path(handle.id()).map_or_else(|| fallback.to_owned(), |p| p.to_string())
+}
+
 /// For each requested mob whose body asset is loaded: resolve its live body, then either reuse a
 /// cached/in-flight body or start a task (within budget). A mob whose plan, coat, outfit or an
 /// authored part mesh failed to load gets [`BodyFailed`] instead of waiting for ever.
@@ -605,6 +613,9 @@ pub(super) fn start_generation(
                 })
             });
             cache.in_flight.insert(key, task);
+            let body = asset_name(&server, &mob.body.clone().untyped(), "a body plan made in code");
+            let coat = mob_coat.map_or_else(|| "no coat".to_owned(), |c| asset_name(&server, &c.0.clone().untyped(), "a coat made in code"));
+            cache.labels.insert(key, (body, coat));
         }
         commands.entity(entity).remove::<(GenRequest, WaitingKey)>().insert(GenPending(key));
     }
@@ -633,6 +644,7 @@ pub(super) fn finish_generation(
     }
     for (key, result) in done {
         cache.in_flight.remove(&key);
+        let (body_name, coat_name) = cache.labels.remove(&key).unwrap_or_default();
         let (out, ready) = match result {
             Ok((o, m)) => (o, m),
             Err(e) => {
@@ -644,6 +656,9 @@ pub(super) fn finish_generation(
                 continue;
             }
         };
+        // A selector that picks nothing on this body (a `Part(...)` path from before a rename)
+        // is a coat silently missing a piece: say so, once per body and coat.
+        out.coat.warn_unmatched(&out.anatomy, &coat_name, &body_name);
         let skeleton = &out.anatomy.skeleton;
         // Hero soft joints come after the bones and bind like their bones.
         #[allow(unused_mut)]
