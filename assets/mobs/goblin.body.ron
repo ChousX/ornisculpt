@@ -1,6 +1,7 @@
 // A goblin (fantasy): a small, wiry humanoid about 1.1 m tall, all sinew and joints. A big head
 // for the body (about 1/5 of stature) with huge pointed ears swept out to the sides, large eyes,
-// a long hooked nose, a wide thin-lipped mouth and a weak chin. Narrow shoulders, a pot belly,
+// a long hooked nose, a wide thin-lipped mouth and a sharp chin (an authored head, the human one
+// warped). Narrow shoulders, a pot belly,
 // long thin arms reaching the knees with long-fingered clawed hands, bandy legs bent at the knee.
 // Hunched: the trunk leans forward and the head juts.
 //
@@ -26,7 +27,7 @@
         children: [
             (
                 name: "neck",
-                kind: Chain((role: Neck, chain: (segments: 2, length: 0.09, radius: (curve: [(0.0, 1.2), (0.4, 0.9), (1.0, 0.85)], scale: 0.036, cross: Ellipse(aspect: 1.1))))),
+                kind: Chain((role: Neck, chain: (segments: 2, length: 0.09, radius: (curve: [(0.0, 1.15), (0.4, 0.95), (1.0, 0.95)], scale: 0.04, cross: Ellipse(aspect: 1.1))))),
                 attach: End,
                 offset: (rotate_deg: (35.0, 0.0, 0.0)),
                 detail: Always,
@@ -37,16 +38,25 @@
                     (
                         name: "head",
                         kind: Head((
-                            skull: (shape: Ellipsoid, size: (0.07, 0.088, 0.09)),
+                            // The authored goblin head (parts/head_goblin.gltf, tools/gen_head_goblin.py:
+                            // the MakeHuman head warped), 18 cm tall.
+                            skull: (shape: Ellipsoid, size: (0.072, 0.09, 0.092)),
                             snout: 0.0,
-                            jaw: Some((segments: 1, length: 0.075)),
                             eye_spacing: 0.5,
-                            face: Some((nose: 2.3, brow: 1.4, cheekbones: 1.5, lips: 0.6, chin: 0.55, jaw_width: 0.95, cheeks: 0.4)),
+                            sculpt: Some((
+                                mesh: "parts/head_goblin.gltf#Mesh0/Primitive0",
+                                blend: 0.055,
+                                eye_radius: 0.017,
+                                eye: (0.0312, 0.0942, 0.0492),
+                                nostril: (0.0097, 0.0443, 0.0905),
+                                nose: (0.0, 0.0377, 0.1306),
+                                mouth: (0.0, 0.034, 0.0892),
+                            )),
                         )),
                         offset: (rotate_deg: (-30.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.016, sclera: 0.45)), attach: Eye, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.017, sclera: 0.45)), attach: Eye, mirror: true),
                             // Huge pointed ears, out to the sides and up a little, drooping at the tips.
                             (name: "ear", kind: Chain((role: Ear, chain: (segments: 3, length: 0.17, radius: (curve: [(0.0, 0.8), (0.3, 1.0), (1.0, 0.08)], scale: 0.028, cross: Flat(aspect: 3.2)), curl: 60.0, blend: 0.006))), attach: Ear, offset: (rotate_deg: (-25.0, 0.0, 60.0)), mirror: true),
                         ],
