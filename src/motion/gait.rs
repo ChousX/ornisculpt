@@ -259,6 +259,32 @@ mod tests {
     use super::*;
     use crate::anatomy::Stance;
 
+    /// The centipede is a myriapod and walks in a wave: each pair a `lag` behind the one behind
+    /// it, the two sides half a cycle apart.
+    #[test]
+    fn centipede_walks_in_a_wave() {
+        use crate::motion::fit::{BodyFamily, BodyTraits};
+        let a = crate::anatomy::build_src(include_str!("../../assets/mobs/centipede.body.ron"));
+        assert_eq!(BodyTraits::of(&a).family, BodyFamily::Myriapod);
+        let gait = Gait::for_legs(a.legs.len());
+        assert_eq!(gait.modes.len(), 1);
+        assert_eq!(gait.modes[0].name, "wave");
+        let PhasePattern::Wave { lag } = gait.modes[0].pattern else { panic!("{:?}", gait.modes[0].pattern) };
+        let offset = |pair: u8, side: Side| {
+            let (i, leg) = a.legs.iter().enumerate().find(|(_, l)| l.pair == pair && l.side == side).unwrap();
+            gait.modes[0].pattern.offset(leg, i, &a.legs)
+        };
+        let pairs = a.legs.iter().map(|l| l.pair).max().unwrap();
+        assert_eq!(pairs, 15);
+        for pair in 0..pairs {
+            // The pair behind (a higher rank) leads by `lag`.
+            let behind = (offset(pair, Side::Left) - offset(pair + 1, Side::Left)).rem_euclid(1.0);
+            assert!((behind - lag).abs() < 1e-4, "pair {pair}: {behind} vs {lag}");
+            let across = (offset(pair, Side::Right) - offset(pair, Side::Left)).rem_euclid(1.0);
+            assert!((across - 0.5).abs() < 1e-4, "pair {pair}: {across}");
+        }
+    }
+
     fn leg(pair: u8, side: Side) -> LegInfo {
         LegInfo {
             chain: default(),

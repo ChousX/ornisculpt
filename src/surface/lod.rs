@@ -651,3 +651,65 @@ pub mod sheet_tests {
         assert!(s.sheet <= max_sheet && s.total <= max_total, "dragon: {s:?} stretched (at most {max_sheet} on sheets, {max_total} in all)");
     }
 }
+
+#[cfg(test)]
+mod fingerprint_probe {
+    use super::*;
+    use crate::anatomy::build_src;
+    use crate::surface::AdaptiveContour;
+
+    /// Hero meshing time of a few bodies, least and median of five.
+    #[test]
+    #[ignore = "timing probe"]
+    fn mesh_times() {
+        let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
+        let settings = SurfaceSettings::default();
+        for body in ["horse", "spider", "lobster", "centipede"] {
+            let anatomy = build_src(&std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap());
+            let mut times: Vec<f32> = (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    let m = mesh_lod(&AdaptiveContour, &anatomy, LodLevel::Hero, settings.get(LodLevel::Hero), 1).unwrap();
+                    std::hint::black_box(m);
+                    t.elapsed().as_secs_f32() * 1000.0
+                })
+                .collect();
+            times.sort_by(f32::total_cmp);
+            println!("{body}: hero mesh_lod least {:.0} ms, median {:.0} ms", times[0], times[2]);
+        }
+    }
+
+    /// A fingerprint of every plan's meshes at every level: counts, and order-weighted sums of
+    /// the positions, normals, weights, joints, vertex data and centres of rotation. Run before
+    /// and after a field change and diff the output: a plan the change doesn't touch prints the
+    /// same lines.
+    #[test]
+    #[ignore = "fingerprint probe"]
+    fn mesh_fingerprints() {
+        fn weighted(it: impl Iterator<Item = f64>) -> f64 {
+            it.enumerate().map(|(i, v)| v * f64::from(i.to_f32()).mul_add(1e-3, 1.0)).sum()
+        }
+        let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
+        let mut bodies: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".body.ron").map(str::to_owned)).collect();
+        bodies.sort();
+        let settings = SurfaceSettings::default();
+        for body in bodies {
+            let anatomy = build_src(&std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap());
+            for level in LodLevel::ALL {
+                let m = mesh_lod(&AdaptiveContour, &anatomy, level, settings.get(level), 1).unwrap();
+                let v3 = |vs: &[Vec3]| weighted(vs.iter().map(|v| f64::from(v.x.mul_add(1.0, v.y.mul_add(2.0, v.z * 3.0)))));
+                println!(
+                    "{body} {level:?}: {} verts {} indices pos {:.6} nrm {:.6} w {:.6} j {} data {} cor {:.6}",
+                    m.positions.len(),
+                    m.indices.len(),
+                    v3(&m.positions),
+                    v3(&m.normals),
+                    weighted(m.weights.iter().map(|w| f64::from(w[0].mul_add(1.0, w[1].mul_add(2.0, w[2].mul_add(3.0, w[3] * 4.0)))))),
+                    m.joints.iter().flatten().map(|&j| u64::from(j)).sum::<u64>(),
+                    m.mob_data.iter().flatten().map(|&d| u64::from(d)).sum::<u64>(),
+                    v3(&m.cor),
+                );
+            }
+        }
+    }
+}

@@ -17,7 +17,9 @@ const HEADER_WORDS: u32 = 5u;
 const BRICK_ROW: u32 = 16u;
 const NO_LIMB: u32 = 0xffffffffu;
 const FAR: f32 = 1e9;
-// Limbs the field keeps apart at one point (as `LIMB_SLOTS` in `surface/body.rs`).
+// Limbs the field keeps apart at one point: the most a cell's list reaches (as `LIMB_SLOTS` in
+// `surface/body.rs`, which checks every plan's cells; `BodyField::eval` itself has no cap). Past
+// them limbs share the last slot.
 const LIMB_SLOTS: u32 = 12u;
 
 fn word_u(i: u32) -> vec4<u32> {

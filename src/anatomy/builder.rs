@@ -214,6 +214,9 @@ struct PartFrame {
     index: u16,
     mirrored: bool,
     side: Side,
+    /// The path the part's regions are keyed on: its own, or the sibling's whose regions it shares
+    /// ([`PartNode::regions_with`]).
+    regions_as: PartPath,
 }
 
 /// Accumulates an [`Anatomy`] while the part tree is walked.
@@ -309,7 +312,8 @@ impl AnatomyBuilder {
             mirrored,
             density: node.density,
         });
-        self.stack.push(PartFrame { index, mirrored, side });
+        let regions_as = node.regions_with.as_deref().and_then(|with| Some(path.parent()?.child(with))).unwrap_or_else(|| path.clone());
+        self.stack.push(PartFrame { index, mirrored, side, regions_as });
         Ok(BuildCx { path, side, tone, offset: node.offset.to_transform() })
     }
 
@@ -386,8 +390,7 @@ impl AnatomyBuilder {
     ///
     /// When the body already has [`RegionId::MAX`] regions, or no part is in progress.
     pub fn region(&mut self, kind: RegionKind, side: Side) -> Result<RegionId, AnatomyError> {
-        let current = self.stack.last().map(|f| f.index).ok_or(AnatomyError::Internal("region outside a part"))?;
-        let path = &self.anatomy.parts.get(current.idx()).ok_or(AnatomyError::Internal("part in progress missing"))?.path;
+        let path = &self.stack.last().ok_or(AnatomyError::Internal("region outside a part"))?.regions_as;
         let regions = &mut self.anatomy.regions.regions;
         if let Some(i) = regions.iter().position(|r| &r.part == path && r.kind == kind && r.side == side) {
             return Ok(RegionId(i.clamp_u8()));

@@ -226,8 +226,8 @@ What the round found, for the engine:
    part has no side, so its grip socket is `grip`, not `grip.r`, and a leg would phase as a centre
    leg.
 6. **Exoskeletons only approximate.** `segmented` gives rings and joints, but there are no
-   overlapping tergites, carapace grooves, spines or setae. A body with more than 12 limbs meshed
-   apart (a centipede) will merge again.
+   overlapping tergites, carapace grooves, spines or setae. (The field keeps any number of limbs
+   apart now: the centipede, roadmap Phase 1 item 4.)
 7. **Rest poses are authored as angles.** Arms hang in a slight A-pose, and relaxed hands,
    head carriage and weight shift all have to be found by hand. Turning the palms in needs an
    arm offset of 75° about Y.

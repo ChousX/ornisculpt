@@ -127,6 +127,8 @@ fn controls(
             offset: default(),
             mirror: true,
             repeat: default(),
+            share_regions: false,
+            regions_with: None,
             side: default(),
             detail: default(),
             tone: default(),

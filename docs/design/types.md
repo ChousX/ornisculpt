@@ -106,6 +106,7 @@ pub struct PartNode {
     pub density: f32,           // relative to water; the gait feels the weight (motion::Heft)
     pub children: Vec<PartNode>,
     pub left: SideOverride, pub right: SideOverride,   // how a mirrored copy differs
+    pub share_regions: bool,    // a repeated part's copies share the first copy's regions
 }
 pub enum Repeat { Once, Series { count: u8, from: f32, to: f32 }, Radial { count: u8 } }
 pub enum AttachSlot { Start, End, Along(f32), Surface { t: f32, around_deg: f32 },
@@ -137,6 +138,13 @@ pub struct Tone { pub muscle: f32, pub fat: f32, pub folds: f32, pub landmarks: 
   - The old workaround, a `Side::Center` part at `around_deg` 270, lands where the mirrored
     copy would. But only a pitch offset mirrors, and the part has no side
     (`center_part_at_270_is_not_a_right_copy`).
+- **Shared regions in a series** (2026-10-31): with `share_regions: true`, a repeated part's
+  copies take one set of regions per side, the first copy's. `expand_symmetry` sets
+  `regions_with` on the later copies.
+  - A limb takes three regions, so a centipede's 32 legs would need 96 of the body's 64. Shared,
+    they take six, and a coat marks them as one anyway.
+  - A `Part` selector reaches the series by the first copy's path (`trunk/leg.0.l`).
+  - It's off by default: the lobster's legs keep a region set each.
 - Default tone: muscle 0.5, fat 0.3, folds 0.3, landmarks 0.3.
 
 ### 2.2 Part kinds (closed enum, all values plain numbers)
@@ -194,7 +202,7 @@ pub enum JointPlan { Foreleg, Hindleg, Leg, Arm, Arched }
 pub enum LimbRole { Locomotor, Manipulator, Both, Swimmer, Display }
 pub enum Stance { Plantigrade, Digitigrade, Unguligrade, Sprawl, Arched }
 pub enum LimbEnd { None, Hand { palm }, Foot { length }, Hoof { split: bool }, Pad,
-                   Pincer { size }, Blade { length }, Point, Paddle { width } }
+                   Pincer { size, shape }, Blade { length }, Point, Paddle { width } }
 ```
 
 - Every sample limb declares its `joints` (test `sample_limbs_declare_their_joints`). Each
@@ -213,7 +221,9 @@ pub enum LimbEnd { None, Hand { palm }, Foot { length }, Hoof { split: bool }, P
   | Arched | 75° | knee down (−10, 170), tarsus down (−45, 120) |
 
 - `Hand` and `Pincer` grasp (`LimbEnd::grasps`), so they take a `grip` socket.
-- Still open: `Pincer` has no shape parameters beyond `size` (`roadmap.md`, Phase 1).
+- `Pincer`'s `shape` (`PincerShape`: fingers, width, depth, thickness, gape) scales the
+  default claw. Every field defaults to 1.0, which builds the old claw
+  (`default_pincers_build_as_before`).
 
 **Heads:**
 
@@ -600,8 +610,9 @@ pub struct BodyFieldOptions { pub level: LodLevel, pub seed: u64, pub geometric_
   limbs, wings, tails) blends into the body only where it attaches and only *touches* anything
   else. Where it touches the body or another limb, the mesher builds each surface through the
   other as its own **sheet** (`RawMesh::sheets`), so they part cleanly when they move. The field
-  keeps up to `LIMB_SLOTS` = 12 limbs apart at one point (`sdf_field.wesl` matches); a centipede
-  will need more (`roadmap.md`, Phase 1).
+  keeps every limb apart: its per-point list holds `LIMB_SLOTS` = 12 inline and grows past that
+  (2026-10-31). The preview shader keeps 12 as a per-cell cap, which the packer checks and
+  `every_mob_fits_the_preview_cells` tests. The centipede has 32 legs.
 - **Meshing pose** (`anatomy::Spread`): arms raised 45° clear of the body, fingers fanned 10°,
   and legs that overlap at rest swung apart by the least that parts them. The animation rest
   pose is unchanged; the mesh is skinned back into it.
@@ -1326,7 +1337,6 @@ The order work goes in is [`roadmap.md`](roadmap.md). Gathered from the sections
   shadows (§6, §8.3, §10).
 - `HiddenRegions` (§8.2); `Wrist` sockets (§3.1); `QualityProfile` scaling the surface settings
   (§9).
-- Pincer shape parameters; more than 12 limbs kept apart (§2.2, §4.1).
 - Clothing: hoods, both-edge hangs, layering, garments in contacts (§13). Merging the cloth
   submesh into the skin mesh (§10).
 - Wings: `WingCoat`, the propatagium and uropatagium, flight (§2.11).
