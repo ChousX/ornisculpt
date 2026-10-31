@@ -46,17 +46,17 @@
                             sculpt: Some((
                                 mesh: "parts/head_goblin.gltf#Mesh0/Primitive0",
                                 blend: 0.055,
-                                eye_radius: 0.017,
-                                eye: (0.0312, 0.0942, 0.0492),
-                                nostril: (0.0097, 0.0443, 0.0905),
-                                nose: (0.0, 0.0377, 0.1306),
-                                mouth: (0.0, 0.034, 0.0892),
+                                eye_radius: 0.018,
+                                eye: (0.0312, 0.0943, 0.0372),
+                                nostril: (0.009, 0.0437, 0.1031),
+                                nose: (0.0, 0.0378, 0.1689),
+                                mouth: (0.0, 0.0346, 0.0944),
                             )),
                         )),
                         offset: (rotate_deg: (-30.0, 0.0, 0.0)),
                         detail: Always,
                         children: [
-                            (name: "eye", kind: Hard((kind: Eye, size: 0.017, sclera: 0.45)), attach: Eye, mirror: true),
+                            (name: "eye", kind: Hard((kind: Eye, size: 0.018, sclera: 0.45)), attach: Eye, mirror: true),
                             // Huge pointed ears, out to the sides and up a little, drooping at the tips.
                             (name: "ear", kind: Chain((role: Ear, chain: (segments: 3, length: 0.17, radius: (curve: [(0.0, 0.8), (0.3, 1.0), (1.0, 0.08)], scale: 0.028, cross: Flat(aspect: 3.2)), curl: 60.0, blend: 0.006))), attach: Ear, offset: (rotate_deg: (-25.0, 0.0, 60.0)), mirror: true),
                         ],
