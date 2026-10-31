@@ -327,16 +327,20 @@ mod tests {
         }
     }
 
-    /// The dragon's budgets, now that its 45 hard parts take no regions: it used to sit at the
-    /// region cap (64) with its spine series cut down to fit.
+    /// The dragon past the old caps of 64 bones and 64 regions: its hard parts take no regions
+    /// (it sat at 64 with its spine series cut down), and its two-segment clawed toes (78 bones
+    /// in all, 62 with one segment) fit the raised bone budget while the crowd skeleton stays
+    /// within its own.
     #[test]
-    fn dragon_fits_its_budgets() {
+    fn dragon_builds_past_the_old_caps() {
         let a = build_src(include_str!("../../assets/mobs/dragon.body.ron"));
         let regions = a.regions.regions.len();
-        assert!(regions + a.hard_parts.len() > RegionId::MAX, "{regions} regions + {} hard parts", a.hard_parts.len());
+        assert!(regions + a.hard_parts.len() > 64, "{regions} regions + {} hard parts", a.hard_parts.len());
         assert!(regions <= RegionId::MAX - 24, "{regions} regions: the hard parts are taking regions again");
         assert!(a.regions.regions.iter().all(|r| r.kind != RegionKind::Hard));
-        assert!(a.skeleton.len() <= MAX_BONES && a.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
+        let bones = a.skeleton.len();
+        assert!(bones > 64 && bones <= MAX_BONES, "{bones} bones");
+        assert!(a.skeleton.crowd.bones.len() <= MAX_CROWD_BONES, "{} crowd bones", a.skeleton.crowd.bones.len());
     }
 
     /// Hind legs of the quadruped plan with their joints edited by `f`.

@@ -303,10 +303,13 @@ pub enum BoneDetail { Core, Fine }                   // Fine: digits, ear tips, 
 pub struct CrowdSkeleton { pub map: Vec<u8> /* full bone → crowd bone (Fine folds to Core parent) */, pub bones: Vec<BoneId> }
 #[derive(Reflect, Clone, Copy, PartialEq, Eq, Hash, Debug)] pub struct BoneId(pub u8);
 
-pub const MAX_BONES: usize = 64;
+pub const MAX_BONES: usize = 128;      // 64 until 2026-10-31
 pub const MAX_CROWD_BONES: usize = 32;
 ```
 - **T-6** 64 bones is enough for a torso, neck, head, jaw, four limbs, two hands of fingers and a tail. 32 crowd bones = 64 texels per frame row in the baked motion texture.
+  - 2026-10-31: raised to 128. A six-limbed dragon with two-segment clawed toes, spines and horns
+    needs about 80. Nothing is sized by the cap (`BoneId` is a byte, Bevy skins 256 joints, the
+    crowd folds to 32), so it is a budget on a hero mob's per-bone CPU work; the crowd cap stays.
 
 ### 3.1 Sockets
 ```rust

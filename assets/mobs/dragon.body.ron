@@ -55,7 +55,7 @@
                         ],
                     ),
                     // Spines down the crest of the neck.
-                    (name: "spine.neck", kind: Hard((kind: Spike, size: 0.12, curve: 0.25)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 5, from: 0.08, to: 0.92)),
+                    (name: "spine.neck", kind: Hard((kind: Spike, size: 0.12, curve: 0.25)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 7, from: 0.08, to: 0.92)),
                 ],
             ),
             (
@@ -73,7 +73,7 @@
                 detail: Always,
             ),
             // Spines along the back, tallest over the shoulders.
-            (name: "spine.back", kind: Hard((kind: Spike, size: 0.16, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 7, from: 0.04, to: 0.96)),
+            (name: "spine.back", kind: Hard((kind: Spike, size: 0.16, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-35.0, 0.0, 0.0)), repeat: Series(count: 9, from: 0.04, to: 0.96)),
             (
                 // Upper arm back, forearm forward and down onto a broad clawed forefoot.
                 name: "limb.front",
@@ -90,7 +90,7 @@
                 children: [
                     (
                         name: "toes",
-                        kind: Digits((count: 4, chain: (segments: 1, length: 0.11, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.03), curl: 260.0), spread_deg: 40.0, tip: Some((kind: Claw, size: 0.075, curve: 0.45)))),
+                        kind: Digits((count: 4, chain: (segments: 2, length: 0.11, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.03), curl: 260.0), spread_deg: 40.0, tip: Some((kind: Claw, size: 0.075, curve: 0.45)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),
@@ -112,7 +112,7 @@
                 children: [
                     (
                         name: "toes",
-                        kind: Digits((count: 4, chain: (segments: 1, length: 0.13, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.032), curl: 240.0), spread_deg: 36.0, tip: Some((kind: Claw, size: 0.08, curve: 0.45)))),
+                        kind: Digits((count: 4, chain: (segments: 2, length: 0.13, radius: (curve: [(0.0, 1.0), (1.0, 0.75)], scale: 0.032), curl: 240.0), spread_deg: 36.0, tip: Some((kind: Claw, size: 0.08, curve: 0.45)))),
                         attach: End,
                         detail: UpTo(Hero),
                     ),
@@ -124,7 +124,7 @@
                 attach: Start,
                 offset: (rotate_deg: (18.0, 0.0, 0.0)),
                 children: [
-                    (name: "spine.tail", kind: Hard((kind: Spike, size: 0.12, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-40.0, 0.0, 0.0)), repeat: Series(count: 7, from: 0.03, to: 0.8)),
+                    (name: "spine.tail", kind: Hard((kind: Spike, size: 0.12, curve: 0.2)), attach: Surface(t: 0.0, around_deg: 0.0), offset: (rotate_deg: (-40.0, 0.0, 0.0)), repeat: Series(count: 10, from: 0.03, to: 0.8)),
                     // The spade at the tip: a flat, leaf-shaped blade.
                     (name: "spade", kind: Mass((shape: Flap, size: (0.15, 0.02, 0.18), blend: 0.04)), attach: End, offset: (translate: (0.0, 0.0, 0.08))),
                 ],
