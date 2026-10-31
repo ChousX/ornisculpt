@@ -243,6 +243,12 @@ pub fn tier_counts(tiers: &Query<&MobTier>) -> [usize; 3] {
     LodLevel::ALL.map(|level| tiers.iter().filter(|t| t.0 == level).count())
 }
 
+/// The checkout examples read from: this one, or `ORNISCULPT_BENCH_ROOT` for a binary built on
+/// another machine (the bench on the Steam Deck runs toth's build).
+pub fn root() -> std::path::PathBuf {
+    std::env::var_os("ORNISCULPT_BENCH_ROOT").map_or_else(|| env!("CARGO_MANIFEST_DIR").into(), std::path::PathBuf::from)
+}
+
 /// The authored part meshes `plan` references, read from `assets/` without the asset server:
 /// the labelled primitive's positions, normals and indices from an embedded little-endian buffer,
 /// as `tools/` write them. A part that can't be read is left out (building then says which).
@@ -261,7 +267,7 @@ fn read_part(path: &str) -> Option<TriMesh> {
     use base64::Engine;
     let (file, label) = path.split_once('#').unwrap_or((path, ""));
     let number = |prefix: &str| label.split('/').find_map(|l| l.strip_prefix(prefix)?.parse::<usize>().ok()).unwrap_or(0);
-    let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(file)).ok()?;
+    let text = std::fs::read_to_string(root().join("assets").join(file)).ok()?;
     let gltf: serde_json::Value = serde_json::from_str(&text).ok()?;
     let at = |pointer: String| gltf.pointer(&pointer);
     let (_, data) = at("/buffers/0/uri".into())?.as_str()?.split_once(',')?;

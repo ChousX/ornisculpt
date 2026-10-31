@@ -69,7 +69,7 @@ use serde::{Deserialize, Serialize};
 
 mod common;
 use common::crowd::{self, Wander};
-use common::spawn_stage;
+use common::{root, spawn_stage};
 
 /// Bump whenever a workload parameter below changes.
 const BENCH_VERSION: u32 = 5;
@@ -199,11 +199,6 @@ struct CaseResult {
     name: String,
     metrics: BTreeMap<String, f32>,
     images: Vec<String>,
-}
-
-/// The checkout the bench reads from: this one, or `ORNISCULPT_BENCH_ROOT`.
-fn root() -> PathBuf {
-    std::env::var_os("ORNISCULPT_BENCH_ROOT").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
 }
 
 fn git(args: &[&str]) -> String {
