@@ -207,9 +207,13 @@ What the round found, for the engine:
    - Hands are a box with tube fingers.
    - The humanoids would gain most from per-limb stamp tables tuned on reference meshes
      (`research_notes/` has female base meshes).
-5. **Mirrored parts are identical.** A lobster's crusher and cutter claws differ, but `mirror`
-   copies one part exactly. Plans can't vary a mirrored copy, short of authoring both sides
-   apart (`Side::Center` on the right needs `around_deg` 270 and isn't tested).
+5. **Mirrored parts are identical.** Fixed (2026-10-31): a mirrored part takes `left`/`right`
+   overrides (`SideOverride`: absent, kind, offset, children), applied in `expand_symmetry`; the
+   lobster now has a crusher and a cutter claw. The old workaround, a `Side::Center` part at
+   `around_deg` 270, is tested (`center_part_at_270_is_not_a_right_copy`): it lands where the
+   mirrored copy would, but only a pitch offset mirrors (yaw and roll turn the wrong way) and the
+   part has no side, so its grip socket is `grip`, not `grip.r`, and a leg would phase as a centre
+   leg.
 6. **Exoskeletons only approximate.** `segmented` gives rings and joints, but there are no
    overlapping tergites, carapace grooves, spines or setae. A body with more than 12 limbs meshed
    apart (a centipede) will merge again.

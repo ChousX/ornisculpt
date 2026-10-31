@@ -43,7 +43,8 @@ The scene has three kinds of node.
    tone, and the coat when one was exported with the body (so coats round-trip too).
 2. **Part nodes**, one empty per *authored* part, nested as the part tree, named by the part's
    name. Each carries `extras.ornisculpt.part`: the `PartNode` without `children` (its kind and
-   params, `attach`, `offset`, `mirror`, `repeat`, `detail`, `tone`, `stamps`, `density`), and
+   params, `attach`, `offset`, `mirror`, `repeat`, `detail`, `tone`, `stamps`, `density`, and a
+   mirrored part's `left`/`right` side overrides, children and all, as plan text), and
    `extras.ornisculpt.frame`: the node's model-space transform as exported (a column-major 4×4),
    and `extras.ornisculpt.order`: its place among its siblings (DCCs reorder them, Blender by
    name, and the build order, so bone order and the body's cache key, depends on it).
@@ -53,7 +54,9 @@ The scene has three kinds of node.
      and an empty moves the same way in every DCC; bones in Blender only move in edit mode, and
      its importer re-orients them.
    - Mirrored and repeated parts export their first copy only (`.l`, `.0`): the logical one. The
-     reference mesh shows the others.
+     reference mesh shows the others. A side override (a lobster's crusher claw) is not expanded
+     into empties of its own: it rides inside `part` and round-trips with it, but a DCC edits it
+     as text, and a part only the override has (its molars) has no empty to move.
 3. **Reference content**, marked `extras.ornisculpt.reference = true` and ignored on import: the
    skeleton (one joint node per bone, rest pose) and the hero-LOD skin, skinned to it. Artists
    model clothes and parts against it, and can pose it to check them.

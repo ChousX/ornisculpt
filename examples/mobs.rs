@@ -133,6 +133,8 @@ fn controls(
             stamps: default(),
             density: 1.0,
             children: vec![],
+            left: default(),
+            right: default(),
         };
         for (e, i, ..) in &mobs {
             if i.0 % 3 == 1 {
