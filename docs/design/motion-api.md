@@ -384,7 +384,8 @@ Built (2026-10-31). As it stands:
 - **Events** still fire for crowd mobs: the state machine runs on the CPU for every tier.
 - **Held tools** sample the same blend on the CPU (`CrowdSkin::blend_bone`).
 - **Uneven ground** (`motion/ground.rs`). Baked clips assume flat ground. A crowd mob whose
-  game writes `FootGround` hits (every tier gets `FootProbes` now) carries a `CrowdGround`: the
+  game writes `FootGround` hits (a mob with a `FootGround`, hero or not, gets `FootProbes`; add
+  it empty to opt a crowd mob in) carries a `CrowdGround`: the
   plane through its hits, least squares over the feet's rest spots, as a root lift and tilt
   (clamped to a 0.6 slope, 0.6 leg lengths), and each foot's distance from that plane (0.4 leg
   lengths at most), eased at 8/s. The instance carries them, and the pass applies them after

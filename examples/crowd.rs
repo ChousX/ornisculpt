@@ -22,7 +22,7 @@ use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::MobCoat;
-use ornisculpt::mob::{CrowdUploads, GenCache, Mob, MobTier, QualityProfile, TierCamera};
+use ornisculpt::mob::{CrowdInstance, CrowdUploads, GenCache, Mob, MobTier, QualityProfile, TierCamera};
 use ornisculpt::motion::{MobMotion, MotionGraph, MotionParams, library};
 use ornisculpt::num::{Saturate, ToF32};
 
@@ -161,6 +161,6 @@ fn report(
         cache.in_flight(),
         counts,
         per_frame,
-        per_frame * 32.0 / 1024.0,
+        per_frame * size_of::<CrowdInstance>().to_f32() / 1024.0,
     );
 }

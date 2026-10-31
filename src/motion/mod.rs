@@ -7,7 +7,9 @@
 //! Ground is the mob's root height unless the game writes [`FootGround`] (physics is the game's
 //! choice): read [`FootProbes`] (one ray origin per leg, cast straight down) and write the hits.
 //! Hero mobs plant their feet on the hits; crowd mobs sit on them through a [`CrowdGround`] fit
-//! (root lift and tilt, a vertical offset per foot) applied in the crowd blend.
+//! (root lift and tilt, a vertical offset per foot) applied in the crowd blend. Probes are
+//! written for hero mobs and for any mob with a `FootGround`, so a game adds an empty one to the
+//! crowd mobs it wants on its terrain.
 
 mod bake;
 mod crowd;
@@ -94,7 +96,7 @@ pub struct MobGait(pub Handle<Gait>);
 pub struct FootProbes(pub SmallVec<[Vec3; 8]>);
 
 /// Ground hit per leg, written by the game's physics. `None` (or no component) = root height.
-/// Crowd mobs with one get a [`CrowdGround`] fit.
+/// Crowd mobs with one get probes and a [`CrowdGround`] fit (add it empty to opt in).
 #[derive(Component, Clone, Debug, Default)]
 #[require(CrowdGround)]
 pub struct FootGround(pub SmallVec<[Option<Vec3>; 8]>);

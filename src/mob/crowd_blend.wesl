@@ -69,6 +69,31 @@ fn rotation(q: vec4<f32>) -> mat4x4<f32> {
     );
 }
 
+// One layer over `m`: the frame pair mixed by its packed t, then laid over (or added to) the
+// pose by its weight and the bone's mask value. Reads the layer straight from the buffer:
+// copying the instance into a function variable and indexing it would put it in scratch memory.
+fn apply(slot: u32, l: u32, bone: u32, idle: mat4x4<f32>, m: mat4x4<f32>) -> mat4x4<f32> {
+    let blend = instances[slot].layers[l].blend;
+    let tw = unpack2x16unorm(blend);
+    var w = tw.y;
+    if w <= 0.0 {
+        return m;
+    }
+    let mask_bits = instances[slot].layers[l].mask;
+    let mask = mask_bits & MASK_ALL;
+    if mask != MASK_ALL {
+        w *= row_value(mask, bone);
+        if w <= 0.0 {
+            return m;
+        }
+    }
+    let f = clips[instances[slot].layers[l].frame_a + bone] * (1.0 - tw.x) + clips[instances[slot].layers[l].frame_b + bone] * tw.x;
+    if (mask_bits & ADDITIVE) != 0u {
+        return m + (f - idle) * w;
+    }
+    return m * (1.0 - w) + f * w;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let slot = id.x / CROWD_SLOT;
@@ -76,46 +101,39 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if slot >= arrayLength(&instances) || id.x >= arrayLength(&bones) {
         return;
     }
-    var inst = instances[slot];
-    if bone >= inst.bones {
+    if bone >= instances[slot].bones {
         return;
     }
-    let idle = clips[inst.idle + bone];
+    let idle = clips[instances[slot].idle + bone];
     var m = idle;
-    for (var l = 0u; l < 3u; l++) {
-        let layer = inst.layers[l];
-        let tw = unpack2x16unorm(layer.blend);
-        var w = tw.y;
-        if w <= 0.0 {
-            continue;
-        }
-        let mask = layer.mask & MASK_ALL;
-        if mask != MASK_ALL {
-            w *= row_value(mask, bone);
-        }
-        if w <= 0.0 {
-            continue;
-        }
-        let f = clips[layer.frame_a + bone] * (1.0 - tw.x) + clips[layer.frame_b + bone] * tw.x;
-        if (layer.mask & ADDITIVE) != 0u {
-            m += (f - idle) * w;
-        } else {
-            m = m * (1.0 - w) + f * w;
-        }
-    }
+    m = apply(slot, 0u, bone, idle, m);
+    m = apply(slot, 1u, bone, idle, m);
+    m = apply(slot, 2u, bone, idle, m);
     // The ground: the pose tilted about the mob's origin and raised, then each leg's bones moved
     // by their foot's offset, more the further down the leg.
-    if inst.lift != 0.0 || inst.tilt.w != 1.0 {
-        m = rotation(inst.tilt) * m;
-        m[3].y += inst.lift;
+    let tilt = instances[slot].tilt;
+    let lift = instances[slot].lift;
+    if lift != 0.0 || tilt.w != 1.0 {
+        m = rotation(tilt) * m;
+        m[3].y += lift;
     }
-    if inst.legs != MASK_ALL {
-        let leg = row_value(inst.legs, bone);
+    let legs = instances[slot].legs;
+    if legs != MASK_ALL {
+        let leg = row_value(legs, bone);
         if leg >= 0.0 {
             let li = u32(leg + 0.5);
-            let pair = unpack2x16unorm(inst.feet[li / 2u]);
+            var pair: vec2<f32>;
+            if li < 2u {
+                pair = unpack2x16unorm(instances[slot].feet.x);
+            } else if li < 4u {
+                pair = unpack2x16unorm(instances[slot].feet.y);
+            } else if li < 6u {
+                pair = unpack2x16unorm(instances[slot].feet.z);
+            } else {
+                pair = unpack2x16unorm(instances[slot].feet.w);
+            }
             let offset = (select(pair.x, pair.y, (li & 1u) == 1u) - 0.5) * FOOT_RANGE;
-            m[3].y += offset * row_value(inst.legs + ROW_MATRICES, bone);
+            m[3].y += offset * row_value(legs + ROW_MATRICES, bone);
         }
     }
     bones[id.x] = m;
