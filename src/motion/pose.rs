@@ -132,8 +132,9 @@ pub(super) fn advance_clocks(
     });
 }
 
-/// Rays down from above each foot's rest spot, for the game's ground probe.
-pub(super) fn write_probes(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, &mut FootProbes), With<MobSkeleton>>) {
+/// Rays down from above each foot's rest spot, for the game's ground probe (every tier: crowd
+/// mobs sit on the hits through their [`CrowdGround`](super::CrowdGround)).
+pub(super) fn write_probes(assets: MotionAssets, mut mobs: Query<(&Transform, &MobBody, &mut FootProbes)>) {
     mobs.par_iter_mut().for_each(|(tf, body, mut probes)| {
         let Some(f) = assets.frame(body, None, tf) else { return };
         probes.0.clear();

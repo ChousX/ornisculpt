@@ -86,7 +86,7 @@ fn setup(
     for (i, (path, root)) in BODIES.iter().zip(ROOTS).cycle().take(count.0).enumerate() {
         let mut mob = crowd::spawn(&mut commands, &assets, i, side, (*path, root));
         if let Some(graph) = &graph {
-            let action = ["attack", "shake", "wave", "rear"].get(i % 4).copied().unwrap_or("attack");
+            let action = ["attack", "shake", "eat", "wave", "rear"].get(i % 5).copied().unwrap_or("attack");
             mob.insert((MobMotion::new(graph.clone()), Actor { action, every: 6.0, next: (i % 60).to_f32().mul_add(0.1, 3.0) }));
         }
         // `ORNISCULPT_COATS=1`: each body its own coat, a quarter plain.

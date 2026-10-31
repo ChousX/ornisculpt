@@ -383,8 +383,19 @@ Built (2026-10-31). As it stands:
   cycles shows the heavier one (no two-cycle mix in one layer).
 - **Events** still fire for crowd mobs: the state machine runs on the CPU for every tier.
 - **Held tools** sample the same blend on the CPU (`CrowdSkin::blend_bone`).
+- **Uneven ground** (`motion/ground.rs`). Baked clips assume flat ground. A crowd mob whose
+  game writes `FootGround` hits (every tier gets `FootProbes` now) carries a `CrowdGround`: the
+  plane through its hits, least squares over the feet's rest spots, as a root lift and tilt
+  (clamped to a 0.6 slope, 0.6 leg lengths), and each foot's distance from that plane (0.4 leg
+  lengths at most), eased at 8/s. The instance carries them, and the pass applies them after
+  the layers: the whole pose tilted about the mob's origin and raised, then each leg's bones
+  moved by their foot's offset times how far down the leg they sit (a per-body pair of rows
+  baked with the gait clips: leg index and fraction, hips 0, feet 1), so a leg stretches or
+  shortens onto a step rather than the hero's IK bending it. The game keeps the `Transform`
+  on its terrain as before. `examples/slope.rs` shows it.
 - Not yet: `PlayCycle` (direct plays) in crowd tiers; the graph's own gait cycles (the body's
-  default gait modes play instead); freeing a body's block when the body or graph goes.
+  default gait modes play instead); freeing a body's block when the body or graph goes; held
+  tools ignore the ground fit's foot offsets (they take the lift and tilt).
 
 ## 8. Built-in library
 

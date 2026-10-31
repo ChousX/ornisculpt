@@ -23,6 +23,7 @@ use super::cycle::Cycle;
 #[cfg(test)]
 use super::cycle::CycleKind;
 use super::graph::{CPlay, ComposedGraph, LayerMode, MotionGraph};
+use super::ground::CrowdGround;
 use super::eval::MotionRig;
 use super::player::MotionRuntime;
 use super::stages::leg_length;
@@ -338,10 +339,10 @@ pub(super) fn crowd_animate(
     skin: Res<CrowdSkin>,
     crowd: Res<CrowdCycles>,
     mut uploads: ResMut<CrowdUploads>,
-    mut mobs: Query<(&MobBody, &CrowdSlot, &Locomotion, &GaitClock, Option<&MotionRuntime>, &mut CrowdUploaded), Without<MobSkeleton>>,
+    mut mobs: Query<(&MobBody, &CrowdSlot, &Locomotion, &GaitClock, Option<&MotionRuntime>, Option<&CrowdGround>, &mut CrowdUploaded), Without<MobSkeleton>>,
     mut changed: Local<Parallel<Vec<(u32, CrowdInstance)>>>,
 ) {
-    mobs.par_iter_mut().for_each(|(body, slot, loco, clock, rt, mut uploaded)| {
+    mobs.par_iter_mut().for_each(|(body, slot, loco, clock, rt, ground, mut uploaded)| {
         let Some(layout) = skin.layout(body.0.id()) else { return };
         let Some(b) = bodies.get(&body.0) else { return };
         let leg = leg_length(&b.anatomy);
@@ -352,6 +353,9 @@ pub(super) fn crowd_animate(
             && let Some(clips) = crowd.get(body.0.id(), key)
         {
             graph_layers(rt, graph, clips, layout.bones, &mut instance);
+        }
+        if let Some(g) = ground.filter(|g| !g.is_flat()) {
+            instance.ground(g.lift, g.tilt, &g.feet);
         }
         if instance != uploaded.0 {
             uploaded.0 = instance;

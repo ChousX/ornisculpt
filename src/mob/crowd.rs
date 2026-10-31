@@ -20,7 +20,7 @@ use bevy::render::storage::{ShaderBuffer, ShaderBufferData};
 use bytemuck::{Pod, Zeroable};
 
 use super::GeneratedBody;
-use crate::anatomy::CROWD_SLOT;
+use crate::anatomy::{Anatomy, CROWD_SLOT};
 use crate::motion::{BAKE_FRAMES, BakedMotion};
 use crate::num::{Clamp, Idx, Saturate, ToF32, usize_to_u64};
 
@@ -48,6 +48,8 @@ pub const LAYER_ADDITIVE: u32 = 0x8000_0000;
 /// Matrices a per-bone row (a mask, say) takes in the atlas: one float per crowd slot entry,
 /// padded to whole matrices.
 pub const ROW_MATRICES: usize = CROWD_SLOT.div_ceil(16);
+/// Metres a packed foot offset spans (unorm16 over ±half of it).
+pub const FOOT_RANGE: f32 = 8.0;
 
 /// One layer of a [`CrowdInstance`] (matches `CrowdLayer` in WESL): a pair of atlas frames mixed
 /// by `t`, laid over the pose below by `weight` × the mask row's weight for the bone.
@@ -99,23 +101,55 @@ pub fn unpack_unorm2(v: u32) -> (f32, f32) {
 /// Per-slot blend instructions for the compute pass (matches `CrowdInstance` in WESL).
 ///
 /// The pose starts as the body's idle and each layer in turn mixes its frame pair in (or adds
-/// its difference from the idle) by its weight and mask.
+/// its difference from the idle) by its weight and mask. Then the ground: the whole pose is
+/// tilted about the mob's origin and raised by `lift`, and each leg's bones move up or down by
+/// its foot's offset times how far down the leg they are (`legs` rows).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct CrowdInstance {
     /// Atlas matrix index of the idle pose (bone 0).
     pub idle: u32,
     /// Crowd slot entries to write (bones, then soft regions); 0 disables the slot.
     pub bones: u32,
-    pub pad: [u32; 2],
+    /// Atlas index of the body's leg rows (which leg each entry hangs from, then how far down
+    /// it), [`MASK_ALL`] for none.
+    pub legs: u32,
+    /// The root raised, metres.
+    pub lift: f32,
+    /// The root's tilt (a quaternion, mob space).
+    pub tilt: [f32; 4],
+    /// Eight foot offsets (metres over [`FOOT_RANGE`]) as unorm16 pairs, in leg order.
+    pub feet: [u32; 4],
     pub layers: [CrowdLayer; CROWD_LAYERS],
 }
 
+impl Default for CrowdInstance {
+    fn default() -> Self {
+        Self { idle: 0, bones: 0, legs: MASK_ALL, lift: 0.0, tilt: Quat::IDENTITY.to_array(), feet: [pack_unorm2(0.5, 0.5); 4], layers: [CrowdLayer::default(); CROWD_LAYERS] }
+    }
+}
+
 impl CrowdInstance {
-    /// Standing in the idle pose.
+    /// Standing in the idle pose on flat ground.
     #[must_use]
     pub fn standing(layout: &ClipLayout) -> Self {
-        Self { idle: layout.base, bones: layout.bones, ..default() }
+        Self { idle: layout.base, bones: layout.bones, legs: layout.legs, ..default() }
+    }
+
+    /// Sits the pose on the ground: raised by `lift`, tilted by `tilt`, each foot moved by
+    /// `feet` (metres, leg order; at most eight).
+    pub fn ground(&mut self, lift: f32, tilt: Quat, feet: &[f32]) {
+        self.lift = lift;
+        self.tilt = tilt.to_array();
+        let at = |i: usize| feet.get(i).copied().unwrap_or(0.0) / FOOT_RANGE + 0.5;
+        self.feet = std::array::from_fn(|k| pack_unorm2(at(2 * k), at(2 * k + 1)));
+    }
+
+    /// Foot `leg`'s offset, metres.
+    #[must_use]
+    pub fn foot(&self, leg: usize) -> f32 {
+        let pair = self.feet.get(leg / 2).map_or((0.5, 0.5), |p| unpack_unorm2(*p));
+        (if leg % 2 == 0 { pair.0 } else { pair.1 } - 0.5) * FOOT_RANGE
     }
 
     /// Adds `layer` in the first free slot; a full instance drops it (the caller ranks layers).
@@ -137,7 +171,53 @@ pub struct ClipLayout {
     /// Atlas index of the idle pose; clip `m`, frame `f` is at `base + bones·(1 + m·F + f)`.
     pub base: u32,
     pub bones: u32,
-    pub modes: u32
+    pub modes: u32,
+    /// Atlas index of the body's leg rows (see [`leg_rows`]).
+    pub legs: u32,
+}
+
+/// Two per-bone rows for the ground fit, as atlas matrices.
+///
+/// Which leg each crowd slot entry hangs from (its index as a float, −1 for none), and how far
+/// down that leg it sits (0 at the hip, 1 at the foot and below).
+#[must_use]
+pub fn leg_rows(anatomy: &Anatomy) -> Vec<[f32; 16]> {
+    let skeleton = &anatomy.skeleton;
+    let mut of_bone: Vec<(f32, f32)> = vec![(-1.0, 0.0); skeleton.len()];
+    for (li, leg) in anatomy.legs.iter().enumerate() {
+        let last = leg.chain.len().saturating_sub(1).max(1).to_f32();
+        for (k, b) in leg.chain.iter().enumerate() {
+            if let Some(slot) = of_bone.get_mut(b.index()) {
+                *slot = (li.to_f32(), (k.to_f32() / last).min(1.0));
+            }
+        }
+    }
+    // Whatever grows from a leg bone (toes, a sole) goes with it.
+    for i in 0..skeleton.len() {
+        let inherited = skeleton.bones.get(i).and_then(|b| b.parent).and_then(|p| of_bone.get(p.index())).copied();
+        if let (Some(slot), Some(parent)) = (of_bone.get_mut(i), inherited)
+            && slot.0 < 0.0
+            && parent.0 >= 0.0
+        {
+            *slot = parent;
+        }
+    }
+    let of = |b: crate::anatomy::BoneId| of_bone.get(b.index()).copied().unwrap_or((-1.0, 0.0));
+    #[cfg(feature = "soft-tissue")]
+    let soft = crate::soft::SoftTissue::of(anatomy);
+    let entries: Vec<(f32, f32)> = {
+        let bones = skeleton.crowd.bones.iter().map(|b| of(*b));
+        #[cfg(feature = "soft-tissue")]
+        let bones = bones.chain(soft.crowd.iter().map(|r| of(r.bone)));
+        bones.collect()
+    };
+    let entries = &entries;
+    let row = |pick: fn(&(f32, f32)) -> f32| {
+        (0..ROW_MATRICES).map(move |m| std::array::from_fn(|i| entries.get(m * 16 + i).map_or(-1.0, pick)))
+    };
+    let mut out: Vec<[f32; 16]> = row(|e| e.0).collect();
+    out.extend(row(|e| e.1));
+    out
 }
 
 impl ClipLayout {
@@ -278,6 +358,19 @@ pub fn blend_with(instance: &CrowdInstance, bone: u32, matrix: impl Fn(u32) -> O
             m = m * (1.0 - w) + f * w;
         }
     }
+    // The ground.
+    let tilt = Quat::from_array(instance.tilt);
+    if instance.lift != 0.0 || tilt != Quat::IDENTITY {
+        m = Mat4::from_quat(tilt) * m;
+        m.w_axis.y += instance.lift;
+    }
+    if instance.legs != MASK_ALL {
+        let leg = row(instance.legs)?;
+        if leg >= 0.0 {
+            let frac = row(instance.legs + ROW_MATRICES.clamp_u32())?;
+            m.w_axis.y = instance.foot((leg + 0.5).sat_usize()).mul_add(frac, m.w_axis.y);
+        }
+    }
     Some(m)
 }
 
@@ -311,15 +404,17 @@ pub(super) fn register_clips(
         let Some(body) = bodies.get(*id) else { continue };
         let m = &body.motion;
         let bones = m.idle.len().clamp_u32();
-        let mut data: Vec<[f32; 16]> = Vec::with_capacity(m.idle.len() * (1 + m.clips.len() * BAKE_FRAMES));
+        let mut data: Vec<[f32; 16]> = Vec::with_capacity(m.idle.len() * (1 + m.clips.len() * BAKE_FRAMES) + 2 * ROW_MATRICES);
         data.extend_from_slice(&m.idle);
         for clip in &m.clips {
             for frame in &clip.frames {
                 data.extend_from_slice(frame);
             }
         }
+        let legs = data.len().clamp_u32();
+        data.extend(leg_rows(&body.anatomy));
         let base = skin.append(Arc::new(data), &mut uploads);
-        skin.atlas.insert(*id, ClipLayout { base, bones, modes: m.clips.len().clamp_u32() });
+        skin.atlas.insert(*id, ClipLayout { base, bones, modes: m.clips.len().clamp_u32(), legs: base + legs });
     }
 }
 
@@ -359,7 +454,11 @@ mod tests {
     #[test]
     fn instance_layout_matches_the_shader() {
         assert_eq!(size_of::<CrowdLayer>(), 16);
-        assert_eq!(size_of::<CrowdInstance>(), 16 + CROWD_LAYERS * 16);
+        assert_eq!(size_of::<CrowdInstance>(), 48 + CROWD_LAYERS * 16);
+        let mut inst = CrowdInstance::default();
+        inst.ground(0.1, Quat::IDENTITY, &[0.25, -0.125, 1.0]);
+        assert!((inst.foot(0) - 0.25).abs() < 1e-3 && (inst.foot(1) + 0.125).abs() < 1e-3 && (inst.foot(2) - 1.0).abs() < 1e-3);
+        assert!(inst.foot(3).abs() < 1e-3 && inst.foot(7).abs() < 1e-3, "unset feet sit on the ground");
         let (t, w) = unpack_unorm2(pack_unorm2(0.25, 0.8));
         assert!((t - 0.25).abs() < 1e-4 && (w - 0.8).abs() < 1e-4);
         assert!(CrowdLayer::new(0, 0, 0.5, 0.0, MASK_ALL).is_empty());
@@ -388,5 +487,28 @@ mod tests {
         assert!(x(2).is_none(), "past the slot's bones");
         assert!(inst.push(CrowdLayer::new(2, 2, 0.0, 1.0, MASK_ALL)));
         assert!(!inst.push(CrowdLayer::new(2, 2, 0.0, 1.0, MASK_ALL)), "three layers at most");
+    }
+
+    /// The ground fit on the blend: bone 1 hangs from leg 0 at frac 0.5 (rows at 5 and 5 +
+    /// `ROW_MATRICES`), so it takes half the foot's offset; the lift and a 90° roll reach both.
+    #[test]
+    fn ground_moves_the_blend() {
+        let bones = 2;
+        let mat = |x: f32| Mat4::from_translation(Vec3::X * x).to_cols_array();
+        let mut legs = vec![[-1.0f32; 16]; 2 * ROW_MATRICES];
+        let (leg_row, frac_row) = legs.split_at_mut(ROW_MATRICES);
+        if let (Some(leg), Some(frac)) = (leg_row.first_mut(), frac_row.first_mut()) {
+            leg[1] = 0.0;
+            frac[1] = 0.5;
+        }
+        let atlas: Vec<[f32; 16]> = [mat(1.0), mat(1.0)].into_iter().chain(legs).collect();
+        let lookup = |i: u32| atlas.get(i.idx()).copied();
+        let mut inst = CrowdInstance { idle: 0, bones, legs: 2, ..default() };
+        inst.ground(0.3, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), &[0.2]);
+        let p = |b: u32| blend_with(&inst, b, lookup).map(|m| m.w_axis.truncate());
+        let b0 = p(0).unwrap();
+        assert!((b0 - Vec3::new(0.0, 1.3, 0.0)).length() < 1e-4, "rolled up and lifted: {b0}");
+        let b1 = p(1).unwrap();
+        assert!((b1 - Vec3::new(0.0, 1.4, 0.0)).length() < 1e-3, "plus half the foot offset: {b1}");
     }
 }
