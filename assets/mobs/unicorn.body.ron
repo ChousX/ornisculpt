@@ -1,7 +1,9 @@
 // A unicorn: a fine-boned, Arabian-lined horse (withers ~1.55 m): a dished face with large eyes
 // and small, curved ears, a long arched neck, a short back, a high-set tail, slender legs with
 // feathered fetlocks. A long mane and forelock and a flowing tail are hair cards. One spiral horn
-// (parts/horns.gltf, tools/gen_horns.py) rises from the forehead, angled forward.
+// rises from the forehead, angled forward: a procedural `Horn` with two ridges spiralling 4.5
+// turns (it was an authored mesh, parts/horns.gltf from tools/gen_horns.py, which stays as a sample
+// of a rigid `Mesh` part).
 (
     root: (
         name: "torso",
@@ -58,7 +60,7 @@
                         children: [
                             (name: "eye", kind: Hard((kind: Eye, size: 0.029)), attach: Eye, mirror: true),
                             // The horn, angled forward over the face.
-                            (name: "horn", kind: Hard((kind: Mesh(path: "parts/horns.gltf#Mesh0/Primitive0", scale: 1.0))), attach: Crown, offset: (translate: (0.0, -0.02, 0.07), rotate_deg: (38.0, 0.0, 0.0))),
+                            (name: "horn", kind: Hard((kind: Horn, size: 0.55, curve: 0.0, twist: 4.5, shape: (base: Some(0.062), taper: 0.85, ridges: 2, ridge_depth: 0.13))), attach: Crown, offset: (translate: (0.0, -0.02, 0.07), rotate_deg: (-5.0, 0.0, 0.0))),
                             (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.14, radius: (curve: [(0.0, 0.7), (0.4, 1.0), (1.0, 0.12)], scale: 0.03, cross: Flat(aspect: 2.0)), curl: 60.0, blend: 0.01))), attach: Ear, mirror: true),
                             // Forelock: hair from the poll falling over the forehead.
                             (name: "forelock", kind: Mass((shape: Ellipsoid, size: (0.035, 0.016, 0.07), blend: 0.02)), attach: Crown, offset: (translate: (0.0, -0.03, -0.01))),
