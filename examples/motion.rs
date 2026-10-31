@@ -29,13 +29,14 @@ mod common;
 use common::{Orbit, ShotTarget, default_plugins, shot_frames, spawn_stage, tier_env};
 
 /// (body plan, coat).
-const BODIES: [(&str, Option<&str>); 6] = [
+const BODIES: [(&str, Option<&str>); 7] = [
     ("mobs/man.body.ron", Some("coats/skin_fair.coat.ron")),
     ("mobs/ox.body.ron", Some("coats/hereford.coat.ron")),
     ("mobs/horse.body.ron", Some("coats/bay.coat.ron")),
     ("mobs/dragon.body.ron", Some("coats/chimera.coat.ron")),
     ("mobs/bird.body.ron", Some("coats/bird.coat.ron")),
     ("mobs/spider.body.ron", Some("coats/wolf_spider.coat.ron")),
+    ("mobs/centipede.body.ron", Some("coats/centipede.coat.ron")),
 ];
 /// Leg lengths per second.
 const SPEEDS: [(&str, f32); 4] = [("stand", 0.0), ("walk", 1.0), ("trot", 2.5), ("gallop", 4.5)];

@@ -664,7 +664,7 @@ mod fingerprint_probe {
     fn mesh_times() {
         let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
         let settings = SurfaceSettings::default();
-        for body in ["horse", "spider", "lobster"] {
+        for body in ["horse", "spider", "lobster", "centipede"] {
             let anatomy = build_src(&std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap());
             let mut times: Vec<f32> = (0..5)
                 .map(|_| {

@@ -327,6 +327,38 @@ mod tests {
         }
     }
 
+    /// The centipede: sixteen pairs of legs meshed apart, within every cap. Its legs share one
+    /// set of regions per side (`share_regions`), so a coat marks them as one and the body stays
+    /// inside the region budget; its bones fit the hero cap, and the crowd skeleton folds to its own.
+    #[test]
+    fn centipede_fits_the_caps() {
+        let a = build_src(include_str!("../../assets/mobs/centipede.body.ron"));
+        assert_eq!(a.legs.len(), 32);
+        let (bones, crowd, regions) = (a.skeleton.len(), a.skeleton.crowd.bones.len(), a.regions.regions.len());
+        let crowd_legs = a.skeleton.crowd.bones.iter().filter(|b| a.skeleton.bones.get(b.index()).is_some_and(|b| b.name.starts_with("limb"))).count();
+        println!("centipede: {bones} bones, {crowd} crowd bones ({crowd_legs} of them leg bones), {regions} regions");
+        assert!(bones <= MAX_BONES, "{bones} bones");
+        assert!(crowd <= MAX_CROWD_BONES, "{crowd} crowd bones");
+        assert!(regions <= RegionId::MAX, "{regions} regions");
+        let count = |s: RegionSelector| s.mask(&a).0.count_ones();
+        // Upper, lower and end, per side, shared by all sixteen pairs: a `Part` selector reaches
+        // them by the first copy's path.
+        assert_eq!(count(RegionSelector::Role(LimbRole::Locomotor)), 6);
+        assert_eq!(count(RegionSelector::And(vec![RegionSelector::Role(LimbRole::Locomotor), RegionSelector::Side(Side::Left)])), 3);
+        assert_eq!(count(RegionSelector::Part(PartPath("trunk/leg.0.l".into()))), 3);
+        assert_eq!(count(RegionSelector::Part(PartPath("trunk/leg.7.l".into()))), 0);
+        // Every leg's skin lies in the first copy's regions.
+        let first = a.parts.iter().find(|p| p.path.0 == "trunk/leg.0.l").unwrap();
+        let shared: Vec<RegionId> = first.regions.clone().map(RegionId).collect();
+        assert_eq!(shared.len(), 3, "{shared:?}");
+        for leg in a.parts.iter().filter(|p| p.path.0.starts_with("trunk/leg.") && p.path.0.ends_with(plan::LEFT_SUFFIX)) {
+            assert!(leg.regions.is_empty() || leg.path == first.path, "{}: regions {:?}", leg.path.0, leg.regions);
+            for prim in a.primitives.get(usize::try_from(leg.primitives.start).unwrap()..usize::try_from(leg.primitives.end).unwrap()).unwrap() {
+                assert!(shared.contains(&prim.region), "{}: region {:?} not in {shared:?}", leg.path.0, prim.region);
+            }
+        }
+    }
+
     /// The dragon past the old caps of 64 bones and 64 regions: its hard parts take no regions
     /// (it sat at 64 with its spine series cut down), and its two-segment clawed toes (78 bones
     /// in all, 62 with one segment) fit the raised bone budget while the crowd skeleton stays

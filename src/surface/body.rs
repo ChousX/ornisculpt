@@ -1392,7 +1392,7 @@ mod apart_tests {
         let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
         let mut bodies: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".body.ron").map(str::to_owned)).collect();
         bodies.sort();
-        assert!(bodies.iter().any(|b| b == "lobster"), "{bodies:?}");
+        assert!(bodies.iter().any(|b| b == "centipede"), "{bodies:?}");
         let mut over = Vec::new();
         for body in bodies {
             let text = std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap();
@@ -1437,7 +1437,7 @@ mod apart_tests {
     fn whole_field_matches_its_chunks() {
         use crate::surface::Field;
         let mut off = Vec::new();
-        for body in ["hexapod", "lobster", "spider"] {
+        for body in ["hexapod", "lobster", "spider", "centipede"] {
             let (_, field) = field_of(body);
             let b = field.bounds;
             let view_at = |p: Vec3A| field.view(Aabb3d { min: p - Vec3A::splat(0.03), max: p + Vec3A::splat(0.03) });

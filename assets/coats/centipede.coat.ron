@@ -1,0 +1,26 @@
+// A giant centipede: glossy dark red-brown plates, a darker seam where each ring meets the next,
+// yellow-orange legs and antennae, a redder head; a hard, slightly waxy shell.
+(
+    base: (0.3, 0.1, 0.05),
+    secondary: (0.14, 0.05, 0.03),
+    accent: (0.85, 0.55, 0.14),
+    roughness: 0.3,
+    hard: (0.05, 0.03, 0.02),
+    iris: (0.02, 0.02, 0.02),
+    coverings: [
+        (regions: All, kind: Scales((size: 0.003, relief: 0.1, contrast: 0.15))),
+    ],
+    markings: [
+        // A dark seam at every ring of the trunk.
+        (color: (0.1, 0.03, 0.02), regions: Or([Kind(TorsoRear), Kind(TorsoMid), Kind(TorsoFront)]), bands: Some((count: 12.0, width: 0.2, soft: 0.25, offset: 0.5)), strength: 0.7),
+        // Yellow legs, paler toward the tips.
+        (color: (0.85, 0.55, 0.14), regions: Role(Locomotor)),
+        (color: (0.95, 0.75, 0.3), regions: Role(Locomotor), along: Some((0.4, 1.0)), strength: 0.6),
+        // Antennae and the trailing pair yellow too.
+        (color: (0.8, 0.5, 0.14), regions: Kind(Appendage)),
+        // A redder head and first ring.
+        (color: (0.5, 0.12, 0.05), regions: Or([Kind(Skull), Kind(Snout), Kind(Face)]), strength: 0.8),
+        // Paler underside.
+        (color: (0.55, 0.3, 0.14), facing: Some((dir: (0.0, -1.0, 0.0), from: -0.1, to: 0.6)), strength: 0.7),
+    ],
+)

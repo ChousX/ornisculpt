@@ -638,6 +638,13 @@ mod tests {
         cell_lists_reproduce(include_str!("../../assets/mobs/quadruped.body.ron"));
     }
 
+    /// The same for a body with more limbs than the shader keeps apart in a cell: a centipede's
+    /// thirty-two legs, each cell reaching a few of them.
+    #[test]
+    fn cell_lists_reproduce_the_centipede() {
+        cell_lists_reproduce(include_str!("../../assets/mobs/centipede.body.ron"));
+    }
+
     fn cell_lists_reproduce(plan: &str) {
         let anatomy = build_src(plan);
         let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
