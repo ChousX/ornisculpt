@@ -40,7 +40,7 @@ Research only. No files were edited and no builds were run. File:line references
   - It is added as `PrimShape::Grid` with a `Union` op and a smooth-min `blend` (`parts.rs:790-798`), then skinned automatically with no authored weights.
   - The mesh must be watertight and consistently wound (`external.rs:88-119`).
   - Detail is limited to about `extent / resolution`.
-  - `types.md:31` still says the sign comes from a raycast; the code now uses normals, so that doc line is stale.
+  - `types.md` §2.10 now says the sign comes from pseudo-normals, as the code does (it used to say a raycast).
 - **Hard is a separate rigid mesh:**
   - It uses fixed vertex data and `MaterialSlot::Hard` (`hard.rs:110-130`).
   - If the glTF has no normals, every normal becomes +Y, which shades flat and wrong.
@@ -95,7 +95,7 @@ Research only. No files were edited and no builds were run. File:line references
   - The springs are included in the crowd bake.
 - **LOD:** Near and Far are decimated to 50% and 25% and pushed out by half a voxel.
 - **Shading:** one Cloth submesh with an 8-colour palette and a procedural weave.
-- **Cost** (`types.md:18`): 4000 dressed mobs take about 23–27 ms per frame, against about 15 ms undressed.
+- **Cost** (`types.md` §13): 4000 dressed mobs take about 23–27 ms per frame, against about 15 ms undressed.
 
 ### B2. Gaps
 | Requirement | Status |
