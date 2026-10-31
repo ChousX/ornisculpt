@@ -533,7 +533,7 @@ mod tests {
                 out.normals.push(Vec3::Z * facing);
                 out.joints.push([0; 4]);
                 out.weights.push([1.0, 0.0, 0.0, 0.0]);
-                let data = MobVertexData { region: RegionId(0), cavity: 0, shade: 0, limb_t: 0, primary_bone: BoneId(0), layer: PrimLayer::Base };
+                let data = MobVertexData { region: RegionId(0), cavity: 0, shade: 0, limb_t: 0, primary_bone: BoneId(0), layer: PrimLayer::Base, hard: None };
                 out.mob_data.push(data.pack());
                 out.cloth.push(if slot == MaterialSlot::Cloth { 0 } else { NOT_CLOTH });
                 // Skin flexes and jiggles more towards +x.

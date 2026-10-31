@@ -135,6 +135,7 @@ pub fn skin_and_attrs(mesh: RawMesh, field: &BodyField, anatomy: &Anatomy) -> Bo
             limb_t: (limb_t * 255.0).sat_u8(),
             primary_bone: bone,
             layer: info.layer,
+            hard: None,
         };
         (Vec3::from(normal), info.influences.bones.map(|b| u16::from(b.0)), info.influences.weights, data.pack())
     });

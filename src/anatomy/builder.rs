@@ -498,7 +498,9 @@ impl AnatomyBuilder {
         }
     }
 
-    pub fn hard_part(&mut self, bone: BoneId, model: Transform, mut params: HardParams, region: RegionId) {
+    /// Adds a hard part on `bone`, placed at `model` (logical), belonging to the current part and
+    /// to the bone's region (hard parts take no region of their own: see [`HardPart`]).
+    pub fn hard_part(&mut self, bone: BoneId, model: Transform, mut params: HardParams, side: Side) {
         let mirror = self.mirrored();
         if mirror {
             params.twist = -params.twist;
@@ -508,7 +510,9 @@ impl AnatomyBuilder {
             _ => None,
         };
         let local = self.local_of(bone, model);
-        self.anatomy.hard_parts.push(HardPart { bone, local, params, region, mesh, mirror });
+        let region = self.bone_region(bone);
+        let part = self.current();
+        self.anatomy.hard_parts.push(HardPart { bone, local, params, region, part, side, mesh, mirror });
     }
 
     pub fn socket(&mut self, name: &str, kind: SocketKind, side: Side, bone: BoneId, model: Transform, radius: f32) {

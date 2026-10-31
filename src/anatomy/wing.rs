@@ -827,7 +827,7 @@ fn build_membrane(
         let hand_dir = (wrist - arm[2].translation).normalize_or(ax.out);
         let thumb_dir = (Quat::from_axis_angle(spread.normal, 50f32.to_radians() * ax.out.x.signum()) * hand_dir + spread.normal * 0.18).normalize();
         let thumb = Transform::from_translation(wrist).with_rotation(frame_y_z(thumb_dir, spread.normal));
-        b.hard_part(arm_bones[2], thumb, HardParams { kind: HardKind::Claw, size: span * 0.05, curve: 0.5, twist: 0.0, sclera: 0.0 }, arm_region);
+        b.hard_part(arm_bones[2], thumb, HardParams { kind: HardKind::Claw, size: span * 0.05, curve: 0.5, twist: 0.0, sclera: 0.0 }, cx.side);
     }
 
     // Membrane panels between neighbouring fingers (dactylopatagium), scalloped between tips and

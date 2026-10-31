@@ -193,10 +193,20 @@ pub enum RegionSelector {
     All, Kind(RegionKind), Part(PartPath), Role(LimbRole), Side(Side),
     And(Vec<RegionSelector>), Or(Vec<RegionSelector>), AllExcept(Vec<RegionSelector>), // no Box: Bevy reflect can't represent it
 }
-impl RegionSelector { pub fn mask(&self, t: &RegionTable, a: &Anatomy) -> RegionMask; }
+impl RegionSelector {
+    pub fn mask(&self, a: &Anatomy) -> RegionMask;
+    pub fn hard_mask(&self, a: &Anatomy) -> Vec<bool>; // one per hard part
+}
 #[derive(Reflect, Clone, Copy, Default)] pub struct RegionMask(pub u64);
 ```
 - Example: "fur on everything except limb ends and the face" is `AllExcept([Kind(LimbEnd), Kind(Face)])`. That works for a biped and a hexapod alike.
+- **Hard parts take no region** (2026-10-31). A claw, horn or tooth belongs to the region of the
+  skin it grows from (`HardPart::region`, its bone's), and carries the part that made it and its
+  side. No region of kind `Hard` exists any more; `Anatomy::hard_region` stands each hard part in
+  as one for the selectors, so `Kind(Hard)`, `Part(...)`, `Side(...)` and `Role(...)` pick hard
+  parts as they did, through `hard_mask`. The markings read the hard part's index from the vertex
+  data (`MobVertexData::hard`, in the layer byte as `4 + index`, up to 252 hard parts). The
+  dragon's 45 hard parts had taken 45 of the 64 regions.
 
 ### 2.7 Built anatomy (resolved, CPU-side, not authored)
 ```rust

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use super::{BoneId, HardParams, LodLevel, RegionId, SdfGrid, TriMesh};
+use super::{BoneId, HardParams, LodLevel, RegionId, SdfGrid, Side, TriMesh};
 
 /// One SDF primitive, owned by a bone. Its owning bone is also its skin-weight source.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,12 +77,21 @@ pub enum PrimLayer {
 }
 
 /// A non-SDF mesh piece (claw, horn, beak, tooth, eye), 100% weighted to its bone.
+///
+/// A hard part takes no region of its own: it belongs to the region of the skin it grows from
+/// (`region`), and coats pick it out through [`Anatomy::hard_region`](super::Anatomy::hard_region),
+/// which stands it in as a `Hard` region of its own part and side.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HardPart {
     pub bone: BoneId,
     pub local: Transform,
     pub params: HardParams,
+    /// The region of the skin it grows from (its bone's).
     pub region: RegionId,
+    /// Index into [`Anatomy::parts`](super::Anatomy::parts): the part that made it (a `Hard`
+    /// node, or the digits a claw tips).
+    pub part: u16,
+    pub side: Side,
     /// Resolved mesh for `HardKind::Mesh`.
     pub mesh: Option<Arc<TriMesh>>,
     /// Right-side copy: geometry must be reflected across local X.

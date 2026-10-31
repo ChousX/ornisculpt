@@ -48,6 +48,11 @@ pub enum RegionKind {
     /// Ears, antennae, tentacles.
     Appendage,
     Mass,
+    /// Claws, horns, teeth, beaks and plates. No region carries this kind: hard parts belong to
+    /// the region of the skin under them, and selectors match them through
+    /// [`Anatomy::hard_region`], which stands each one in as a `Hard` region of its own part
+    /// (`Kind(Hard)` picks every hard part and nothing else; see
+    /// [`RegionSelector::hard_mask`]).
     Hard,
     /// Wing arm and finger bones (and insect wing hinges).
     Wing,
@@ -144,6 +149,15 @@ impl RegionSelector {
             }
         }
         mask
+    }
+
+    /// Which of `anatomy`'s hard parts the selector picks, in their order. A hard part counts as
+    /// a `Hard` region of the part that made it, on its side ([`Anatomy::hard_region`]), so
+    /// `Part`, `Side` and `Role` reach the claws, horns and teeth a part grows as its skin's
+    /// selectors do, and `Kind(Hard)` picks them all.
+    #[must_use]
+    pub fn hard_mask(&self, anatomy: &Anatomy) -> Vec<bool> {
+        anatomy.hard_parts.iter().map(|h| self.matches(&anatomy.hard_region(h), anatomy)).collect()
     }
 
     fn matches(&self, def: &RegionDef, anatomy: &Anatomy) -> bool {

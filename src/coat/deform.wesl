@@ -88,7 +88,8 @@ struct CoatVertex {
     @location(11) soft: vec4<u32>,
     @if(COAT_PAINT)
     @location(12) paint: vec4<f32>,
-    // `ATTRIBUTE_MOB_DATA`: region | cavity << 8 | shade << 16 | limb_t << 24, bone | layer << 8.
+    // `ATTRIBUTE_MOB_DATA`: region | cavity << 8 | shade << 16 | limb_t << 24, bone | layer << 8
+    // (the layer byte is 4 + the hard-part index on a hard part's vertices; see `MobVertexData`).
     @if(COAT_DATA)
     @location(13) data: vec2<u32>,
 };

@@ -151,6 +151,8 @@ pub fn paint(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: Lod
     let (low, high) = body.positions.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
     let height = (high - low).max(1e-3);
     let masks: Vec<_> = coat.markings.iter().map(|m| m.regions.mask(anatomy)).collect();
+    // Hard parts belong to the skin's region under them; the selectors pick them out apart.
+    let hard_masks: Vec<Vec<bool>> = coat.markings.iter().map(|m| m.regions.hard_mask(anatomy)).collect();
     // The body's extent along each axis-banded marking's direction.
     let ranges: Vec<Option<(f32, f32)>> = coat
         .markings
@@ -184,13 +186,14 @@ pub fn paint(body: &mut BodyMeshData, coat: &Coat, anatomy: &Anatomy, level: Lod
             else {
                 return Vec4::ZERO;
             };
-            let region = MobVertexData::unpack(*data).region;
+            let MobVertexData { region, hard, .. } = MobVertexData::unpack(*data);
             let tip = reach.get(bone.index()).map_or(0.0, |&(lo, hi)| ((on_bone - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0));
             let at = At { pos, normal, height: (pos.y - low) / height, along, tip };
             let mut rgb = Vec3::ZERO;
             let mut alpha = 0.0f32;
-            for ((m, mask), range) in coat.markings.iter().zip(&masks).zip(&ranges) {
-                if !mask.contains(region) {
+            for (((m, mask), hard_mask), range) in coat.markings.iter().zip(&masks).zip(&hard_masks).zip(&ranges) {
+                let picked = hard.map_or_else(|| mask.contains(region), |h| hard_mask.get(usize::from(h)).copied().unwrap_or(false));
+                if !picked {
                     continue;
                 }
                 let w = m.strength.clamp(0.0, 1.0) * m.weight(&at, *range);

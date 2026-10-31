@@ -23,8 +23,10 @@ struct Horn {
 /// Procedural shapes are curved tapered horns, branching horns (antlers), flattened horns (beaks,
 /// nails) and spheres (eyes); tessellation drops with `level`.
 ///
-/// `None` for an authored mesh not yet loaded (see [`HardPart::mesh`]) or a bone out of range.
-pub(super) fn hard_part_mesh(part: &HardPart, anatomy: &Anatomy, level: LodLevel) -> Option<BodyMeshData> {
+/// `index` is the part's place in [`Anatomy::hard_parts`], carried in the vertex data for the
+/// coat's markings. `None` for an authored mesh not yet loaded (see [`HardPart::mesh`]) or a bone
+/// out of range.
+pub(super) fn hard_part_mesh(index: usize, part: &HardPart, anatomy: &Anatomy, level: LodLevel) -> Option<BodyMeshData> {
     let p = &part.params;
     let s = p.size;
     let (rings, sides) = match level {
@@ -103,6 +105,7 @@ pub(super) fn hard_part_mesh(part: &HardPart, anatomy: &Anatomy, level: LodLevel
         limb_t: 255,
         primary_bone: part.bone,
         layer: PrimLayer::Base,
+        hard: u8::try_from(index).ok().filter(|_| index < MobVertexData::MAX_HARD),
     }
     .pack();
     for p in &mut mesh.positions {

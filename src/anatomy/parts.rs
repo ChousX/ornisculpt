@@ -1281,7 +1281,6 @@ impl PartBuild for DigitParams {
         let spacing = self.chain.radius.scale * 2.4;
         let curl = curl_bend(&lens, self.chain.curl);
         let region = b.region(RegionKind::Digit, cx.side)?;
-        let hard_region = if self.tip.is_some() { Some(b.region(RegionKind::Hard, cx.side)?) } else { None };
         let mut end = None;
         // An opposable first digit (a thumb) roots back toward the wrist on the palm side, shorter
         // and thicker, turned to close across the palm and lifted out of the palm's plane, its tip
@@ -1313,8 +1312,8 @@ impl PartBuild for DigitParams {
             let (Some(&last), Some(&tip_frame)) = (bones.last(), frames.last()) else {
                 return Err(AnatomyError::Internal("digit without segments"));
             };
-            if let (Some(tip), Some(hr)) = (&self.tip, hard_region) {
-                b.hard_part(last, tip_frame, tip.clone(), hr);
+            if let Some(tip) = &self.tip {
+                b.hard_part(last, tip_frame, tip.clone(), cx.side);
             }
             if i == n / 2 {
                 end = Some(slot(AttachSlot::End, last, tip_frame));
@@ -1366,7 +1365,6 @@ fn authored_frame(at: &AttachPoint, cx: &BuildCx, orient: Orient) -> Transform {
 impl PartBuild for HardParams {
     fn build(&self, b: &mut AnatomyBuilder, at: AttachPoint, cx: &BuildCx) -> Result<PartSlots, AnatomyError> {
         let bone = parent_bone(&at, cx)?;
-        let region = b.region(RegionKind::Hard, cx.side)?;
         let model = match &self.kind {
             HardKind::Mesh { path, orient, .. } => {
                 if b.assets().mesh(path).is_none() {
@@ -1376,7 +1374,7 @@ impl PartBuild for HardParams {
             }
             _ => with_offset(&at, cx),
         };
-        b.hard_part(bone, model, self.clone(), region);
+        b.hard_part(bone, model, self.clone(), cx.side);
         Ok(PartSlots::default())
     }
 }

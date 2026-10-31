@@ -75,16 +75,27 @@ pub struct MobVertexData {
     pub limb_t: u8,
     pub primary_bone: BoneId,
     pub layer: PrimLayer,
+    /// On a hard part's vertices, the index of the hard part in
+    /// [`Anatomy::hard_parts`](crate::anatomy::Anatomy::hard_parts), so the coat's markings can
+    /// pick it out ([`RegionSelector::hard_mask`](crate::anatomy::RegionSelector::hard_mask));
+    /// `region` is then the skin's under it. `None` on skin, and on a hard part past
+    /// [`MAX_HARD`](Self::MAX_HARD), which the markings then treat as its skin.
+    pub hard: Option<u8>,
 }
 
 impl MobVertexData {
+    /// Hard parts the packed data can name: the layer byte holds `4 + index` (0..=3 are the tone
+    /// layers).
+    pub const MAX_HARD: usize = 252;
+
     #[must_use]
     pub const fn pack(&self) -> [u32; 2] {
-        let layer = match self.layer {
-            PrimLayer::Base => 0u8,
-            PrimLayer::Muscle => 1,
-            PrimLayer::Landmark => 2,
-            PrimLayer::Fat => 3,
+        let layer = match (self.hard, self.layer) {
+            (Some(i), _) => i.saturating_add(4),
+            (None, PrimLayer::Base) => 0u8,
+            (None, PrimLayer::Muscle) => 1,
+            (None, PrimLayer::Landmark) => 2,
+            (None, PrimLayer::Fat) => 3,
         };
         [
             u32::from_le_bytes([self.region.0, self.cavity, self.shade, self.limb_t]),
@@ -108,6 +119,7 @@ impl MobVertexData {
                 3 => PrimLayer::Fat,
                 _ => PrimLayer::Base,
             },
+            hard: if layer >= 4 { Some(layer - 4) } else { None },
         }
     }
 }
@@ -408,7 +420,12 @@ mod tests {
             limb_t: 255,
             primary_bone: BoneId(63),
             layer: PrimLayer::Landmark,
+            hard: None,
         };
         assert_eq!(MobVertexData::unpack(d.pack()), d);
+        // A hard part's vertex: the index rides in the layer byte, the layer reads as base.
+        let h = MobVertexData { hard: Some(251), layer: PrimLayer::Base, ..d };
+        assert_eq!(MobVertexData::unpack(h.pack()), h);
+        assert_eq!(h.pack()[1].to_le_bytes()[1], 255);
     }
 }

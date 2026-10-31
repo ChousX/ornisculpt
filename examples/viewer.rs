@@ -168,9 +168,10 @@ fn on_ready(
     if let Some(body) = mobs.get(viewer.mob).ok().and_then(|b| bodies.get(&b.0)) {
         let a = &body.anatomy;
         info!(
-            "ready: {} bones ({} crowd), {} primitives, {} hard parts, {} parts",
+            "ready: {} bones ({} crowd), {} regions, {} primitives, {} hard parts, {} parts",
             a.skeleton.len(),
             a.skeleton.crowd.bones.len(),
+            a.regions.regions.len(),
             a.primitives.len(),
             a.hard_parts.len(),
             a.parts.len(),

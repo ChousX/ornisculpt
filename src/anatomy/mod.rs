@@ -292,14 +292,15 @@ mod tests {
     fn region_selectors() {
         let a = build_src(QUADRUPED);
         let count = |s: RegionSelector| s.mask(&a).0.count_ones();
+        let hard = |s: RegionSelector| s.hard_mask(&a).iter().filter(|h| **h).count();
         let total = u32::try_from(a.regions.regions.len()).unwrap();
         assert_eq!(count(RegionSelector::All), total);
-        // Per leg: upper, lower, end, plus its toes (Digit) and claws (Hard).
-        assert_eq!(count(RegionSelector::Role(LimbRole::Locomotor)), 4 * 5);
+        // Per leg: upper, lower, end, plus its toes (Digit). Claws take no region of their own.
+        assert_eq!(count(RegionSelector::Role(LimbRole::Locomotor)), 4 * 4);
         assert_eq!(count(RegionSelector::Kind(RegionKind::LimbEnd)), 4);
         assert_eq!(
             count(RegionSelector::Part(PartPath("torso/limb.front".into()))),
-            2 * 5
+            2 * 4
         );
         let not_feet = RegionSelector::AllExcept(vec![RegionSelector::Kind(RegionKind::LimbEnd)]);
         assert_eq!(count(not_feet), total - 4);
@@ -308,6 +309,34 @@ mod tests {
             RegionSelector::Kind(RegionKind::LimbUpper),
         ]);
         assert_eq!(count(left), 2);
+        // Hard parts: no region carries `Hard`, but the selectors still reach them, as `Hard`
+        // regions of the parts that grew them: 16 claws on the legs and two eyes on the head.
+        assert_eq!(count(RegionSelector::Kind(RegionKind::Hard)), 0);
+        assert_eq!(hard(RegionSelector::Kind(RegionKind::Hard)), 18);
+        assert_eq!(hard(RegionSelector::All), 18);
+        assert_eq!(hard(RegionSelector::Role(LimbRole::Locomotor)), 16);
+        assert_eq!(hard(RegionSelector::Part(PartPath("torso/limb.front".into()))), 8);
+        assert_eq!(hard(RegionSelector::And(vec![RegionSelector::Side(Side::Left), RegionSelector::Kind(RegionKind::Hard)])), 9);
+        assert_eq!(hard(RegionSelector::AllExcept(vec![RegionSelector::Kind(RegionKind::Hard)])), 0);
+        // Each claw sits in its toe's region, each eye in the skull's.
+        for h in &a.hard_parts {
+            let def = a.regions.get(h.region).unwrap();
+            let kind = if h.params.kind == HardKind::Eye { RegionKind::Skull } else { RegionKind::Digit };
+            assert_eq!(def.kind, kind, "{:?}", a.hard_region(h));
+            assert!(a.hard_region(h).part.0.starts_with(&def.part.0), "{:?} under {def:?}", a.hard_region(h));
+        }
+    }
+
+    /// The dragon's budgets, now that its 45 hard parts take no regions: it used to sit at the
+    /// region cap (64) with its spine series cut down to fit.
+    #[test]
+    fn dragon_fits_its_budgets() {
+        let a = build_src(include_str!("../../assets/mobs/dragon.body.ron"));
+        let regions = a.regions.regions.len();
+        assert!(regions + a.hard_parts.len() > RegionId::MAX, "{regions} regions + {} hard parts", a.hard_parts.len());
+        assert!(regions <= RegionId::MAX - 24, "{regions} regions: the hard parts are taking regions again");
+        assert!(a.regions.regions.iter().all(|r| r.kind != RegionKind::Hard));
+        assert!(a.skeleton.len() <= MAX_BONES && a.skeleton.crowd.bones.len() <= MAX_CROWD_BONES);
     }
 
     /// Hind legs of the quadruped plan with their joints edited by `f`.
