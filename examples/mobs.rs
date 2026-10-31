@@ -26,7 +26,7 @@ use ornisculpt::mob::{
 mod common;
 use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_counts};
 
-fn main() {
+fn main() -> AppExit {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(64);
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
@@ -34,9 +34,10 @@ fn main() {
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
         .insert_resource(Orbit::from_env(0.6, 0.45, 18.0, Vec3::ZERO, (0.5, 200.0)))
         .add_observer(on_ready)
+        .add_observer(common::exit_on_body_failed)
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, orbit_camera, report, screenshot_at(300)))
-        .run();
+        .run()
 }
 
 /// Metres between neighbouring horses.

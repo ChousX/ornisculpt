@@ -57,7 +57,7 @@ use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
 use ornisculpt::mob::{
-    BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, StageTimes, TierCamera,
+    BodyFailed, BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, StageTimes, TierCamera,
     generate_body,
 };
 use ornisculpt::num::{Saturate, ToF32};
@@ -126,8 +126,10 @@ fn main() -> ExitCode {
             } else if s == "gen" {
                 run_gen(&out)
             } else {
-                run_app(s, out);
-                Ok(())
+                match run_app(s, out) {
+                    AppExit::Success => Ok(()),
+                    AppExit::Error(_) => Err("a body failed to load or generate (see the log)".into()),
+                }
             }
         }
         _ => Err(usage()),
@@ -498,7 +500,8 @@ impl Bench {
     }
 }
 
-fn run_app(scenario: &str, out: PathBuf) {
+/// Runs the app scenario; the exit says whether every body came up.
+fn run_app(scenario: &str, out: PathBuf) -> AppExit {
     let cases = match scenario {
         "hero" => (0..MOBS.len()).map(|mob| CaseKind::Still { mob }).collect(),
         "motion" => MOTION_MOBS.iter().map(|&mob| CaseKind::Motion { mob }).collect(),
@@ -548,10 +551,16 @@ fn run_app(scenario: &str, out: PathBuf) {
             metrics: BTreeMap::new(),
         })
         .add_observer(|_: On<BodyReady>, mut bench: ResMut<Bench>| bench.ready += 1)
+        // A body that fails (a bad asset) would leave a still waiting out `READY_CAP` and a crowd
+        // measuring the wrong thing: stop, with the error, whatever the mode.
+        .add_observer(|ev: On<BodyFailed>, mut exit: MessageWriter<AppExit>| {
+            error!("bench: mob {} failed: {}", ev.entity, ev.error);
+            exit.write(AppExit::error());
+        })
         .add_systems(Startup, setup)
         .add_systems(First, record_frame)
         .add_systems(Update, (drive, crowd::wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
-        .run();
+        .run()
 }
 
 #[derive(Component)]

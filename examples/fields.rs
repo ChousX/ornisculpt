@@ -31,13 +31,13 @@ use ornisculpt::surface::{BodyField, BodyFieldOptions, Displace, Field, Influenc
 mod common;
 use common::{Orbit, build_plan, default_plugins, orbit_camera, screenshot_at, spawn_stage};
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins(default_plugins(Window { title: "ornisculpt fields".into(), ..default() }))
         .insert_resource(Orbit::from_env(0.0, 0.3, 6.5, Vec3::new(0.0, 0.6, 0.6), (0.3, 30.0)))
         .add_systems(Startup, setup)
         .add_systems(Update, (orbit_camera, draw_bounds, screenshot_at(60)))
-        .run();
+        .run()
 }
 
 /// A swept tube, straight from [`sdf::sweep`].

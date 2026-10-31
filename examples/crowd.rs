@@ -26,7 +26,7 @@ mod common;
 use common::crowd::{self, BODIES, ROOTS};
 use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_counts};
 
-fn main() {
+fn main() -> AppExit {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(4000);
     App::new()
         .add_plugins((
@@ -41,7 +41,8 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(Update, (crowd::wander, orbit_camera, controls, report, screenshot_at(600)))
         .add_systems(Last, count_uploads)
-        .run();
+        .add_observer(common::exit_on_body_failed)
+        .run()
 }
 
 #[derive(Resource)]

@@ -37,7 +37,7 @@ const BODIES: [(&str, Option<&str>); 7] = [
     ("mobs/thick.body.ron", Some("coats/skin_woman.coat.ron")),
 ];
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
@@ -46,7 +46,8 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(Update, (drive, orbit_camera, draw_feet, screenshot_frames(360)))
         .add_observer(report_viability)
-        .run();
+        .add_observer(common::exit_on_body_failed)
+        .run()
 }
 
 #[derive(Resource, Default)]
