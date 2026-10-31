@@ -228,10 +228,11 @@ What the round found, for the engine:
 7. **Rest poses are authored as angles.** Arms hang in a slight A-pose, and relaxed hands,
    head carriage and weight shift all have to be found by hand. Turning the palms in needs an
    arm offset of 75° about Y.
-8. **Authoring friction.**
-   - Plans are deep RON. A missing paren fails the asset load, and a headless screenshot run
-     then waits out its timeout instead of exiting.
-   - Marking `Part(...)` paths break silently when a part is renamed.
+8. **Authoring friction.** Plans are deep RON.
+   - **Fixed** (f115db7): a missing paren used to make a headless screenshot run wait out its
+     timeout. It now fails the body through `BodyFailed`, and the run exits with the error.
+   - **Fixed** (f115db7): a marking `Part(...)` path left behind by a rename used to break
+     silently. It now warns once per body and coat.
 
 ## How the shots were taken
 

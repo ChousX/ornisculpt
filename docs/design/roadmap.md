@@ -1,7 +1,7 @@
 # Roadmap
 
-Status: **proposal** (2026-10-31, at 3735bf1). The order work should go in from here, drawn from
-the limits the design docs record as open.
+Status: **in progress.** Proposed 2026-10-31 at 3735bf1, from the limits the design docs record
+as open. Items marked *done* say where they landed.
 
 ## Where it stands
 
@@ -20,34 +20,32 @@ the limits the design docs record as open.
 
 1. **Docs that match the code.**
    - `types.md` has grown a long list of v2 notes. They should be folded into its sections.
-   - There is no README. It needs the module map, the feature flags, the consumers, and links to
-     these docs.
-2. **Bad assets fail fast.**
-   - A RON parse error leaves a headless shot waiting out its timeout (`realism.md`, limit 8). It
-     should exit with the error through `BodyFailed`.
-   - A marking or covering `Part(...)` selector that matches nothing should warn at load. Today
-     renaming a part breaks its coat silently.
-3. **A release point.** A `v0.2.0` tag on main, so the consumers can name a known-good rev.
+     Still open.
+   - *Done* (f115db7): `README.md`, with the module map, the feature flags, the consumers and
+     links to these docs.
+2. **Bad assets fail fast.** *Done* (f115db7).
+   - A plan, coat, outfit or part mesh that fails to load fails its mobs through `BodyFailed`,
+     and headless shots exit with the error.
+   - A selector that matches nothing warns once per body and coat. It warns when the body is
+     baked, not at load, because a selector can only be judged against a body.
+3. **A release point.** *Done*: `v0.2.0`.
 
 ## Phase 1: the fantasy pass's engine limits
 
-1. **Bone and region caps.**
-   - The caps are `MAX_BONES` and `Region::MAX`, 64 each (`anatomy/skeleton.rs`,
-     `anatomy/region.rs`).
-   - Hard parts stop taking a region each. They share their part's region and carry a hard-part
-     index. Most of the dragon's region budget goes back.
-   - Then either raise the bone cap or fold two-segment toes into one bone. Raising it means
-     checking the crowd's 32-bone skeleton and the preview shader.
-2. **Hard-part shapes.**
-   - Horns, tusks and spikes take a base-radius ratio, taper, curl and ridges, not a fixed
-     fraction of their size.
-   - The unicorn's spiral horn and the orc's tusks would no longer need authored meshes.
-   - These extend the one table of horn and plate sizes that the mesh and the preview share
-     (fe4a031).
-3. **Mirrored copies that differ** (a lobster's crusher and cutter).
-   - `BodyPlan::expand_symmetry` already makes each copy its own node, and a suffixed
-     `FormPatch` reaches one copy only.
-   - Plans need per-side overrides on a mirrored part built on that.
+1. **Bone and region caps.** *Done* (0dd418d).
+   - Hard parts take the region of the skin they grow from, plus a hard-part index for markings.
+     The dragon went from 64 regions to 33. `Region::MAX` stays 64.
+   - The hero bone cap is 128. It was only a constant: bone ids are bytes, and Bevy skins up to
+     256 joints. The crowd's cap stays 32.
+2. **Hard-part shapes.** *Done* (0dd418d).
+   - `HardShape` gives a base, taper, bend, ridges and rings, and the defaults build every
+     existing plan unchanged.
+   - The unicorn's horn is procedural now. The orc's tusks are thicker and splay out.
+3. **Mirrored copies that differ.** *Done* (e06c604).
+   - A mirrored part takes `left` and `right` overrides, applied in `expand_symmetry`.
+   - The lobster has a crusher claw and a cutter claw.
+   - Still open: `LimbEnd::Pincer` has no shape parameters, so the cutter differs only in size.
+     The crusher's molars could now be blunt with `HardShape`.
 4. **Later:** keeping more than 12 limbs apart (`LIMB_SLOTS`, `surface/body.rs` and
    `sdf_field.wesl`), when a centipede needs it.
 
@@ -58,14 +56,18 @@ Field and primitive changes carry over to ornisculpter's preview shaders (`--fea
 domain-expance holds every creature at `ForceTier(Hero)`, so that feet follow the ground. That
 gives up the crowd tiers, which are where the frame budget goes furthest.
 
-1. **Crowd tiers on uneven ground.** Baked clips assume flat ground. A per-mob root tilt and
-   height from the game's `FootGround` probes, plus a cheap foot offset in the blend, would let
-   distant creatures leave the hero tier.
-2. **Crowd baking of graph cycles** (`motion-api.md` §7, build step 5).
-   - Crowd tiers bake only `Gait` modes and the idle (`bake_motion`).
-   - Bake the idles and actions a body's graph uses, and blend up to three masked layers in the
-     compute pass, so crowd mobs can play idles and actions too.
-   - Add an `eat` action to `motion::library` for grazing.
+1. **Crowd tiers on uneven ground.** *Done* (1cba439).
+   - A crowd mob with a `FootGround` sits on the game's foot hits: a lift, a tilt and a per-foot
+     offset in the blend. `examples/slope.rs` shows it.
+   - Next, domain-expance can drop `ForceTier(Hero)` for distant creatures.
+2. **Crowd baking of graph cycles.** *Done* (1cba439).
+   - Each body bakes the idles and actions its graph plays, and the blend takes up to three
+     masked layers.
+   - `eat` is in `motion::library` for quadrupeds that can reach the ground.
+   - Still open:
+     - an action drops the breathing layer while it plays (three layers in all);
+     - crossfades inside a layer show only the heavier cycle;
+     - a graph's own gaits aren't baked.
 3. **Measure on the target device.** Done on 2026-10-31: the bench v5 baseline for the Steam
    Deck is in `bench/LOG.md`, and `tools/deck-bench.sh` reruns it. What it found:
    - generation is about 5 times tir's, with centres of rotation and the head's SDF
@@ -82,12 +84,21 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      4000) and the first head SDF (about 1.5 s) are then paid once per install.
 6. **Motion gaps:** `Reach` arm IK, fingers closing on a grip, `BoneScales` and custom gaits in
    crowd tiers, and crowd shadows. The game's needs set the order.
+7. **Bugs the work above turned up.**
+   - The crowd's cold-start median rose 13 % with the crowd layers (822df11), and the steady
+     frame didn't move. The cause isn't known; a Tracy trace of the cold phase is next.
+   - A headless run that exits early sometimes crashes in teardown (`free(): invalid size`, or
+     a segfault) after logging its error. This predates f115db7, so scripts should test for a
+     non-zero exit rather than 1.
 
 ## Phase 3: realism, in `realism.md`'s order
 
 1. **Faces.**
-   - Warp the MakeHuman head for the gnome and goblin, as `tools/gen_head_orc.py` did for the orc.
-   - Then choose between authored faces through `PartKind::Sculpt` and a richer procedural face.
+   - *Done* (4833358): the gnome and goblin wear the MakeHuman head warped, through the module
+     the orc's tool now shares (`tools/head_warp.py`).
+   - Next, choose between authored faces through `PartKind::Sculpt` and a richer procedural face.
+     On a sculpted head, `Kind(Face)` covers only the nostrils. A `Face` region over the sculpt's
+     front would help either way.
 2. **Bodies.**
    - Per-limb muscle and tendon stamp tables, tuned on the reference meshes in `research_notes/`.
    - Real hands.
