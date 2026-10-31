@@ -46,8 +46,16 @@ as open. Items marked *done* say where they landed.
    - The lobster has a crusher claw and a cutter claw.
    - Still open: `LimbEnd::Pincer` has no shape parameters, so the cutter differs only in size.
      The crusher's molars could now be blunt with `HardShape`.
-4. **Later:** keeping more than 12 limbs apart (`LIMB_SLOTS`, `surface/body.rs` and
-   `sdf_field.wesl`), when a centipede needs it.
+4. **More than 12 limbs apart.** *Done.*
+   - `BodyField::eval` keeps every limb apart: its per-point limb list grows past the 12 it holds
+     inline, instead of merging the extras into the last slot. Every other plan's meshes are
+     bit-identical (the arithmetic is unchanged; a constant of 48 would have cost 6 to 30 % of
+     hero meshing time in zeroed arrays). The preview shader's 12 is now a per-cell cap, which
+     the packer checks and `every_mob_fits_the_preview_cells` tests: a lobster's cell reaches 11.
+   - The centipede (`mobs/centipede.body.ron`, sixteen pairs, 127 bones, 17 regions) proves it,
+     with `share_regions` so a series of legs takes one set of regions per side.
+   - Still open: the centipede sits one bone under the hero cap, and its crowd skeleton keeps
+     only the first four legs (11 of its 32 bones), so crowd tiers can't play its wave.
 
 Field and primitive changes carry over to ornisculpter's preview shaders (`--features preview`).
 
