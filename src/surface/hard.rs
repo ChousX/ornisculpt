@@ -47,22 +47,9 @@ impl Horn {
 pub(super) fn hard_part_mesh(index: usize, part: &HardPart, anatomy: &Anatomy, level: LodLevel) -> Option<BodyMeshData> {
     let p = &part.params;
     let s = p.size;
-    let (rings, sides) = match level {
-        LodLevel::Hero => (8, 10),
-        LodLevel::Near => (5, 6),
-        LodLevel::Far => (3, 4),
-    };
-    // Ridges and rings need the mesh to follow them: more rings along a spiral or a row of rings,
-    // more sides round a lobed section. Not at `Far`, where they are below a pixel.
+    // Ridges and rings are below a pixel at `Far`: plain there.
     let shape = if level == LodLevel::Far { HardShape { ridges: 0, rings: 0, ..p.shape } } else { p.shape };
-    let (rings, sides) = if shape.ridges > 0 || shape.rings > 0 {
-        let turns = if shape.ridges > 0 { p.twist.abs() } else { 0.0 };
-        let along = f32::from(shape.rings).mul_add(4.0, turns.mul_add(12.0, 8.0)).ceil().sat_u32();
-        let around = (f32::from(shape.ridges) * 10.0).sat_u32().max(12);
-        if level == LodLevel::Hero { (along.max(rings), around.max(sides)) } else { ((along / 2).max(rings), (around / 2).max(sides)) }
-    } else {
-        (rings, sides)
-    };
+    let (rings, sides) = tessellation(level, &shape, p.twist);
     let horn = |length: f32, base: f32, flatten: Vec2| Horn {
         length,
         base_radius: base,
@@ -159,6 +146,23 @@ pub(super) fn hard_part_mesh(index: usize, part: &HardPart, anatomy: &Anatomy, l
     Some(mesh)
 }
 
+/// Rings along and sides round a horn-like part at `level`. Ridges and rings need the mesh to
+/// follow them: more rings along a spiral or a row of rings, more sides round a lobed section.
+fn tessellation(level: LodLevel, shape: &HardShape, twist: f32) -> (u32, u32) {
+    let (rings, sides) = match level {
+        LodLevel::Hero => (8, 10),
+        LodLevel::Near => (5, 6),
+        LodLevel::Far => (3, 4),
+    };
+    if shape.ridges == 0 && shape.rings == 0 {
+        return (rings, sides);
+    }
+    let turns = if shape.ridges > 0 { twist.abs() } else { 0.0 };
+    let along = f32::from(shape.rings).mul_add(4.0, turns.mul_add(12.0, 8.0)).ceil().sat_u32();
+    let around = (f32::from(shape.ridges) * 10.0).sat_u32().max(12);
+    if level == LodLevel::Hero { (along.max(rings), around.max(sides)) } else { ((along / 2).max(rings), (around / 2).max(sides)) }
+}
+
 /// Length, base radius and cross-section scale (x, z) of a horn-like part (an antler's beam): the
 /// kind's proportions of its `size`, the base radius replaced by the shape's own fraction when it
 /// sets one. `None` for eyes, plates and authored meshes. The SDF preview stands in with the same.
@@ -204,7 +208,7 @@ fn horn_frame(h: &Horn, t: f32) -> Transform {
 }
 
 fn direction_at(h: &Horn, u: f32) -> Quat {
-    let bend_axis = Quat::from_rotation_y(h.bend + h.twist * TAU * u) * Vec3::X;
+    let bend_axis = Quat::from_rotation_y((h.twist * TAU).mul_add(u, h.bend)) * Vec3::X;
     Quat::from_axis_angle(bend_axis, h.curve * FRAC_PI_2 * u)
 }
 
@@ -279,6 +283,9 @@ fn sphere(mesh: &mut BodyMeshData, r: f32, rings: u32, sides: u32) {
 }
 
 #[cfg(test)]
+// The cases' sizes and the fingerprints are plain arithmetic on purpose: fused ops would round
+// differently from the recorded values.
+#[allow(clippy::suboptimal_flops)]
 mod tests {
     use super::*;
     use crate::anatomy::{BoneId, Side, build_src};
