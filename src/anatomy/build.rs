@@ -152,9 +152,11 @@ pub fn build_anatomy(live: &BodyPlan, lod_rules: &PartLodRules, assets: &PartAss
     b.finish()
 }
 
-/// Asset paths of every authored mesh a plan references (sculpts and mesh hard parts).
+/// Asset paths of every authored mesh a plan references (sculpts and mesh hard parts), whether
+/// `plan` is authored or already expanded: a mesh only one side of a mirrored part carries counts.
 #[must_use]
 pub fn referenced_assets(plan: &BodyPlan) -> Vec<String> {
+    let plan = plan.expand_symmetry();
     let mut out: Vec<String> = Vec::new();
     let mesh_path = |h: &HardParams| match &h.kind {
         super::HardKind::Mesh { path, .. } => Some(path.clone()),
