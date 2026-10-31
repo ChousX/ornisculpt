@@ -19,8 +19,9 @@ as open. Items marked *done* say where they landed.
 ## Phase 0: consolidate
 
 1. **Docs that match the code.**
-   - `types.md` has grown a long list of v2 notes. They should be folded into its sections.
-     Still open.
+   - *Done* (2026-10-31, branch `roadmap/types-doc`): `types.md`'s v2 notes are folded into
+     its sections, each checked against the code at e1f355d, with the subsystem docs linked
+     and the measured numbers dated.
    - *Done* (f115db7): `README.md`, with the module map, the feature flags, the consumers and
      links to these docs.
 2. **Bad assets fail fast.** *Done* (f115db7).
