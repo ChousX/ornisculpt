@@ -397,6 +397,11 @@ fn assemble(
     };
     let indices: Vec<usize> = (0..cell_count).collect();
     let surface = super::par_map(&indices, |&i| lists.get(i).is_some_and(|list| !list.is_empty() && may_hold_surface(list, centre(i))));
+    // The shader keeps `LIMB_SLOTS` limbs apart in a cell; past them they share a slot and merge.
+    let most = most_limbs_in_a_cell(packed, &lists, &surface);
+    if most > super::body::LIMB_SLOTS {
+        warn!("preview: {most} limbs reach one cell, the shader keeps {} apart", super::body::LIMB_SLOTS);
+    }
     // The grid's corner in whole cells from the model origin: bricks are keyed by where they are
     // on the lattice, not by their index in this grid.
     let origin = (min / cell).round().as_ivec3();
@@ -560,6 +565,22 @@ fn brick_key(at: IVec3, cell: f32, list: &[u32], prim_keys: &[u64]) -> u64 {
     h.digest() | 1
 }
 
+/// The most limbs any cell holding surface lists.
+fn most_limbs_in_a_cell(packed: &[Packed], lists: &[Vec<u32>], surface: &[bool]) -> usize {
+    lists
+        .iter()
+        .zip(surface)
+        .filter(|(_, surface)| **surface)
+        .map(|(list, _)| {
+            let mut limbs: Vec<u32> = list.iter().filter_map(|&i| packed.get(i.idx())).map(|p| p.limb).filter(|&l| l != NO_LIMB).collect();
+            limbs.sort_unstable();
+            limbs.dedup();
+            limbs.len()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// The faces between cells that may hold surface (`surface`, one flag per cell, x fastest) and
 /// cells that don't (or the outside), facing out.
 fn hull(surface: &[bool], dims: UVec3, min: Vec3, cell: f32) -> Vec<([Vec3; 4], Vec3)> {
@@ -614,7 +635,11 @@ mod tests {
     /// the cell.)
     #[test]
     fn cell_lists_reproduce_the_field() {
-        let anatomy = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
+        cell_lists_reproduce(include_str!("../../assets/mobs/quadruped.body.ron"));
+    }
+
+    fn cell_lists_reproduce(plan: &str) {
+        let anatomy = build_src(plan);
         let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
         let packed = field.preview(&anatomy, |_| false);
         let header = packed.words[0].map(f32::to_bits);
@@ -643,6 +668,10 @@ mod tests {
             assert!(w[2] > 0, "the cell at {p} holds surface but has no brick");
             let list: Vec<usize> = (0..w[1].idx()).map(|k| item(w[0].idx() + k).idx()).filter(|&k| k < field.prims.len()).collect();
             assert!(list.windows(2).all(|w| w[0] < w[1]), "field order");
+            let mut limbs: Vec<u16> = list.iter().filter_map(|&k| field.prims.get(k)?.limb).collect();
+            limbs.sort_unstable();
+            limbs.dedup();
+            assert!(limbs.len() <= crate::surface::body::LIMB_SLOTS, "at {p}: {} limbs in the cell", limbs.len());
             let sub = field.distance_of(&list, m.into());
             let want = chunk.distance(m.into());
             assert!((sub - want).abs() < 1e-5, "at {p}: cell {sub}, chunk {want}");

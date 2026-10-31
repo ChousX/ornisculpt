@@ -88,9 +88,13 @@ const LEG_CROTCH: f32 = 0.04;
 const LEG_SPREAD_MAX: f32 = 24.0;
 const LEG_SPREAD_STEP: f32 = 2.0;
 
-/// Limbs [`BodyField::eval`] keeps apart at one point (as `LIMB_SLOTS` in `sdf_field.wesl`): a
-/// lobster or a spider has eleven.
-const LIMB_SLOTS: usize = 12;
+/// Limbs the preview's `sdf_field.wesl` keeps apart at one point (its `LIMB_SLOTS`), and how
+/// many [`Acc`] holds inline before it spills to the heap. [`BodyField::eval`] itself keeps every
+/// limb apart, however many a body has; what bounds the count at a point is the primitives that
+/// reach it (a meshing chunk's, or a preview cell's list): a lobster or a spider has eleven limbs
+/// in all, and a centipede's thirty-two reach a cell a few pairs at a time
+/// (`every_mob_fits_the_preview_cells`).
+pub(super) const LIMB_SLOTS: usize = 12;
 
 /// The least margin around where a limb attaches within which it blends into the body, metres.
 const ATTACH_MARGIN: f32 = 0.01;
@@ -100,7 +104,7 @@ const CREASE_NEAR: f32 = 0.03;
 
 /// One limb's share of [`BodyField::eval`] at a point.
 #[derive(Clone, Copy)]
-struct LimbField {
+struct LimbField<'a> {
     id: u16,
     /// The smooth union of its own primitives (`f32::MAX` until its first).
     own: f32,
@@ -109,16 +113,23 @@ struct LimbField {
     with_body: f32,
     /// Its own raised stamps.
     raised: f32,
+    /// Its own nearest union primitive, and the distance to it.
+    nearest: (f32, Option<&'a PreparedPrim>),
 }
 
-impl LimbField {
-    const EMPTY: Self = Self { id: u16::MAX, own: f32::MAX, with_body: f32::MAX, raised: 0.0 };
+impl LimbField<'_> {
+    const fn new(id: u16) -> Self {
+        Self { id, own: f32::MAX, with_body: f32::MAX, raised: 0.0, nearest: (f32::INFINITY, None) }
+    }
 
     /// Its own surface, raised by its own stamps.
     fn own(&self) -> f32 {
         self.own - self.raised
     }
 }
+
+/// Per limb at a point, a value: inline for as many limbs as a preview cell may hold.
+type PerLimb<T> = SmallVec<[T; LIMB_SLOTS]>;
 
 /// The body and each limb at one point, kept apart: what [`BodyField::joined`] and the sheets
 /// are made of. A limb blends into the body, and into another limb only where both attach (see
@@ -128,48 +139,36 @@ struct Acc<'a> {
     body: Option<f32>,
     /// The body's raised stamps, which raise everything.
     raised: f32,
-    /// Per limb met so far, its share (limbs past the last slot share it).
-    limbs: [LimbField; LIMB_SLOTS],
-    /// Slots of `limbs` in use.
-    used: usize,
+    /// Per limb met so far, in the order met, its share.
+    limbs: PerLimb<LimbField<'a>>,
     /// The nearest union primitive of all.
     nearest: Option<&'a PreparedPrim>,
     /// The nearest union primitive on no limb.
     body_nearest: (f32, Option<&'a PreparedPrim>),
-    /// Per limb slot, its own nearest union primitive.
-    limb_nearest: [(f32, Option<&'a PreparedPrim>); LIMB_SLOTS],
 }
 
 impl<'a> Acc<'a> {
     /// Accumulates the primitives on `sheet` (all of them for [`Sheet::Whole`] and [`Sheet::Body`]).
     #[inline]
     fn gather(prims: impl Iterator<Item = &'a PreparedPrim>, sheet: Sheet, p: Vec3A) -> Self {
-        let mut acc = Self {
-            body: None,
-            raised: 0.0,
-            limbs: [LimbField::EMPTY; LIMB_SLOTS],
-            used: 0,
-            nearest: None,
-            body_nearest: (f32::INFINITY, None),
-            limb_nearest: [(f32::INFINITY, None); LIMB_SLOTS],
-        };
+        let mut acc = Self { body: None, raised: 0.0, limbs: SmallVec::new(), nearest: None, body_nearest: (f32::INFINITY, None) };
         let mut best = f32::INFINITY;
         for prim in prims.filter(|prim| sheet.has(prim)) {
             let (dl, blend) = prim.eval(p);
             match prim.op {
                 PrimOp::Union => {
                     let body = acc.body;
-                    if let Some((l, near)) = prim.limb.and_then(|limb| acc.slot(limb)) {
+                    if let Some(l) = prim.limb.and_then(|limb| acc.slot(limb)) {
                         l.own = if l.own < f32::MAX { sdf::smin(l.own, dl, blend).0 } else { dl };
                         // A new limb starts from the body so far.
                         let from = if l.with_body < f32::MAX { Some(l.with_body) } else { body };
                         l.with_body = from.map_or(dl, |d| sdf::smin(d, dl, blend).0);
-                        if dl < near.0 {
-                            *near = (dl, Some(prim));
+                        if dl < l.nearest.0 {
+                            l.nearest = (dl, Some(prim));
                         }
                     } else {
                         acc.body = Some(acc.body.map_or(dl, |d| sdf::smin(d, dl, blend).0));
-                        for l in acc.limbs.iter_mut().take(acc.used).filter(|l| l.with_body < f32::MAX) {
+                        for l in acc.limbs.iter_mut().filter(|l| l.with_body < f32::MAX) {
                             l.with_body = sdf::smin(l.with_body, dl, blend).0;
                         }
                         if dl < acc.body_nearest.0 {
@@ -183,7 +182,7 @@ impl<'a> Acc<'a> {
                 }
                 PrimOp::Subtract => {
                     acc.body = acc.body.map(|d| sdf::ssub(d, dl, blend));
-                    for l in acc.limbs.iter_mut().take(acc.used).filter(|l| l.own < f32::MAX) {
+                    for l in acc.limbs.iter_mut().filter(|l| l.own < f32::MAX) {
                         l.own = sdf::ssub(l.own, dl, blend);
                         l.with_body = sdf::ssub(l.with_body, dl, blend);
                     }
@@ -195,7 +194,7 @@ impl<'a> Acc<'a> {
                             // A limb's stamps raise only that limb.
                             let rise = height * prim.min_scale * s * s;
                             match prim.limb.and_then(|limb| acc.slot(limb)) {
-                                Some((l, _)) => l.raised += rise,
+                                Some(l) => l.raised += rise,
                                 None => acc.raised += rise,
                             }
                         }
@@ -206,26 +205,13 @@ impl<'a> Acc<'a> {
         acc
     }
 
-    /// The slot of `limb`, opened if new (limbs past the last slot share it).
-    fn slot(&mut self, limb: u16) -> Option<(&mut LimbField, &mut (f32, Option<&'a PreparedPrim>))> {
-        let i = self.limbs.iter().take(self.used).position(|l| l.id == limb).unwrap_or_else(|| {
-            self.used = (self.used + 1).min(LIMB_SLOTS);
-            self.used - 1
+    /// The share of `limb`, opened if new (always `Some`: the list grows as limbs come).
+    fn slot(&mut self, limb: u16) -> Option<&mut LimbField<'a>> {
+        let i = self.limbs.iter().position(|l| l.id == limb).unwrap_or_else(|| {
+            self.limbs.push(LimbField::new(limb));
+            self.limbs.len() - 1
         });
-        let (l, near) = (self.limbs.get_mut(i)?, self.limb_nearest.get_mut(i)?);
-        if l.id == u16::MAX {
-            l.id = limb;
-        }
-        Some((l, near))
-    }
-
-    /// The slots in use.
-    fn attached_slots(&self) -> &[LimbField] {
-        self.limbs.get(..self.used).unwrap_or_default()
-    }
-
-    fn limbs(&self) -> impl Iterator<Item = &LimbField> {
-        self.limbs.iter().take(self.used)
+        self.limbs.get_mut(i)
     }
 }
 
@@ -723,13 +709,9 @@ impl BodyField {
         p: Vec3A,
     ) -> (f32, Option<&'a PreparedPrim>) {
         let acc = Acc::gather(prims, Sheet::Whole, p);
-        let mut joined = [f32::MAX; LIMB_SLOTS];
-        let mut d = acc.body.unwrap_or(f32::MAX);
-        for (l, j) in acc.limbs().zip(&mut joined) {
-            *j = self.joined(l, acc.body, p);
-            d = d.min(*j);
-        }
-        let d = d.min(self.paired(acc.attached_slots(), &joined, p));
+        let joined: PerLimb<f32> = acc.limbs.iter().map(|l| self.joined(l, acc.body, p)).collect();
+        let d = joined.iter().fold(acc.body.unwrap_or(f32::MAX), |d, j| d.min(*j));
+        let d = d.min(self.paired(&acc.limbs, &joined, p));
         let d = if d < f32::MAX { d - acc.raised } else { d };
         (self.creased(joints, p, d), acc.nearest)
     }
@@ -752,24 +734,26 @@ impl BodyField {
             _ => acc.body.unwrap_or(f32::MAX),
         };
         let mut near = acc.body_nearest;
-        let mut joined = [f32::MAX; LIMB_SLOTS];
-        for ((l, &own_near), j) in acc.limbs().zip(&acc.limb_nearest).zip(&mut joined) {
+        let mut joined: PerLimb<f32> = PerLimb::with_capacity(acc.limbs.len());
+        for l in &acc.limbs {
             let detached = self.detached(l.id, p);
+            let mut j = f32::MAX;
             match sheet {
                 // The body with the limbs attached here (blended into each other where two do).
                 Sheet::Body if !detached => {
-                    *j = self.joined(l, acc.body, p);
-                    d = d.min(*j);
-                    near = closer(near, own_near);
+                    j = self.joined(l, acc.body, p);
+                    d = d.min(j);
+                    near = closer(near, l.nearest);
                 }
                 // Clear of where it attaches, the limb alone: its surface runs on through the body.
-                Sheet::Limb(id) if id == l.id && detached => (d, near) = (l.own(), own_near),
-                Sheet::Limb(id) if id == l.id => (d, near) = (self.joined(l, acc.body, p), closer(near, own_near)),
+                Sheet::Limb(id) if id == l.id && detached => (d, near) = (l.own(), l.nearest),
+                Sheet::Limb(id) if id == l.id => (d, near) = (self.joined(l, acc.body, p), closer(near, l.nearest)),
                 _ => {}
             }
+            joined.push(j);
         }
         if sheet == Sheet::Body {
-            d = d.min(self.paired(acc.attached_slots(), &joined, p));
+            d = d.min(self.paired(&acc.limbs, &joined, p));
         }
         (self.creased(joints, p, d - acc.raised), near.1)
     }
@@ -783,14 +767,15 @@ impl BodyField {
         let body = acc.body.map_or(f32::MAX, |b| c(b - acc.raised));
         let mut whole = acc.body.map_or(f32::MAX, |b| b - acc.raised);
         let mut limbs = SmallVec::new();
-        let mut all = [f32::MAX; LIMB_SLOTS];
-        for (l, j) in acc.limbs().zip(&mut all) {
-            *j = self.joined(l, acc.body, p);
-            let joined = *j - acc.raised;
+        let mut all: PerLimb<f32> = PerLimb::with_capacity(acc.limbs.len());
+        for l in &acc.limbs {
+            let j = self.joined(l, acc.body, p);
+            all.push(j);
+            let joined = j - acc.raised;
             whole = whole.min(joined);
             limbs.push(SheetSample { limb: l.id, own: c(l.own() - acc.raised), joined: c(joined), detached: self.detached(l.id, p) });
         }
-        let paired = self.paired(acc.attached_slots(), &all, p);
+        let paired = self.paired(&acc.limbs, &all, p);
         let paired = if paired < f32::MAX { c(paired - acc.raised) } else { paired };
         Sample { whole: c(whole.min(paired)), body, limbs, paired }
     }
@@ -830,12 +815,13 @@ impl BodyField {
     #[inline]
     fn paired(&self, limbs: &[LimbField], joined: &[f32], p: Vec3A) -> f32 {
         let mut out = f32::MAX;
-        if limbs.len() < 2 {
+        let attach = |l: &LimbField| self.attach.get(usize::from(l.id)).and_then(Option::as_ref);
+        // Legs alone (a centipede's) never pair: skip the pairs.
+        if limbs.len() < 2 || !limbs.iter().any(|l| attach(l).is_some_and(|a| a.pairs)) {
             return out;
         }
         // Each limb's attachment and its weight here, worked out when first wanted.
-        let mut weight: [Option<f32>; LIMB_SLOTS] = [None; LIMB_SLOTS];
-        let attach = |l: &LimbField| self.attach.get(usize::from(l.id)).and_then(Option::as_ref);
+        let mut weight: PerLimb<Option<f32>> = smallvec::smallvec![None; limbs.len()];
         for (i, (a, &ja)) in limbs.iter().zip(joined).enumerate() {
             let Some(at_a) = attach(a).filter(|_| a.own < f32::MAX) else { continue };
             for (j, (b, &jb)) in limbs.iter().zip(joined).enumerate().skip(i + 1) {
@@ -913,14 +899,16 @@ impl BodyField {
     #[must_use]
     pub fn garment_distance(&self, p: Vec3A, on: Option<u16>, reach: f32) -> f32 {
         let acc = Acc::gather(self.prims.iter(), Sheet::Whole, p);
-        let mut joined = [f32::MAX; LIMB_SLOTS];
-        let mut d = acc.body.unwrap_or(f32::MAX);
-        for (l, j) in acc.limbs().zip(&mut joined) {
-            let clip = if on == Some(l.id) { f32::NEG_INFINITY } else { self.past_reach(l.id, p, reach) };
-            *j = self.joined_clipped(l, acc.body, p, clip);
-            d = d.min(*j);
-        }
-        let d = d.min(self.paired(acc.attached_slots(), &joined, p));
+        let joined: PerLimb<f32> = acc
+            .limbs
+            .iter()
+            .map(|l| {
+                let clip = if on == Some(l.id) { f32::NEG_INFINITY } else { self.past_reach(l.id, p, reach) };
+                self.joined_clipped(l, acc.body, p, clip)
+            })
+            .collect();
+        let d = joined.iter().fold(acc.body.unwrap_or(f32::MAX), |d, j| d.min(*j));
+        let d = d.min(self.paired(&acc.limbs, &joined, p));
         if d < f32::MAX { d - acc.raised } else { d }
     }
 
@@ -931,7 +919,7 @@ impl BodyField {
     #[must_use]
     pub fn garment_info(&self, p: Vec3A, on: Option<u16>, reach: f32) -> SurfaceInfo {
         // Each limb's share, worked out once per limb.
-        let mut shares: SmallVec<[(u16, f32); LIMB_SLOTS]> = SmallVec::new();
+        let mut shares: PerLimb<(u16, f32)> = SmallVec::new();
         let mut share = |limb: Option<u16>| match limb {
             None => 1.0,
             Some(l) if on == Some(l) => 1.0,
@@ -1393,14 +1381,19 @@ mod apart_tests {
         (anatomy, field)
     }
 
-    /// Every mob's limbs (legs, arms, wings, tails) fit the slots `BodyField::eval` keeps them
-    /// apart in at one point (and `sdf_field.wesl` in the preview): a dragon has seven.
+    /// Every mob's limbs (legs, arms, wings, tails) reach a preview cell no more than
+    /// `sdf_field.wesl` keeps apart: a dragon has seven in all; a centipede's thirty-two reach
+    /// a cell a few pairs at a time. The cells are the preview's (`CELL_SIZE` and the list pad
+    /// in `surface/preview.rs`, 64 mm plus 4 voxels of 12 a side), on the field's own lattice.
     #[test]
-    fn every_mob_fits_its_limb_slots() {
+    fn every_mob_fits_the_preview_cells() {
+        const CELL: f32 = 0.064;
+        const PAD: f32 = CELL / 12.0 * 4.0;
         let dir = format!("{}/assets/mobs", env!("CARGO_MANIFEST_DIR"));
         let mut bodies: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".body.ron").map(str::to_owned)).collect();
         bodies.sort();
-        assert!(bodies.iter().any(|b| b == "dragon"), "{bodies:?}");
+        assert!(bodies.iter().any(|b| b == "lobster"), "{bodies:?}");
+        let mut over = Vec::new();
         for body in bodies {
             let text = std::fs::read_to_string(format!("{dir}/{body}.body.ron")).unwrap();
             let plan: BodyPlan = ron::from_str(&text).unwrap();
@@ -1410,11 +1403,77 @@ mod apart_tests {
                 continue;
             };
             let field = BodyField::new(&anatomy, &BodyFieldOptions { level: LodLevel::Hero, seed: 0, geometric_folds: false, spread: false });
-            let mut limbs: Vec<u16> = field.prims.iter().filter_map(|p| p.limb).collect();
-            limbs.sort_unstable();
-            limbs.dedup();
-            assert!(limbs.len() <= LIMB_SLOTS, "{body}: {} limbs, {LIMB_SLOTS} slots", limbs.len());
+            let mut all: Vec<u16> = field.prims.iter().filter_map(|p| p.limb).collect();
+            all.sort_unstable();
+            all.dedup();
+            let (lo, hi) = (field.bounds.min, field.bounds.max);
+            let cells = ((hi - lo) / CELL).ceil().as_uvec3().max(UVec3::ONE);
+            let mut most = 0;
+            for z in 0..cells.z {
+                for y in 0..cells.y {
+                    for x in 0..cells.x {
+                        let min = lo + UVec3::new(x, y, z).as_vec3a() * CELL;
+                        let view = field.view(Aabb3d { min: min - Vec3A::splat(PAD), max: min + Vec3A::splat(CELL + PAD) });
+                        let mut limbs: Vec<u16> = view.prims().filter_map(|p| p.limb).collect();
+                        limbs.sort_unstable();
+                        limbs.dedup();
+                        most = most.max(limbs.len());
+                    }
+                }
+            }
+            println!("{body}: {} limbs, at most {most} in a cell", all.len());
+            if most > LIMB_SLOTS {
+                over.push(format!("{body} ({most})"));
+            }
         }
+        assert!(over.is_empty(), "more than {LIMB_SLOTS} limbs reach one preview cell: {}", over.join(", "));
+    }
+
+    /// The whole field agrees with a chunk's view of it on the surface, whatever the body's limb
+    /// count: a chunk holds the few limbs that reach it, the whole field every one (a centipede's
+    /// thirty-two), and the two keep them apart alike. Points are settled onto the surface first,
+    /// where a smooth union feels nothing beyond a chunk's padded bounds.
+    #[test]
+    fn whole_field_matches_its_chunks() {
+        use crate::surface::Field;
+        let mut off = Vec::new();
+        for body in ["hexapod", "lobster", "spider"] {
+            let (_, field) = field_of(body);
+            let b = field.bounds;
+            let view_at = |p: Vec3A| field.view(Aabb3d { min: p - Vec3A::splat(0.03), max: p + Vec3A::splat(0.03) });
+            let (mut worst, mut at, mut checked, mut near) = (0.0f32, Vec3A::ZERO, 0, 0);
+            for i in 0..120_000u32 {
+                let scatter = |k: u32| f32::from(u16::try_from(i.wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(i).wrapping_mul(40503)) % 10007).unwrap()) / 10007.0;
+                let mut p = b.min + (b.max - b.min) * Vec3A::new(scatter(1), scatter(2), scatter(3));
+                let mut chunk = view_at(p);
+                if chunk.is_empty() || chunk.distance(p).abs() > 0.01 {
+                    continue;
+                }
+                for _ in 0..6 {
+                    // (The gradient is a raw central difference: direction only.)
+                    p -= chunk.gradient(p).normalize_or_zero() * chunk.distance(p);
+                    chunk = view_at(p);
+                }
+                let d = chunk.distance(p);
+                near += 1;
+                if d.abs() > 1e-4 {
+                    continue;
+                }
+                checked += 1;
+                // The whole field's value is off by the chunk's residual at most, plus any limb
+                // it keeps apart differently.
+                let diff = (field.distance(p) - d).abs();
+                if diff > worst {
+                    (worst, at) = (diff, p);
+                }
+            }
+            println!("{body}: {checked} surface points of {near} near it, the whole field at most {worst:.6} m off its chunk (at {at})");
+            assert!(checked > 300, "{body}: {checked} points");
+            if worst > 1e-4 {
+                off.push(format!("{body} by {worst} m at {at}"));
+            }
+        }
+        assert!(off.is_empty(), "the whole field disagrees with its chunks: {}", off.join(", "));
     }
 
     /// A hexapod's hind leg and its abdomen (a tail) both attach at the thorax: there they blend
