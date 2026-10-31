@@ -1,7 +1,10 @@
 # Motion authoring API (proposal)
 
-Status: **design for review, nothing implemented yet.** It extends §6 of `types.md`. Today's
-`Gait` keeps working and becomes one locomotion cycle in this model.
+Status: **build steps 1–4 implemented** (`src/motion/`): `Cycle` with `Fit` and the track
+vocabulary, root motion, the built-in library (in Rust, `motion::library`, not
+`*.motionlib.ron` files) and `MotionGraph`. Not yet: step 5, crowd baking of a graph's cycles;
+crowd tiers still bake only `Gait` modes and the idle (`bake_motion`). It extends §6 of
+`types.md`. `Gait` keeps working as one locomotion cycle in this model.
 
 ## Goals and decisions so far
 
