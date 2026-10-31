@@ -136,8 +136,19 @@ pub enum LimbEnd { None, Hand { palm: f32 }, Foot { length: f32 }, Hoof, Pad }
 pub struct HeadParams { pub skull: MassParams, pub snout: f32, pub jaw: Option<ChainParams>, pub eye_spacing: f32 }
 pub struct DigitParams { pub count: u8, pub chain: ChainParams, pub spread_deg: f32, pub opposable: bool }
 pub struct MassParams { pub shape: MassShape, pub size: Vec3, pub blend: f32 }
-pub struct HardParams { pub kind: HardKind, pub size: f32, pub curve: f32, pub twist: f32 }
+pub struct HardParams { pub kind: HardKind, pub size: f32, pub curve: f32, pub twist: f32, pub sclera: f32, pub shape: HardShape }
 pub enum HardKind { Claw, Horn, Beak, Tooth, Eye, Mesh(String /* asset path */) }
+/// 2026-10-31: a horn-like part's shape over its kind's fixed proportions; every default is the
+/// kind's own shape, so plans without one build identically (test `default_shapes_build_as_before`).
+pub struct HardShape {
+    pub base: Option<f32>, // base radius as a fraction of `size` (the kind's own: horn 0.22, tusk 0.15, spike 0.3)
+    pub taper: f32,        // radius = base × (1 − t)^taper; 0.8
+    pub bend_deg: f32,     // where `curve` bends, about the axis: 0 = local +Z, 90 = +X
+    pub ridges: u8, pub ridge_depth: f32, // lobes round the section, spiralling with `twist` (a unicorn: 2 at 0.13 over 4.5 turns)
+    pub rings: u8, pub ring_depth: f32,   // bumps along the length (an ibex)
+}
+// The mesh and the SDF preview's stand-in share one table of these proportions (`surface::hard::horn_dims`).
+// Ridges and rings refine the mesh to follow them (hero and near; none at far) and smooth its normals.
 pub struct Tone { pub muscle: f32, pub fat: f32, pub folds: f32, pub landmarks: f32 }
 ```
 
