@@ -41,7 +41,7 @@ const SPEEDS: [(&str, f32); 4] = [("stand", 0.0), ("walk", 1.0), ("trot", 2.5), 
 const ACTIONS: [(KeyCode, &str); 5] =
     [(KeyCode::Digit1, "attack"), (KeyCode::Digit2, "shake"), (KeyCode::Digit3, "rear"), (KeyCode::Digit4, "wave"), (KeyCode::Digit5, "flare")];
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 450.0, ..default() })
@@ -51,7 +51,8 @@ fn main() {
         .add_systems(Update, (controls, drive, orbit_camera.after(drive), screenshot, frame_stats))
         .add_observer(|e: On<MotionEvent>| info!("{:?}: {} ({})", e.entity, e.name, e.cycle))
         .add_observer(|_: On<Footstep>, mut steps: ResMut<Demo>| steps.footsteps += 1)
-        .run();
+        .add_observer(common::exit_on_body_failed)
+        .run()
 }
 
 #[derive(Resource)]

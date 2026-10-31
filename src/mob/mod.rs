@@ -12,6 +12,7 @@ mod crowd;
 mod crowd_gpu;
 mod generate;
 mod levers;
+mod loads;
 mod spawn;
 mod tier;
 
@@ -82,8 +83,12 @@ pub struct BodyReady {
     pub entity: Entity,
 }
 
-/// Triggered on a mob when a requested (re)generation failed (the error is also logged). The mob
-/// keeps the body it had, if any.
+/// Triggered on a mob when a requested (re)generation failed.
+///
+/// Its plan, coat, outfit or an authored part mesh failed to load (a RON parse error, a missing
+/// file), or the body could not be built. The error is also logged, once per failed asset. The
+/// mob keeps the body it had, if any, and is requested again if the failed asset reloads (hot
+/// reload of the fixed file).
 #[derive(EntityEvent, Clone, Debug)]
 pub struct BodyFailed {
     pub entity: Entity,
@@ -159,6 +164,7 @@ impl Plugin for MobPlugin {
                     )
                         .chain()
                         .in_set(MobSet::Generation),
+                    loads::report_failed_gaits.in_set(MobSet::Generation),
                     (tier::choose_tiers, spawn::sync_hero_visuals, tier::apply_tier_visibility, spawn::sync_part_entities)
                         .chain()
                         .in_set(MobSet::Tiering),

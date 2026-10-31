@@ -33,7 +33,7 @@ const BODIES: [(&str, &str); 4] = [
     ("mobs/spider.body.ron", "coats/wolf_spider.coat.ron"),
 ];
 
-fn main() {
+fn main() -> AppExit {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(16);
     App::new()
         .add_plugins((
@@ -48,7 +48,8 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(Update, (wander, keys, orbit_camera, screenshot_at(360)))
         .add_observer(equip)
-        .run();
+        .add_observer(common::exit_on_body_failed)
+        .run()
 }
 
 #[derive(Resource)]

@@ -15,7 +15,7 @@ use bevy::render::view::window::screenshot::{Screenshot, ScreenshotCaptured, sav
 use bevy::window::{ExitCondition, PresentMode};
 use bevy::winit::WinitPlugin;
 use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules, TriMesh, referenced_assets};
-use ornisculpt::mob::{MobTier, QualityProfile};
+use ornisculpt::mob::{BodyFailed, MobTier, QualityProfile};
 
 pub mod crowd;
 
@@ -194,6 +194,17 @@ fn screenshots(frames: Vec<u32>, last: u32) -> impl FnMut(Commands, Option<Res<S
             exit.write(AppExit::Success);
         }
     }
+}
+
+/// A headless shot (`ORNISCULPT_SCREENSHOT`) exits non-zero, with the error, when a body fails:
+/// a plan, coat or outfit that doesn't parse would otherwise leave the run waiting out its
+/// timeout. With a window the failure is only logged, and the example stays up.
+pub fn exit_on_body_failed(ev: On<BodyFailed>, mut exit: MessageWriter<AppExit>) {
+    if std::env::var_os("ORNISCULPT_SCREENSHOT").is_none() {
+        return;
+    }
+    error!("mob {} failed, no screenshot: {}", ev.entity, ev.error);
+    exit.write(AppExit::error());
 }
 
 /// Counts `frames` since the body became ready: a screenshot to `path` at 120 (pipelines have

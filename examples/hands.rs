@@ -33,7 +33,7 @@ const PRESETS: [(&str, KeyCode, Hand); 6] = [
 ];
 const DIGIT_KEYS: [KeyCode; 5] = [KeyCode::KeyQ, KeyCode::KeyW, KeyCode::KeyE, KeyCode::KeyR, KeyCode::KeyT];
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins((default_plugins(Window::default()), OrnisculptPlugin))
         .insert_resource(GlobalAmbientLight { brightness: 400.0, ..default() })
@@ -42,7 +42,8 @@ fn main() {
         .init_resource::<Mode>()
         .add_systems(Startup, setup)
         .add_systems(Update, (keys, piano, orbit_camera, screenshot_at(240)))
-        .run();
+        .add_observer(common::exit_on_body_failed)
+        .run()
 }
 
 /// What drives the hands.

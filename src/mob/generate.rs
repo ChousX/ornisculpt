@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use xxhash_rust::xxh3::xxh3_128;
 
+use super::loads::{Loaded, loaded, loaded_or_default};
 use super::{BodyFailed, LiveBody, Mob, MobSeed};
 use crate::anatomy::{
     Anatomy, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, TriMesh, apply_form, build_anatomy, referenced_assets,
@@ -54,8 +56,10 @@ pub struct PartAssetCache {
 }
 
 impl PartAssetCache {
-    /// Ensures every path is loaded and extracted. Returns the subset, or `None` while loading.
-    fn resolve(&mut self, paths: &[String], server: &AssetServer, meshes: &Assets<Mesh>) -> Option<PartAssets> {
+    /// Ensures every path is loaded and extracted. Returns the subset, `None` while loading, or
+    /// the first mesh that can't be used (its load failed, or it isn't an indexed triangle
+    /// mesh) and why.
+    fn resolve(&mut self, paths: &[String], server: &AssetServer, meshes: &Assets<Mesh>) -> Result<Option<PartAssets>, (UntypedAssetId, String)> {
         let mut ready = true;
         for path in paths {
             if self.assets.meshes.contains_key(path) {
@@ -64,14 +68,14 @@ impl PartAssetCache {
             let handle = self.handles.entry(path.clone()).or_insert_with(|| server.load(path.clone()));
             match meshes.get(&*handle).map(extract_trimesh) {
                 Some(Some(tri)) => self.assets.insert(path.clone(), Arc::new(tri)),
-                Some(None) => {
-                    error!("{path}: not an indexed triangle mesh with positions");
-                    ready = false;
-                }
-                None => ready = false,
+                Some(None) => return Err((handle.id().untyped(), format!("{path}: not an indexed triangle mesh with positions"))),
+                None => match server.load_state(handle.id()) {
+                    LoadState::Failed(e) => return Err((handle.id().untyped(), format!("{path}: {e}"))),
+                    _ => ready = false,
+                },
             }
         }
-        ready.then(|| self.assets.subset(paths.iter().map(String::as_str)))
+        Ok(ready.then(|| self.assets.subset(paths.iter().map(String::as_str))))
     }
 }
 
@@ -107,26 +111,28 @@ pub(super) fn reload_changed_assets(
     outfits: Res<Assets<Outfit>>,
     mut parts: ResMut<PartAssetCache>,
     mobs: Query<(Entity, &Mob, Option<&LiveBody>)>,
+    mut cache: ResMut<GenCache>,
 ) {
-    let plans = modified(&mut plan_events);
+    let failed = &mut cache.failed_loads;
+    let plans = reloaded(&mut plan_events, failed);
     for (entity, mob, _) in &mobs {
         if plans.contains(&mob.body.id()) {
             commands.entity(entity).remove::<LiveBody>().insert(GenRequest);
         }
     }
-    let coats = modified(&mut coat_events);
+    let coats = reloaded(&mut coat_events, failed);
     for (entity, coat) in &coated {
         if coats.contains(&coat.0.id()) {
             commands.entity(entity).insert(GenRequest);
         }
     }
-    let outfit_ids = modified(&mut outfit_events);
+    let outfit_ids = reloaded(&mut outfit_events, failed);
     for (entity, outfit) in &dressed {
         if outfit_ids.contains(&outfit.0.id()) {
             commands.entity(entity).insert(GenRequest);
         }
     }
-    let meshes = modified(&mut mesh_events);
+    let meshes = reloaded(&mut mesh_events, failed);
     let stale: Vec<String> = parts.handles.iter().filter(|(_, h)| meshes.contains(&h.id())).map(|(p, _)| p.clone()).collect();
     for path in stale {
         parts.assets.meshes.remove(&path);
@@ -143,9 +149,17 @@ pub(super) fn reload_changed_assets(
     }
 }
 
-/// Every asset id reported modified since the last read, in order.
-fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> Vec<AssetId<A>> {
-    events.read().filter_map(|ev| if let AssetEvent::Modified { id } = ev { Some(*id) } else { None }).collect()
+/// Every asset reported modified since the last read, in order, and every one added after a
+/// failed load (the file fixed and reloaded), which `failed` then forgets.
+fn reloaded<A: Asset>(events: &mut MessageReader<AssetEvent<A>>, failed: &mut HashSet<UntypedAssetId>) -> Vec<AssetId<A>> {
+    events
+        .read()
+        .filter_map(|ev| match ev {
+            AssetEvent::Modified { id } => Some(*id),
+            AssetEvent::Added { id } if failed.remove(&id.untyped()) => Some(*id),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Meshes for one LOD level, one per material slot.
@@ -277,6 +291,12 @@ pub struct GenCache {
     in_flight: HashMap<BodyKey, Task<GenResult>>,
     /// Why recent keys failed, for the mobs waiting on them ([`BodyFailed`]).
     failed: HashMap<BodyKey, String>,
+    /// Assets whose load failed (a bad plan, coat, outfit or part mesh), each reported once;
+    /// forgotten when the asset reloads (`reload_changed_assets`).
+    failed_loads: HashSet<UntypedAssetId>,
+    /// What each in-flight body is for, by name: its plan's asset path and its coat's, for the
+    /// warnings about the coat once it is baked on the body.
+    labels: HashMap<BodyKey, (String, String)>,
 }
 
 /// Failure messages kept; past this the oldest are forgotten (they are read within a frame).
@@ -303,11 +323,6 @@ impl GenCache {
     pub(super) fn lost_error(&self, pending: &GenPending) -> Option<String> {
         (!self.known(&pending.0)).then(|| self.failed.get(&pending.0).cloned().unwrap_or_else(|| "generation failed".into()))
     }
-}
-
-/// The asset `handle` points at once loaded, or the default asset without a handle.
-fn loaded_or_default<A: Asset + Clone + Default>(handle: Option<&Handle<A>>, assets: &Assets<A>) -> Option<A> {
-    handle.map_or_else(|| Some(A::default()), |h| assets.get(h).cloned())
 }
 
 /// Generation throughput limits.
@@ -486,8 +501,24 @@ pub(super) fn request_on_undress(ev: On<Remove<MobOutfit>>, mut commands: Comman
     }
 }
 
+/// Gives up on `entity`'s request because `asset` failed to load: logs `error` the first time
+/// that asset fails (a crowd on one bad plan is one line) and triggers [`BodyFailed`] on the mob.
+/// The mob is requested again if the asset reloads (`reload_changed_assets`).
+fn fail_load(commands: &mut Commands, cache: &mut GenCache, entity: Entity, asset: UntypedAssetId, error: String) {
+    if cache.failed_loads.insert(asset) {
+        error!("mob {entity}: {error}");
+    }
+    commands.entity(entity).remove::<(GenRequest, WaitingKey)>().trigger(move |entity| BodyFailed { entity, error });
+}
+
+/// `handle`'s asset path, or `fallback` for one made in code.
+fn asset_name(server: &AssetServer, handle: &UntypedHandle, fallback: &str) -> String {
+    server.get_path(handle.id()).map_or_else(|| fallback.to_owned(), |p| p.to_string())
+}
+
 /// For each requested mob whose body asset is loaded: resolve its live body, then either reuse a
-/// cached/in-flight body or start a task (within budget).
+/// cached/in-flight body or start a task (within budget). A mob whose plan, coat, outfit or an
+/// authored part mesh failed to load gets [`BodyFailed`] instead of waiting for ever.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn start_generation(
     mut commands: Commands,
@@ -518,10 +549,31 @@ pub(super) fn start_generation(
                 continue;
             }
         }
-        let Some(outfit) = loaded_or_default(mob_outfit.map(|o| &o.0), &outfits) else { continue };
-        let Some(coat) = loaded_or_default(mob_coat.map(|c| &c.0), &coats) else { continue };
+        let outfit = match loaded_or_default(mob_outfit.map(|o| &o.0), &outfits, &server) {
+            Loaded::Ready(o) => o,
+            Loaded::Waiting => continue,
+            Loaded::Failed(asset, e) => {
+                fail_load(&mut commands, &mut cache, entity, asset, e);
+                continue;
+            }
+        };
+        let coat = match loaded_or_default(mob_coat.map(|c| &c.0), &coats, &server) {
+            Loaded::Ready(c) => c,
+            Loaded::Waiting => continue,
+            Loaded::Failed(asset, e) => {
+                fail_load(&mut commands, &mut cache, entity, asset, e);
+                continue;
+            }
+        };
         let live = if let Some(l) = live { l.0.clone() } else {
-            let Some(plan) = plans.get(&mob.body) else { continue };
+            let plan = match loaded(&mob.body, &plans, &server) {
+                Loaded::Ready(p) => p,
+                Loaded::Waiting => continue,
+                Loaded::Failed(asset, e) => {
+                    fail_load(&mut commands, &mut cache, entity, asset, e);
+                    continue;
+                }
+            };
             match apply_form(plan, form) {
                 Ok(l) => {
                     commands.entity(entity).insert(LiveBody(l.clone()));
@@ -537,7 +589,14 @@ pub(super) fn start_generation(
         };
         let mut paths = referenced_assets(&live);
         paths.extend(outfit.referenced_meshes());
-        let Some(assets) = part_assets.resolve(&paths, &server, &meshes) else { continue };
+        let assets = match part_assets.resolve(&paths, &server, &meshes) {
+            Ok(Some(a)) => a,
+            Ok(None) => continue,
+            Err((asset, e)) => {
+                fail_load(&mut commands, &mut cache, entity, asset, e);
+                continue;
+            }
+        };
         let key = body_key(&live, &settings, seed.0, &assets, &coat, &outfit);
         if !cache.known(&key) {
             if cache.in_flight.len() >= budget.max_in_flight {
@@ -554,6 +613,9 @@ pub(super) fn start_generation(
                 })
             });
             cache.in_flight.insert(key, task);
+            let body = asset_name(&server, &mob.body.clone().untyped(), "a body plan made in code");
+            let coat = mob_coat.map_or_else(|| "no coat".to_owned(), |c| asset_name(&server, &c.0.clone().untyped(), "a coat made in code"));
+            cache.labels.insert(key, (body, coat));
         }
         commands.entity(entity).remove::<(GenRequest, WaitingKey)>().insert(GenPending(key));
     }
@@ -582,6 +644,7 @@ pub(super) fn finish_generation(
     }
     for (key, result) in done {
         cache.in_flight.remove(&key);
+        let (body_name, coat_name) = cache.labels.remove(&key).unwrap_or_default();
         let (out, ready) = match result {
             Ok((o, m)) => (o, m),
             Err(e) => {
@@ -593,6 +656,9 @@ pub(super) fn finish_generation(
                 continue;
             }
         };
+        // A selector that picks nothing on this body (a `Part(...)` path from before a rename)
+        // is a coat silently missing a piece: say so, once per body and coat.
+        out.coat.warn_unmatched(&out.anatomy, &coat_name, &body_name);
         let skeleton = &out.anatomy.skeleton;
         // Hero soft joints come after the bones and bind like their bones.
         #[allow(unused_mut)]

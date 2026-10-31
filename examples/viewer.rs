@@ -27,7 +27,7 @@ use ornisculpt::mob::{BodyReady, ForceTier, GenRequest, GeneratedBody, LiveBody,
 mod common;
 use common::{Orbit, ShotTarget, TIER_KEYS, asset_arg, cam_env, default_plugins, orbit_camera, shoot_when_ready, spawn_stage, tier_env};
 
-fn main() {
+fn main() -> AppExit {
     // With no plan given, the Hereford ox in its coat.
     let (path, coat) = asset_arg(1).map_or_else(|| ("mobs/ox.body.ron".into(), Some("coats/hereford.coat.ron".into())), |p| (p, asset_arg(2)));
     App::new()
@@ -41,9 +41,10 @@ fn main() {
         .insert_resource(Orbit::from_env(0.9, 0.35, 5.0, Vec3::new(0.0, 0.8, 0.0), (0.3, 30.0)))
         .init_resource::<Focus>()
         .add_observer(on_ready)
+        .add_observer(common::exit_on_body_failed)
         .add_systems(Startup, setup)
         .add_systems(Update, (controls, focus_camera.before(orbit_camera), orbit_camera, wiggle.after(MobSet::Motion), muscle_flex, draw_skeleton, screenshot))
-        .run();
+        .run()
 }
 
 #[derive(Resource)]
