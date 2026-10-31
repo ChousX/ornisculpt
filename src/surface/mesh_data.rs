@@ -10,7 +10,8 @@ use crate::num::{Clamp, Idx};
 
 /// Per-vertex Ornisculpt data, packed into two `u32`s on the GPU:
 /// - x: `region | cavity << 8 | shade << 16 | limb_t << 24`
-/// - y: `primary_bone | layer << 8` (upper 16 bits reserved)
+/// - y: `primary_bone | layer << 8 | contact_mask << 16` (the contact groups the vertex may be
+///   pushed out of, hero skin only; see `surface::contact`)
 ///
 /// Bone-local position is not stored; shaders rebuild it from `primary_bone` and the bind pose.
 pub const ATTRIBUTE_MOB_DATA: MeshVertexAttribute =

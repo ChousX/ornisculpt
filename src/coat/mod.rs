@@ -117,7 +117,7 @@ pub struct Fur {
     pub thickness: f32,
     /// How much tips shift toward the accent colour, 0..1.
     pub tip: f32,
-    /// Shells at hero detail (near detail uses a third, far none).
+    /// Shells, at hero detail only; crowd tiers draw fur in the skin.
     pub shells: u8,
     /// Long hair: cards hanging from the covered skin at hero detail, besides the shells.
     pub cards: Option<HairCards>,
@@ -158,7 +158,7 @@ impl Default for HairCards {
 pub struct Feathers {
     pub length: f32,
     pub width: f32,
-    /// Feathers per square metre at hero detail (near detail uses a third, far none).
+    /// Feathers per square metre, at hero detail only; crowd tiers draw feathers in the skin.
     pub density: f32,
     /// Angle the feathers lift off the skin, degrees.
     pub lift_deg: f32,

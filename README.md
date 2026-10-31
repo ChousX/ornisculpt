@@ -54,6 +54,7 @@ fails to load exits the headless run non-zero with the error.
 | --- | --- | --- |
 | `viewer` | `cargo run --release --example viewer [mobs/plan.body.ron] [coats/look.coat.ron] [outfits/wear.outfit.ron]` | One mob, with LOD, tone and rig debugging; hot-reloads its assets. |
 | `walk` | `cargo run --release --example walk` | Several bodies walking in their coats. |
+| `slope` | `cargo run --release --example slope` | Crowd mobs on a ramp and steps, sitting on the ground's foot hits. |
 | `motion` | `cargo run --release --example motion` | The motion API: every body on the standard graph. |
 | `hands` | `cargo run --release --example hands` | Hand poses on a standing woman. |
 | `hold` | `cargo run --release --example hold [count]` | Held tools in every socket, at hero and crowd tiers. |

@@ -19,7 +19,7 @@ as open. Items marked *done* say where they landed.
 ## Phase 0: consolidate
 
 1. **Docs that match the code.**
-   - *Done* (2026-10-31, branch `roadmap/types-doc`): `types.md`'s v2 notes are folded into
+   - *Done* (de7d2da): `types.md`'s v2 notes are folded into
      its sections, each checked against the code at e1f355d, with the subsystem docs linked
      and the measured numbers dated.
    - *Done* (f115db7): `README.md`, with the module map, the feature flags, the consumers and
@@ -45,11 +45,11 @@ as open. Items marked *done* say where they landed.
 3. **Mirrored copies that differ.** *Done* (e06c604).
    - A mirrored part takes `left` and `right` overrides, applied in `expand_symmetry`.
    - The lobster has a crusher claw and a cutter claw.
-   - *Done* (roadmap/pincer): `LimbEnd::Pincer` takes a `shape` (finger length, palm width and
+   - *Done* (1c092f0): `LimbEnd::Pincer` takes a `shape` (finger length, palm width and
      depth, finger thickness, gape) whose defaults build the old claw. The lobster's cutter has
      long slim fingers on a flat palm; its crusher a swollen palm, short thick fingers and domed
      `HardShape` molars.
-4. **More than 12 limbs apart.** *Done.*
+4. **More than 12 limbs apart.** *Done* (d78791b).
    - `BodyField::eval` keeps every limb apart: its per-point limb list grows past the 12 it holds
      inline, instead of merging the extras into the last slot. Every other plan's meshes are
      bit-identical (the arithmetic is unchanged; a constant of 48 would have cost 6 to 30 % of

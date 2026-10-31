@@ -28,7 +28,7 @@ pub struct LodSpec {
     pub deformation: bool,
 }
 
-/// Per-level surface quality. Scaled by the quality profile later.
+/// Per-level surface quality. `QualityProfile` doesn't scale it.
 #[derive(Resource, Reflect, Serialize, Deserialize, Clone, Debug)]
 #[reflect(Resource)]
 pub struct SurfaceSettings {

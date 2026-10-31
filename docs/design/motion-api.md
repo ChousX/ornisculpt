@@ -27,7 +27,6 @@ one locomotion cycle in this model.
 |---|---|---|
 | `Cycle` | `*.cycle.ron` | One loop or one-shot: requirements, feet plan (gaits), tracks, events |
 | `MotionGraph` | `*.graph.ron` | Layers, each with a mask and a state machine over cycles |
-| `MotionLibrary` | `*.motionlib.ron` | Optional bundle: named cycles + one graph, shared by a family of bodies |
 
 A mob uses `MobMotion(Handle<MotionGraph>)`. Without it, a default graph is chosen from the
 body's family (§3), as `DefaultGaits` does today.
@@ -400,13 +399,15 @@ Built (2026-10-31). As it stands:
 
 ## 8. Built-in library
 
-Ships as data, so it doubles as examples:
-- `upright_biped.motionlib.ron`: walk, run, idle_breathe, look_around, overhead_strike,
-  eat (`ReachTo(Mouth)`).
-- `quadruped.motionlib.ron`: walk, trot, canter, gallop, sniff, shake, sit (hold), eat
-  (grazing: head down to the ground, three bites, back up; fits `GroundReach` quadrupeds).
-  - Variants by stance via `fits`: ungulates get fetlock flex, plantigrades a rolling walk.
-- `hexapod.motionlib.ron`: tripod, wave, antenna_twitch.
+Built in Rust, in `motion::library`, rather than shipped as data: `gaits()`, `idles()`,
+`actions()` and the `standard()` graph that plays them on any body. Every cycle states what it
+fits, so each body gets the ones it can play.
+- Gaits, picked by speed: biped walk, strut, run and sprint; quadruped walk, trot and gallop;
+  the hexapod tripod; and `many.wave` for myriapods.
+- Idles: `breathe`, `look_around`, `tail_wag`, `ear_flick`, `antennae_sweep`, and `wings.flap`
+  for winged bodies.
+- Actions on triggers: `attack`, `shake`, `rear`, `wave`, `flare`, and `eat` (grazing: the head
+  down to the ground, three bites, back up; fits quadrupeds with `GroundReach`).
 
 ## Root motion
 
