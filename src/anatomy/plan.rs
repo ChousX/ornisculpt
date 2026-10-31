@@ -33,6 +33,16 @@ pub struct PartNode {
     /// Repeated copies; combines with `mirror` (centipede legs = `Series` + mirror).
     #[serde(default)]
     pub repeat: Repeat,
+    /// The copies `repeat` makes share one set of regions per side, the first copy's, instead of
+    /// taking their own (three for a limb): a centipede's legs would take 96 of the body's
+    /// [`RegionId::MAX`](super::RegionId::MAX), and a coat marks them as one anyway. A `Part`
+    /// selector then reaches the whole series by the first copy's path (`leg.0.l`).
+    #[serde(default)]
+    pub share_regions: bool,
+    /// Set by [`BodyPlan::expand_symmetry`] on the later copies of a `share_regions` series: the
+    /// sibling (the first copy, on this side) whose regions this one takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regions_with: Option<String>,
     /// Set by [`BodyPlan::expand_symmetry`]; authored plans leave it `Center`.
     #[serde(default)]
     pub side: Side,
@@ -309,7 +319,7 @@ fn expand_node(node: &PartNode) -> Vec<PartNode> {
         }
         repeat_copies(&over.apply(base.clone(), side), node.repeat)
             .into_iter()
-            .map(|c| PartNode { name: format!("{}.{suffix}", c.name), ..c })
+            .map(|c| PartNode { name: format!("{}.{suffix}", c.name), regions_with: c.regions_with.as_ref().map(|r| format!("{r}.{suffix}")), ..c })
             .collect()
     };
     let left = side_copies(Side::Left, &node.left, LEFT_SUFFIX);
@@ -332,6 +342,12 @@ fn expand_children(children: &[PartNode]) -> Vec<PartNode> {
 
 /// `base`'s copies under `repeat`, named `.0`, `.1`, ...; `base` itself for `Once`.
 fn repeat_copies(base: &PartNode, repeat: Repeat) -> Vec<PartNode> {
+    // Copy `i` of the series; past the first, one that shares regions names the first.
+    let copy = |i: u8| PartNode {
+        name: format!("{}.{i}", base.name),
+        regions_with: (base.share_regions && i > 0).then(|| format!("{}.0", base.name)),
+        ..base.clone()
+    };
     match repeat {
         Repeat::Once => vec![base.clone()],
         Repeat::Series { count, from, to } => (0..count)
@@ -342,14 +358,14 @@ fn repeat_copies(base: &PartNode, repeat: Repeat) -> Vec<PartNode> {
                     AttachSlot::Surface { around_deg, .. } => AttachSlot::Surface { t, around_deg },
                     other => other,
                 };
-                PartNode { name: format!("{}.{i}", base.name), attach, ..base.clone() }
+                PartNode { attach, ..copy(i) }
             })
             .collect(),
         Repeat::Radial { count } => (0..count)
             .map(|i| {
                 let mut offset = base.offset;
                 offset.rotate_deg.y += 360.0 * f32::from(i) / f32::from(count.max(1));
-                PartNode { name: format!("{}.{i}", base.name), offset, ..base.clone() }
+                PartNode { offset, ..copy(i) }
             })
             .collect(),
     }
@@ -372,6 +388,8 @@ mod tests {
             offset: default(),
             mirror: false,
             repeat: Repeat::Once,
+            share_regions: false,
+            regions_with: None,
             side: Side::Center,
             detail: default(),
             tone: default(),
@@ -473,12 +491,13 @@ mod tests {
         stripped.visit_mut(|_, n| {
             n.left = SideOverride::default();
             n.right = SideOverride::default();
+            n.share_regions = false;
         });
         stripped
     }
 
-    /// Side overrides changed nothing for the plans that don't use them: every sample plan, its
-    /// overrides stripped, expands to the tree the previous expander gave.
+    /// Side overrides (and shared regions) changed nothing for the plans that don't use them:
+    /// every sample plan, its overrides stripped, expands to the tree the previous expander gave.
     #[test]
     fn existing_plans_expand_as_before() {
         let plans = sample_plans();
@@ -491,6 +510,30 @@ mod tests {
             // An expanded plan carries no overrides, so nothing downstream can meet one.
             assert!(!after.contains("left:") && !after.contains("right:"), "{name}");
         }
+    }
+
+    /// A series that shares regions names the first copy on its side from every later one, so the
+    /// builder keys their regions on it.
+    #[test]
+    fn shared_series_names_its_first_copy() {
+        let mut leg = leaf("leg");
+        leg.mirror = true;
+        leg.repeat = Repeat::Series { count: 3, from: 0.0, to: 1.0 };
+        leg.share_regions = true;
+        let plan = BodyPlan {
+            root: PartNode { kind: PartKind::Torso(TorsoParams::default()), children: vec![leg], ..leaf("torso") },
+            tone: default(),
+        };
+        let e = plan.expand_symmetry();
+        let with: Vec<(&str, Option<&str>)> = e.root.children.iter().map(|c| (c.name.as_str(), c.regions_with.as_deref())).collect();
+        assert_eq!(
+            with,
+            [("leg.0.l", None), ("leg.0.r", None), ("leg.1.l", Some("leg.0.l")), ("leg.1.r", Some("leg.0.r")), ("leg.2.l", Some("leg.0.l")), ("leg.2.r", Some("leg.0.r"))]
+        );
+        // Without the flag, no copy names another.
+        let mut unshared = plan;
+        unshared.root.children[0].share_regions = false;
+        assert!(unshared.expand_symmetry().root.children.iter().all(|c| c.regions_with.is_none()));
     }
 
     const CLAWS: &str = r#"(root: (name: "torso", kind: Torso(()), children: [
