@@ -41,12 +41,16 @@
                 ],
             ),
             (
-                // Chelipeds: merus, carpus, then the claw, held forward and out.
+                // Chelipeds: merus, carpus, then the claw, held forward and out. The pair differs,
+                // as a lobster's does: the cutter (left, as authored) is the slimmer claw with a
+                // row of fine teeth; the crusher (`right`) is heavier through the arm and the
+                // palm, with a few blunt molars. The teeth sit in the gap between the fingers,
+                // placed from the claw's tip (`End`) back along it, each pointing across.
                 name: "cheliped",
                 kind: Limb((
-                    chain: (segments: 3, length: 0.2, ratios: [1.0, 0.55, 0.45], segmented: 0.7, radius: (curve: [(0.0, 0.7), (0.6, 1.0), (1.0, 1.35)], scale: 0.018)),
+                    chain: (segments: 3, length: 0.2, ratios: [1.0, 0.55, 0.45], segmented: 0.7, radius: (curve: [(0.0, 0.7), (0.6, 1.0), (1.0, 1.35)], scale: 0.016)),
                     role: Manipulator,
-                    end: Pincer(size: 0.085),
+                    end: Pincer(size: 0.08),
                     bends: [(0.0, 0.0), (-30.0, 0.0), (20.0, 0.0)],
                     splay_deg: 35.0,
                     clavicle: Some(0.0),
@@ -55,6 +59,28 @@
                 offset: (rotate_deg: (98.0, 0.0, 0.0)),
                 mirror: true,
                 detail: Always,
+                children: [
+                    (name: "tooth_a", kind: Hard((kind: Tooth, size: 0.004, curve: 0.0)), attach: End, offset: (translate: (0.0055, -0.044, 0.0), rotate_deg: (0.0, 0.0, 90.0))),
+                    (name: "tooth_b", kind: Hard((kind: Tooth, size: 0.004, curve: 0.0)), attach: End, offset: (translate: (-0.0055, -0.037, 0.0), rotate_deg: (0.0, 0.0, -90.0))),
+                    (name: "tooth_c", kind: Hard((kind: Tooth, size: 0.004, curve: 0.0)), attach: End, offset: (translate: (0.0055, -0.030, 0.0), rotate_deg: (0.0, 0.0, 90.0))),
+                    (name: "tooth_d", kind: Hard((kind: Tooth, size: 0.004, curve: 0.0)), attach: End, offset: (translate: (-0.0055, -0.023, 0.0), rotate_deg: (0.0, 0.0, -90.0))),
+                    (name: "tooth_e", kind: Hard((kind: Tooth, size: 0.004, curve: 0.0)), attach: End, offset: (translate: (0.0055, -0.016, 0.0), rotate_deg: (0.0, 0.0, 90.0))),
+                ],
+                right: (
+                    kind: Some(Limb((
+                        chain: (segments: 3, length: 0.2, ratios: [1.0, 0.55, 0.45], segmented: 0.7, radius: (curve: [(0.0, 0.7), (0.6, 1.0), (1.0, 1.35)], scale: 0.023)),
+                        role: Manipulator,
+                        end: Pincer(size: 0.105),
+                        bends: [(0.0, 0.0), (-30.0, 0.0), (20.0, 0.0)],
+                        splay_deg: 35.0,
+                        clavicle: Some(0.0),
+                    ))),
+                    children: Some([
+                        (name: "molar_a", kind: Hard((kind: Tooth, size: 0.008, curve: 0.0)), attach: End, offset: (translate: (0.006, -0.050, 0.0), rotate_deg: (0.0, 0.0, 90.0))),
+                        (name: "molar_b", kind: Hard((kind: Tooth, size: 0.008, curve: 0.0)), attach: End, offset: (translate: (-0.006, -0.039, 0.0), rotate_deg: (0.0, 0.0, -90.0))),
+                        (name: "molar_c", kind: Hard((kind: Tooth, size: 0.008, curve: 0.0)), attach: End, offset: (translate: (0.006, -0.028, 0.0), rotate_deg: (0.0, 0.0, 90.0))),
+                    ]),
+                ),
             ),
             (
                 // Walking legs: thin, jointed, knees up, tips on the ground.
