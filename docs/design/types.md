@@ -137,8 +137,19 @@ pub enum LimbEnd { None, Hand { palm: f32 }, Foot { length: f32 }, Hoof, Pad }
 pub struct HeadParams { pub skull: MassParams, pub snout: f32, pub jaw: Option<ChainParams>, pub eye_spacing: f32 }
 pub struct DigitParams { pub count: u8, pub chain: ChainParams, pub spread_deg: f32, pub opposable: bool }
 pub struct MassParams { pub shape: MassShape, pub size: Vec3, pub blend: f32 }
-pub struct HardParams { pub kind: HardKind, pub size: f32, pub curve: f32, pub twist: f32 }
+pub struct HardParams { pub kind: HardKind, pub size: f32, pub curve: f32, pub twist: f32, pub sclera: f32, pub shape: HardShape }
 pub enum HardKind { Claw, Horn, Beak, Tooth, Eye, Mesh(String /* asset path */) }
+/// 2026-10-31: a horn-like part's shape over its kind's fixed proportions; every default is the
+/// kind's own shape, so plans without one build identically (test `default_shapes_build_as_before`).
+pub struct HardShape {
+    pub base: Option<f32>, // base radius as a fraction of `size` (the kind's own: horn 0.22, tusk 0.15, spike 0.3)
+    pub taper: f32,        // radius = base × (1 − t)^taper; 0.8
+    pub bend_deg: f32,     // where `curve` bends, about the axis: 0 = local +Z, 90 = +X
+    pub ridges: u8, pub ridge_depth: f32, // lobes round the section, spiralling with `twist` (a unicorn: 2 at 0.13 over 4.5 turns)
+    pub rings: u8, pub ring_depth: f32,   // bumps along the length (an ibex)
+}
+// The mesh and the SDF preview's stand-in share one table of these proportions (`surface::hard::horn_dims`).
+// Ridges and rings refine the mesh to follow them (hero and near; none at far) and smooth its normals.
 pub struct Tone { pub muscle: f32, pub fat: f32, pub folds: f32, pub landmarks: f32 }
 ```
 
@@ -194,10 +205,20 @@ pub enum RegionSelector {
     All, Kind(RegionKind), Part(PartPath), Role(LimbRole), Side(Side),
     And(Vec<RegionSelector>), Or(Vec<RegionSelector>), AllExcept(Vec<RegionSelector>), // no Box: Bevy reflect can't represent it
 }
-impl RegionSelector { pub fn mask(&self, t: &RegionTable, a: &Anatomy) -> RegionMask; }
+impl RegionSelector {
+    pub fn mask(&self, a: &Anatomy) -> RegionMask;
+    pub fn hard_mask(&self, a: &Anatomy) -> Vec<bool>; // one per hard part
+}
 #[derive(Reflect, Clone, Copy, Default)] pub struct RegionMask(pub u64);
 ```
 - Example: "fur on everything except limb ends and the face" is `AllExcept([Kind(LimbEnd), Kind(Face)])`. That works for a biped and a hexapod alike.
+- **Hard parts take no region** (2026-10-31). A claw, horn or tooth belongs to the region of the
+  skin it grows from (`HardPart::region`, its bone's), and carries the part that made it and its
+  side. No region of kind `Hard` exists any more; `Anatomy::hard_region` stands each hard part in
+  as one for the selectors, so `Kind(Hard)`, `Part(...)`, `Side(...)` and `Role(...)` pick hard
+  parts as they did, through `hard_mask`. The markings read the hard part's index from the vertex
+  data (`MobVertexData::hard`, in the layer byte as `4 + index`, up to 252 hard parts). The
+  dragon's 45 hard parts had taken 45 of the 64 regions.
 
 ### 2.7 Built anatomy (resolved, CPU-side, not authored)
 ```rust
@@ -294,10 +315,13 @@ pub enum BoneDetail { Core, Fine }                   // Fine: digits, ear tips, 
 pub struct CrowdSkeleton { pub map: Vec<u8> /* full bone → crowd bone (Fine folds to Core parent) */, pub bones: Vec<BoneId> }
 #[derive(Reflect, Clone, Copy, PartialEq, Eq, Hash, Debug)] pub struct BoneId(pub u8);
 
-pub const MAX_BONES: usize = 64;
+pub const MAX_BONES: usize = 128;      // 64 until 2026-10-31
 pub const MAX_CROWD_BONES: usize = 32;
 ```
 - **T-6** 64 bones is enough for a torso, neck, head, jaw, four limbs, two hands of fingers and a tail. 32 crowd bones = 64 texels per frame row in the baked motion texture.
+  - 2026-10-31: raised to 128. A six-limbed dragon with two-segment clawed toes, spines and horns
+    needs about 80. Nothing is sized by the cap (`BoneId` is a byte, Bevy skins 256 joints, the
+    crowd folds to 32), so it is a budget on a hero mob's per-bone CPU work; the crowd cap stays.
 
 ### 3.1 Sockets
 ```rust

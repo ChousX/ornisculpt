@@ -64,7 +64,7 @@
                             // Pointed ears, swept back.
                             (name: "ear", kind: Chain((role: Ear, chain: (segments: 2, length: 0.1, radius: (curve: [(0.0, 1.0), (0.4, 0.9), (1.0, 0.1)], scale: 0.024, cross: Flat(aspect: 2.6)), blend: 0.006))), attach: Ear, mirror: true),
                             // Tusks from the lower jaw, up past the upper lip, splayed a little.
-                            (name: "tusk", kind: Hard((kind: Horn, size: 0.056, curve: 0.4)), attach: Mouth, offset: (translate: (0.025, -0.018, 0.02), rotate_deg: (-70.0, 0.0, 18.0)), mirror: true),
+                            (name: "tusk", kind: Hard((kind: Tusk, size: 0.06, curve: 0.4, shape: (base: Some(0.28), taper: 0.7, bend_deg: 25.0))), attach: Mouth, offset: (translate: (0.025, -0.018, 0.02), rotate_deg: (-70.0, 0.0, 18.0)), mirror: true),
                             // Long black hair gathered in a crest from brow to nape.
                             (name: "hair", kind: Mass((shape: Crest, size: (0.018, 0.022, 0.11), blend: 0.012)), attach: Crown, offset: (translate: (0.0, -0.015, -0.02))),
                         ],

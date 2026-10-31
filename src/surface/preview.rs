@@ -199,8 +199,8 @@ fn hard_part(part: &HardPart, of: u16, model: &[Affine3A]) -> Option<Packed> {
     let (kind, params, flag) = match &part.params.kind {
         HardKind::Eye => (SPHERE, [s, 0.0, 0.0, 0.0], EYE),
         HardKind::Plate => (ELLIPSOID, plate_radii(s, part.params.curve).extend(0.0).to_array(), HARD),
-        kind => {
-            let (length, base, _) = horn_dims(kind, s)?;
+        _ => {
+            let (length, base, _) = horn_dims(&part.params)?;
             let tip = base * 0.15;
             (ROUND_CONE, [base, tip, (length - tip).max(1e-4), 0.0], HARD)
         }

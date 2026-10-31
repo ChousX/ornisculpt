@@ -686,6 +686,9 @@ pub struct HardParams {
     /// Eyes: how much white shows round the iris, `0.0` = none (the iris fills the eye, as in
     /// most animals) .. `1.0` = a human eye.
     pub sclera: f32,
+    /// A horn-like part's shape over its kind's proportions (base radius, taper, where it bends,
+    /// ridges and rings); the defaults are the kind's own shape.
+    pub shape: HardShape,
 }
 
 impl Default for HardParams {
@@ -696,7 +699,43 @@ impl Default for HardParams {
             curve: 0.3,
             twist: 0.0,
             sclera: 0.0,
+            shape: HardShape::default(),
         }
+    }
+}
+
+/// The shape of a horn-like hard part over the proportions its kind sets.
+///
+/// Horns, tusks, spikes, claws, teeth, fangs, beaks and an antler's beam take it. Every default
+/// gives the kind's own shape, so a plan without a `shape` builds as it did. Eyes, plates and
+/// authored meshes ignore it.
+#[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub struct HardShape {
+    /// Base radius as a fraction of `size`; `None` is the kind's own (a horn 0.22, a tusk 0.15, a
+    /// spike 0.3, a claw 0.25: see `surface::hard::horn_dims`).
+    pub base: Option<f32>,
+    /// How the radius falls toward the tip: radius = base × (1 − t)^taper. `1.0` is a straight
+    /// cone; less keeps the shaft full and blunts the tip (`0.8`, the default); more draws it to
+    /// a needle.
+    pub taper: f32,
+    /// Where the bend (`curve`) goes, in degrees about the part's axis: `0.0` toward the part's
+    /// local +Z (forward, as before), `90.0` toward its local +X, `180.0` back.
+    pub bend_deg: f32,
+    /// Ridges round the section, which spiral with `twist` (a unicorn's or narwhal's spiral, a
+    /// kudu's keel): how many. `0`: none.
+    pub ridges: u8,
+    /// How deep the ridges cut, as a fraction of the radius; they flatten out toward the tip.
+    pub ridge_depth: f32,
+    /// Rings along the length (an ibex's or a goat's growth rings): how many. `0`: none.
+    pub rings: u8,
+    /// How far the rings stand out, as a fraction of the radius.
+    pub ring_depth: f32,
+}
+
+impl Default for HardShape {
+    fn default() -> Self {
+        Self { base: None, taper: 0.8, bend_deg: 0.0, ridges: 0, ridge_depth: 0.12, rings: 0, ring_depth: 0.08 }
     }
 }
 

@@ -25,7 +25,7 @@ struct CoatOutput {
     @location(8) paint: vec4<f32>,
     // The surface's baked data (COAT_DATA): cavity (0 open .. 1 deep crease), shade (0 open .. 1
     // enclosed at the body's scale), position along the part (0 root .. 1 tip), and the tone layer
-    // (0 base, 1 muscle, 2 landmark, 3 fat).
+    // (0 base, 1 muscle, 2 landmark, 3 fat; 4 and up on a hard part's vertices, which have none).
     @if(COAT_DATA)
     @location(9) surface: vec4<f32>,
 }

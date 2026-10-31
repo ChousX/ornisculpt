@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 use super::{
     AxisSample, ClothFollow, CrowdSkeleton, Sheet, WingRig, MAX_CROWD_BONES, AnatomyError, BodyPlan, BoneId, HardPart, JointLimit, LegInfo, LimbRole, LodLevel,
-    LookDef, PartDetail, PartLodRules, PartPath, Primitive, RegionTable, Skeleton, SocketDef,
+    LookDef, PartDetail, PartLodRules, PartPath, Primitive, RegionDef, RegionKind, RegionTable, Skeleton, SocketDef,
     SpringChainDef, Tone,
 };
 use super::{AnatomyBuilder, AttachPoint, HardParams, PartAssets, PartBuild, PartNode};
@@ -96,6 +96,16 @@ impl Anatomy {
     #[must_use]
     pub fn part(&self, path: &PartPath) -> Option<&BuiltPart> {
         self.parts.iter().find(|p| &p.path == path)
+    }
+
+    /// The region a hard part stands in as for selectors: a `Hard` region of the part that made
+    /// it, on its side. Hard parts carry no region of their own (`HardPart::region` is the skin's
+    /// under them), so this is what [`RegionSelector::hard_mask`](super::RegionSelector::hard_mask)
+    /// matches against.
+    #[must_use]
+    pub fn hard_region(&self, hard: &HardPart) -> RegionDef {
+        let part = self.parts.get(hard.part.idx()).map_or_else(|| PartPath(String::new()), |p| p.path.clone());
+        RegionDef { part, kind: RegionKind::Hard, side: hard.side }
     }
 
     /// Recomputes what derives from the bone list: inverse bind poses and the crowd skeleton

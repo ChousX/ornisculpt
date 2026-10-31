@@ -459,6 +459,7 @@ fn wrap_piece(piece: &Piece, field: &BodyField, mesh: &TriMesh, chains: Option<&
                 limb_t: 0,
                 primary_bone: BoneId(joints[0].clamp_u8()),
                 layer: surf.layer,
+                hard: None,
             }
             .pack(),
         );

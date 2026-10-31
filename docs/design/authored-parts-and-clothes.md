@@ -106,7 +106,7 @@ Research only. No files were edited and no builds were run. File:line references
 | Layering | Only by giving the outer garment a larger `ease`. |
 | Scale | `ease`, hems and hang length are absolute metres, so garments don't scale with the body (inferred to look wrong on very large or small bodies). |
 | Hang | Only from one edge. |
-| Budget | 64 bones in total, 32 for crowds. Cloth chains compete with tails and wings and become rigid when the budget runs out. At most 8 garments. |
+| Budget | 128 bones in total (64 before 2026-10-31), 32 for crowds. Cloth chains compete with tails and wings and become rigid when the budget runs out. At most 8 garments. |
 | Materials | Palette colour only, no UVs or textures. |
 | Crowd cost | One extra draw per dressed mob. |
 

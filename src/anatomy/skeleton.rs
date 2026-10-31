@@ -5,7 +5,14 @@ use serde::{Deserialize, Serialize};
 use super::{RegionId, Side};
 
 /// Hard cap on bones per mob at hero detail (fingers included).
-pub const MAX_BONES: usize = 64;
+///
+/// A budget, not a limit anything is sized by: [`BoneId`] is a byte, Bevy's skinned meshes take
+/// 256 joints (`bevy_pbr::render::skin::MAX_JOINTS`), the vertex data carries the bone in a byte,
+/// and the crowd tiers fold whatever is past [`MAX_CROWD_BONES`] into kept ancestors, so
+/// nothing on the GPU grows with it. It was 64 until 2026-10-31, when a dragon with two-segment
+/// clawed toes (16 bones), spines and horns ran past it; what it still guards is the per-bone
+/// CPU work of a hero mob (pose, IK, contacts) and hanging cloth, which takes what is left.
+pub const MAX_BONES: usize = 128;
 /// Cap on bones in the crowd skeleton (finer parts folded into ancestors).
 pub const MAX_CROWD_BONES: usize = 32;
 /// Matrices per mob in the crowd bone buffer: the crowd skeleton's, then (`soft-tissue` feature)

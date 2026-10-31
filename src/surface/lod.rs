@@ -157,11 +157,11 @@ pub fn mesh_lod_keeping<M: Mesher>(
     }
     if spec.hard_parts {
         let owner = hard_part_owners(anatomy);
-        for (part, owner) in anatomy.hard_parts.iter().zip(owner) {
+        for (index, (part, owner)) in anatomy.hard_parts.iter().zip(owner).enumerate() {
             if anatomy.parts.get(owner.idx()).is_none_or(|p| p.lod < level) {
                 continue;
             }
-            if let Some(m) = super::hard::hard_part_mesh(part, anatomy, level) {
+            if let Some(m) = super::hard::hard_part_mesh(index, part, anatomy, level) {
                 merge(&mut data, &m);
             }
         }
@@ -237,6 +237,7 @@ fn sheet_mesh(sheet: &Sheet) -> BodyMeshData {
                 limb_t: 0,
                 primary_bone: BoneId(j[0].clamp_u8()),
                 layer: PrimLayer::Base,
+                hard: None,
             }
             .pack()
         })
