@@ -68,7 +68,10 @@ builds exactly as before, except for the foot shape and the two caps.
   brightness relative to the base. Painted fur shells and feather cards copy the paint.
   The coat also gets `hard` (hard-part colour) and `iris`. Their defaults are the old constants.
 - **`LimbEnd::Pincer`** is now a chela: a swollen palm plus the fixed and hinged fingers,
-  slightly open.
+  slightly open. Its `shape` (`PincerShape`: finger length against the palm, palm width and
+  depth, finger thickness, gape) reproportions that claw; every field defaults to `1.0`, the
+  claw as it was (`default_pincers_build_as_before`). The lobster's cutter is long fingers on a
+  flat palm, its crusher a swollen palm with short thick fingers and domed molars.
 - **`LimbEnd::Hoof { split: true }`** gives two claws with a cleft over a coronet. Every hoof
   now leans its toe forward (wall at about 50°) and is wider at the sole.
 - **`LimbEnd::Foot`** is a heel, a high instep falling to the broad ball, then tapering toes.
