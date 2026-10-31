@@ -74,5 +74,5 @@ def generate(name, warp):
     write_gltf([(f"head_{name}", (out, smooth_normals(out, idx), idx))], path)
     print(f"wrote {path}")
     for label, p in LANDMARKS:
-        x, y, z = (round(c, 4) for c in warp(p))
+        x, y, z = (0.0 if abs(c) < 5e-5 else round(c, 4) for c in warp(p))
         print(f"{label}: ({x}, {y}, {z}),")
