@@ -148,9 +148,9 @@ Plans and coats only, in three rounds of shots (viewer, headless): no engine cha
 - **Wyvern:** pterosaur wings half spread (`fold: 0.35`), theropod legs with three clawed toes, a
   barbed stinger. Coat: bottle green, dark back, banded tail.
 - **Unicorn:** the horse on Arabian lines (dished face, arched neck, bigger eyes) with a spiral
-  horn, a rigid mesh from `parts/horns.gltf` (`tools/gen_horns.py`): `HardKind::Horn` is too
-  thick for it (base radius 0.22 × length) and has no ridges. Mane, forelock and tail are hair
-  cards at 9000 per m² (2600 left gaps).
+  horn, at the time a rigid mesh from `parts/horns.gltf` (`tools/gen_horns.py`): `HardKind::Horn`
+  was too thick for it (base radius 0.22 × length) and had no ridges (since 2f6a603 it is a
+  `Horn` with a `shape`). Mane, forelock and tail are hair cards at 9000 per m² (2600 left gaps).
 - **Zebra:** a stockier, shorter-legged horse, upright mane, big ears, a tufted tail. Stripes are
   `bands` markings per part: upright on the torso, rings on legs, neck and face.
 - **Orc:** horn-shaped tusks (the `Tusk` kind is thinner than it reads), a stiff black crest
@@ -173,11 +173,19 @@ What the round found, for the engine:
    the leg's rings, and a belly bound to one bone took one band as a black patch.
    `Bands::axis` counts bands over the body's extent along a model-space direction, and
    `Bands::warp` makes them waver; the zebra's stripes run on over shoulders and haunch.
-4. **Budgets.** A dragon with clawed toes, spines and horns hits both caps at 64: bones
-   (two-segment toes were 16 too many) and regions (every hard part is a region; the spine series
-   had to shrink). Hard parts don't need a region each.
-5. **Hard-part shapes are fixed ratios.** Horns, tusks and spikes take one size; their base
-   radius is a fixed fraction of it. A slender horn needs an authored mesh.
+4. **Budgets** (fixed, b48fb6b and d3fcb48). A dragon with clawed toes, spines and horns hit
+   both caps at 64: bones (two-segment toes were 16 too many) and regions (every hard part was a
+   region; the spine series had to shrink). Hard parts take no region now: each belongs to the
+   skin's region under it, and the selectors reach it through `RegionSelector::hard_mask`
+   (`Kind(Hard)` still picks them all). The dragon went from 64 regions to 33. The bone cap is
+   128: nothing was sized by it (`BoneId` is a byte, Bevy skins 256 joints, the crowd folds to
+   32), so it guards per-bone CPU work only. The dragon has its two-segment toes (78 bones) and
+   spines at 7 / 9 / 10 down neck, back and tail.
+5. **Hard-part shapes were fixed ratios** (fixed, 294f5fc). `HardParams::shape` sets a base
+   radius fraction, taper, the bend's heading, spiral ridges and rings over the kind's own
+   proportions, which stay the defaults. The unicorn's horn is procedural (two ridges over 4.5
+   turns) and the orc's tusks are thick `Tusk`s (2f6a603); `parts/horns.gltf` stays as the
+   sample of a rigid mesh part.
 
 ## What still limits realism, most to least
 
