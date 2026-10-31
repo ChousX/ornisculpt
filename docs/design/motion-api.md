@@ -101,6 +101,7 @@ pub enum Feature {
     Arms,                   // manipulator limbs besides the locomotor ones (centaurs, mantises)
     Grip(Side),
     Wings,                  // reserved until wings exist: flight cycles will require it
+    GroundReach,            // neck + head span the neck's height: the mouth reaches the ground
 }
 ```
 
@@ -390,7 +391,8 @@ Built (2026-10-31). As it stands:
 Ships as data, so it doubles as examples:
 - `upright_biped.motionlib.ron`: walk, run, idle_breathe, look_around, overhead_strike,
   eat (`ReachTo(Mouth)`).
-- `quadruped.motionlib.ron`: walk, trot, canter, gallop, sniff, shake, sit (hold).
+- `quadruped.motionlib.ron`: walk, trot, canter, gallop, sniff, shake, sit (hold), eat
+  (grazing: head down to the ground, three bites, back up; fits `GroundReach` quadrupeds).
   - Variants by stance via `fits`: ungulates get fetlock flex, plantigrades a rolling walk.
 - `hexapod.motionlib.ron`: tripod, wave, antenna_twitch.
 

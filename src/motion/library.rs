@@ -146,6 +146,23 @@ pub fn actions() -> Vec<Cycle> {
             .track(T::Arms(Sides::Right), C::Raise, Curve::envelope(130.0, 0.2, 0.6, 0.2))
             .track(T::Arms(Sides::Right), C::Flex(Joint::Middle), Curve::keys([(0.0, 0.0), (0.2, 40.0), (0.3, 80.0), (0.4, 40.0), (0.5, 80.0), (0.6, 40.0), (0.7, 80.0), (0.85, 20.0), (1.0, 0.0)]))
             .track(T::Head, C::Roll, Curve::envelope(6.0, 0.2, 0.6, 0.2)),
+        // Grazing: the head goes down to the ground, three bites, and comes back up.
+        Cycle::action("eat", 4.0)
+            .fits(Fit::family(F::Quadruped).needs(Feature::GroundReach))
+            .track(T::Root, C::Pitch, Curve::envelope(-3.0, 0.18, 0.6, 0.2))
+            .track(T::Root, C::Bob, Curve::envelope(-0.04, 0.18, 0.6, 0.2))
+            .track(T::Spine, C::Pitch, Curve::envelope(-8.0, 0.15, 0.65, 0.2))
+            .track(T::Neck, C::Pitch, Curve::keys([(0.0, 0.0), (0.18, -74.0), (0.8, -74.0), (1.0, 0.0)]))
+            .track(T::Head, C::Pitch, Curve::keys([(0.0, 0.0), (0.22, -42.0), (0.78, -42.0), (1.0, 0.0)]))
+            .track(
+                T::Jaw,
+                C::Open,
+                Curve::keys([(0.0, 0.0), (0.24, 0.0), (0.3, 0.55), (0.36, 0.05), (0.44, 0.55), (0.5, 0.05), (0.58, 0.55), (0.64, 0.05), (0.72, 0.0), (1.0, 0.0)]),
+            )
+            .with(Track::new(T::Tail, C::Yaw, Curve::keys([(0.0, 0.0), (0.3, 12.0), (0.55, -12.0), (0.8, 6.0), (1.0, 0.0)])).lag(0.1))
+            .event(0.31, "bite")
+            .event(0.45, "bite")
+            .event(0.59, "bite"),
         Cycle::action("flare", 1.6)
             .fits(Fit::any().needs(Feature::Wings))
             .track(T::Wings(Sides::Both), C::Fold, Curve::keys([(0.0, 1.0), (0.25, 0.0), (0.75, 0.0), (1.0, 1.0)]))
@@ -164,7 +181,7 @@ pub fn actions() -> Vec<Cycle> {
 /// - `head`: looking around while standing (`moving` false).
 /// - `tail`: wagging while `happy` is set.
 /// - `wings`: flapping while `flying` is set.
-/// - `action`: one-shots on triggers `attack`, `shake`, `rear`, `wave`, `flare`.
+/// - `action`: one-shots on triggers `attack`, `shake`, `rear`, `wave`, `flare`, `eat`.
 #[must_use]
 pub fn standard() -> MotionGraph {
     let mut g = MotionGraph::new()
@@ -175,7 +192,7 @@ pub fn standard() -> MotionGraph {
     }
     let gait_names: Vec<String> = gaits().into_iter().map(|c| c.name).collect();
     let mut action = Layer::new("action").state("none", Play::Empty);
-    for name in ["attack", "shake", "rear", "wave", "flare"] {
+    for name in ["attack", "shake", "rear", "wave", "flare", "eat"] {
         g = g.param(name, super::graph::ParamValue::Trigger);
         action = action
             .state(name, Play::Cycle(name.into()))
@@ -247,6 +264,26 @@ mod tests {
             let fitting: Vec<&str> = gaits.iter().filter(|g| g.fits.check(&traits).is_empty()).map(|g| g.name.as_str()).collect();
             println!("{name}: {:?} gaits {fitting:?}", traits.features);
             assert!(!fitting.is_empty(), "{name} has no gait");
+        }
+    }
+
+    /// Grazing fits quadrupeds whose head reaches the ground: not a biped, nor a bird (whose
+    /// neck does reach, but which stands on two legs).
+    #[test]
+    fn eat_fits_grazers_only() {
+        let eat = actions().into_iter().find(|c| c.name == "eat").unwrap();
+        for (name, src, fits) in [
+            ("horse", include_str!("../../assets/mobs/horse.body.ron"), true),
+            ("ox", include_str!("../../assets/mobs/ox.body.ron"), true),
+            ("quadruped", include_str!("../../assets/mobs/quadruped.body.ron"), true),
+            ("zebra", include_str!("../../assets/mobs/zebra.body.ron"), true),
+            ("man", include_str!("../../assets/mobs/man.body.ron"), false),
+            ("bird", include_str!("../../assets/mobs/bird.body.ron"), false),
+            ("spider", include_str!("../../assets/mobs/spider.body.ron"), false),
+        ] {
+            let traits = BodyTraits::of(&build_src(src));
+            let misfits = eat.fits.check(&traits);
+            assert_eq!(misfits.is_empty(), fits, "{name}: {misfits:?} ({:?})", traits.features);
         }
     }
 }
