@@ -23,6 +23,24 @@ use crate::num::{Idx, Saturate};
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
 
+/// `e^-x` for `x >= 0`, to about 2e-5 relative: `2^-t` split into an integer power (an exponent
+/// shift) and a degree-6 series on the fraction. `f32::exp` is a `libm` call per bone pair per
+/// triangle, half of this stage's time; the similarity weights don't need its last bits.
+#[inline]
+#[allow(clippy::suboptimal_flops)] // a Horner chain of plain multiplies, for the reason given at `group_centres`
+fn exp_neg(x: f32) -> f32 {
+    if x > 80.0 {
+        return 0.0;
+    }
+    let t = x * std::f32::consts::LOG2_E;
+    let whole = t.floor();
+    let frac = whole - t; // (-1, 0]
+    // Taylor series of 2^frac about 0: ln2^n / n!.
+    let series = 1.0 + frac * (std::f32::consts::LN_2 + frac * (0.240_226_5 + frac * (0.055_504_1 + frac * (0.009_618_13 + frac * (0.001_333_36 + frac * 0.000_154_035)))));
+    // 2^-whole as a float with exponent 127 - whole (whole <= 116, so never a subnormal).
+    f32::from_bits((127.0 - whole).sat_u32() << 23) * series
+}
+
 type Weights = smallvec::SmallVec<[(u16, f32); 8]>;
 
 fn sparse(joints: [u16; 4], weights: [f32; 4]) -> Weights {
@@ -80,7 +98,10 @@ struct Tri {
 /// The paper's similarity, over the group's bones only (others have zero vertex weight):
 /// Σ over ordered pairs j ≠ k of pⱼpₖvⱼvₖ·exp(−(pₖvⱼ − pⱼvₖ)²/σ²), which is symmetric in the pair,
 /// so twice the sum over j < k.
-#[allow(clippy::too_many_arguments)]
+// Plain multiplies and adds in the hot loop: `mul_add` on x86 without the FMA target feature is a
+// `libm` call per use, a sixth of this stage's time on a Zen 2, and it keeps LLVM from
+// vectorising the pair loop.
+#[allow(clippy::too_many_arguments, clippy::suboptimal_flops)]
 fn group_centres(
     bones: &[u16],
     members: &[u32],
@@ -109,19 +130,26 @@ fn group_centres(
         tri_weights.extend(bones.iter().map(|&b| get(&tri.weights, b)));
         centres.push((tri.centre, tri.area));
     }
-    let s2 = SIGMA * SIGMA;
+    let inv_s2 = 1.0 / (SIGMA * SIGMA);
     let mut v = smallvec::SmallVec::<[f32; 8]>::new();
+    // Per pair of the member's weights: (vj, vk, vj·vk).
+    let mut vp = smallvec::SmallVec::<[(f32, f32, f32); 28]>::new();
     for &u in members {
         let Some(w) = uniques.get(u.idx()).and_then(|&i| weights.get(i)) else { continue };
         v.clear();
         v.extend(bones.iter().map(|&b| get(w, b)));
+        vp.clear();
+        vp.extend(pairs.iter().map(|&(j, k)| {
+            let (vj, vk) = (v.get(j).copied().unwrap_or(0.0), v.get(k).copied().unwrap_or(0.0));
+            (vj, vk, vj * vk)
+        }));
         let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
         for (p, &(centre, area)) in tri_weights.chunks_exact(n).zip(&centres) {
             let mut sim = 0.0f32;
-            for &(j, k) in &pairs {
-                let (Some(&pj), Some(&pk), Some(&vj), Some(&vk)) = (p.get(j), p.get(k), v.get(j), v.get(k)) else { continue };
-                let e = f32::mul_add(pk, -vj, pj * vk);
-                sim = (pj * pk * vj * vk).mul_add((-(e * e) / s2).exp(), sim);
+            for (&(j, k), &(vj, vk, vjk)) in pairs.iter().zip(&vp) {
+                let (Some(&pj), Some(&pk)) = (p.get(j), p.get(k)) else { continue };
+                let e = pk * vj - pj * vk;
+                sim += pj * pk * vjk * exp_neg(e * e * inv_s2);
             }
             let contribution = 2.0 * sim * area;
             num += centre * contribution;
@@ -231,6 +259,19 @@ mod tests {
     use super::*;
     use crate::anatomy::{LodLevel, build_src};
     use crate::surface::{AdaptiveContour, BodyField, BodyFieldOptions, Field, SurfaceSettings, mesh_lod};
+
+    #[test]
+    fn cheap_exponential_matches_exp() {
+        let mut worst = 0.0f32;
+        for i in 0..=8000 {
+            let x = f32::from(i16::try_from(i).unwrap()) * 0.01;
+            let (got, want) = (exp_neg(x), (-x).exp());
+            worst = worst.max((got - want).abs() / want.max(1e-30));
+        }
+        assert!(worst < 5e-5, "largest relative error {worst}");
+        assert_eq!(exp_neg(0.0), 1.0);
+        assert_eq!(exp_neg(100.0), 0.0);
+    }
 
     /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
     /// vertex (on the near-tier quadruped: small enough to brute-force).
