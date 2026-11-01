@@ -85,6 +85,19 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      conversion furthest behind, so the crowd's cold start takes two minutes;
    - fur close-ups are over a 60 fps budget.
    Those two come before more shader work. The contacts loop and SSAO are still to measure.
+   - *Done* (c31efed, 3717f25, 53a2223), the two slow stages, profiled on toth (a Zen 2
+     like the Deck's APU; `perf record -e cpu-clock:u`, no call graphs under this kernel's
+     `perf_event_paranoid`): centres of rotation spent two thirds of their time in `libm`'s
+     `expf` and `fmaf` (`f32::mul_add` is a call on x86 without the FMA target feature, as
+     `f32::floor` is without SSE4.1; both are one instruction on aarch64, which is why tir
+     never showed them); the head's conversion spent 87 % in `mesh_to_sdf`'s BVH
+     traversal. A cheap exponential and plain arithmetic in the one, a band-plus-jump-flood
+     grid in the other (`anatomy::mesh_sdf`). On toth: centres −48 to −56 %, the head's
+     conversion −83 %, the man's generation 4.4 → 1.65 s (rows in `bench/LOG.md`). Still
+     open: `group_centres` is still 47 % of generation CPU, the body field 26 %; the other
+     stages' `mul_add`s (`surface::body`, `sdf.rs`, `contact.rs`) cost the same way wherever
+     they are hot; a Deck rerun of the v5 bench (`tools/deck-bench.sh`) will say how much
+     of the 5× is left.
 4. **Crowd cost.**
    - Merge the cloth submesh into the skin mesh. A dressed mob costs an extra draw entity (23 to
      27 ms against 15 ms plain).
