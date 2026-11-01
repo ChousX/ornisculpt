@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::BodyMeshData;
-use crate::num::{Idx, Saturate};
+use crate::num::{Clamp, Idx, Saturate, ToF32};
 
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
@@ -33,12 +33,13 @@ fn exp_neg(x: f32) -> f32 {
         return 0.0;
     }
     let t = x * std::f32::consts::LOG2_E;
-    let whole = t.floor();
-    let frac = whole - t; // (-1, 0]
+    // Truncation is the floor for t >= 0 (`f32::floor` is a libm call on x86 without SSE4.1).
+    let whole = t.sat_i32();
+    let frac = whole.to_f32() - t; // (-1, 0]
     // Taylor series of 2^frac about 0: ln2^n / n!.
     let series = 1.0 + frac * (std::f32::consts::LN_2 + frac * (0.240_226_5 + frac * (0.055_504_1 + frac * (0.009_618_13 + frac * (0.001_333_36 + frac * 0.000_154_035)))));
     // 2^-whole as a float with exponent 127 - whole (whole <= 116, so never a subnormal).
-    f32::from_bits((127.0 - whole).sat_u32() << 23) * series
+    f32::from_bits((127 - whole).clamp_u32() << 23) * series
 }
 
 type Weights = smallvec::SmallVec<[(u16, f32); 8]>;
@@ -148,8 +149,14 @@ fn group_centres(
             let mut sim = 0.0f32;
             for (&(j, k), &(vj, vk, vjk)) in pairs.iter().zip(&vp) {
                 let (Some(&pj), Some(&pk)) = (p.get(j), p.get(k)) else { continue };
+                // A triangle off either bone of the pair adds nothing (most candidates share
+                // only some of the group's pairs).
+                let pjk = pj * pk;
+                if pjk == 0.0 {
+                    continue;
+                }
                 let e = pk * vj - pj * vk;
-                sim += pj * pk * vjk * exp_neg(e * e * inv_s2);
+                sim += pjk * vjk * exp_neg(e * e * inv_s2);
             }
             let contribution = 2.0 * sim * area;
             num += centre * contribution;
