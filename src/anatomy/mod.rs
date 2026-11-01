@@ -12,6 +12,7 @@ mod lever;
 mod loader;
 mod lod;
 mod mass;
+mod mesh_sdf;
 mod part;
 mod parts;
 mod path;

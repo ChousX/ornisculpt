@@ -492,7 +492,8 @@ pub enum LodLevel { Hero = 0, Near = 1, Far = 2 }       // MobTier wraps it; "pe
 Two forms, both resolved before building so `build_anatomy` stays pure:
 
 - `PartKind::Sculpt`: a watertight glTF mesh primitive converted to an SDF grid
-  (`SdfGrid::from_mesh`: the `mesh_to_sdf` crate, BVH, pseudo-normal sign; either winding;
+  (`SdfGrid::from_mesh`, in `anatomy::mesh_sdf`: exact distances in a band a cell round every
+  triangle, the rest by jump flooding, angle-weighted pseudo-normal signs; either winding;
   enclosed voids filled) and smooth-blended into the body (`PrimShape::Grid`).
 - `HardKind::Mesh { path, orient, scale }`: an authored mesh attached rigidly to one bone.
 - `HeadParams::sculpt`: a sculpted head in place of the procedural one (§2.2).

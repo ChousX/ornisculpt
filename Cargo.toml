@@ -23,7 +23,7 @@ preview = []
 # Interchange (`interchange`): body plans, authored parts and garments to and from glTF, so artists
 # can author in their own tools (`docs/design/interchange.md`).
 interchange = ["dep:serde_json", "dep:base64"]
-web = ["bevy/web", "bevy/webgpu", "dep:getrandom02", "dep:getrandom04"]
+web = ["bevy/web", "bevy/webgpu", "dep:getrandom04"]
 
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = ["3d", "serialize", "png"] }
@@ -32,7 +32,6 @@ fast-surface-nets = "0.2"
 fastnoise-lite = "1.1"
 # The `traits` branch, until it lands on master.
 genetics = { git = "https://github.com/ChousX/genetics", branch = "traits", optional = true }
-mesh_to_sdf = "0.4"
 meshopt = "0.6"
 rand = "0.10"
 serde_json = { version = "1", optional = true }
@@ -43,8 +42,7 @@ serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1", features = ["serde", "union", "const_generics"] }
 thiserror = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-# Browser randomness for `rand` 0.10 and for `mesh_to_sdf`'s `bvh` (rand 0.8): `web` only.
-getrandom02 = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
+# Browser randomness for `rand` 0.10: `web` only.
 getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"], optional = true }
 
 # Tests read the glTF part meshes the sample plans reference (`anatomy::build_src`).

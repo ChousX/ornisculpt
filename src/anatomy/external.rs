@@ -93,28 +93,12 @@ impl SdfGrid {
         let (lo, hi) = (lo - pad, hi + pad);
         let dims = ((hi - lo) / cell).ceil().as_uvec3().max(UVec3::splat(2));
         let origin = lo + Vec3::splat(cell * 0.5);
-        let mut queries = Vec::with_capacity((dims.x * dims.y * dims.z).idx());
-        for z in 0..dims.z {
-            for y in 0..dims.y {
-                for x in 0..dims.x {
-                    queries.push((origin + UVec3::new(x, y, z).as_vec3() * cell).to_array());
-                }
-            }
-        }
-        let vertices: Vec<[f32; 3]> = mesh.positions.iter().map(Vec3::to_array).collect();
-        // The sign method needs outward winding; accept either by checking the signed volume.
+        // The signs need outward winding; accept either by checking the signed volume.
         let mut indices = mesh.indices.clone();
         if mesh.signed_volume() < 0.0 {
             indices.as_chunks_mut::<3>().0.iter_mut().for_each(|t| t.swap(1, 2));
         }
-        let values = mesh_to_sdf::generate_sdf(
-            &vertices,
-            mesh_to_sdf::Topology::TriangleList(Some(&indices)),
-            &queries,
-            // Raycast signs flip on symmetry planes (rays graze shared edges); pseudo-normal signs
-            // are exact for watertight, consistently wound meshes.
-            mesh_to_sdf::AccelerationMethod::Bvh(mesh_to_sdf::SignMethod::Normal),
-        );
+        let values = super::mesh_sdf::grid_distances(&mesh.positions, &indices, origin, cell, dims);
         let mut grid = Self { origin, cell: Vec3::splat(cell), dims, values };
         grid.fill_voids();
         grid
