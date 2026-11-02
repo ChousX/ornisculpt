@@ -108,9 +108,14 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      the Deck is meshing (1.4 to 2.5 s a mob) and the centres. Two minutes of cold start is
      still two minutes at 4000 mobs, so item 5's body cache is what makes it cheap.
 4. **Crowd cost.**
-   - Merge the cloth submesh into the skin mesh. A dressed mob costs an extra draw entity (23 to
-     27 ms against 15 ms plain).
-   - Find the near tier's remaining per-mob cost (`bench/LOG.md`, v5 RenderDoc notes).
+   - *Done* (nothing kept, 2026-11-02): merging the cloth submesh into the skin mesh. The item
+     rested on 23 to 27 ms against 15 ms plain, read on tir in October; measured again, dressing
+     4000 mobs costs 0.8 ms a frame on toth and about 2 ms on the Deck. Crowd mobs are instanced,
+     so a garment is an extra *entity*, not an extra draw, and the merge (built, look-identical,
+     measured) gains nothing: −0.1 to −0.9 ms on toth and inside the spread on the Deck. Rows in
+     `bench/LOG.md`.
+   - Find the near tier's remaining per-mob cost (`bench/LOG.md`, v5 RenderDoc notes). This is
+     where the crowd's frame goes: about 24.5 µs a near mob, 1700 of them on the Deck.
 5. **Long sessions.**
    - Free a body's space in the crowd clip atlas when the body goes.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (20 to 30 s for

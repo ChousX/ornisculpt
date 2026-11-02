@@ -12,7 +12,7 @@ Research only. No files were edited and no builds were run. File:line references
   - `src/clothing/` has an `Outfit` asset of garments authored in "wrap space". Each vertex is fitted by marching out to the real body SDF.
   - Loose cloth hangs on spring-bone chains. Each LOD gets its own cloth mesh, and crowd tiers are remapped to the crowd skeleton.
   - Sample outfits: `assets/outfits/{peasant,warrior,harness}.outfit.ron`.
-- **What clothes are missing:** skin and fur are not hidden under cloth, there are no head or hand garments, layering is set only by `ease`, cloth has no textures, spring chains ignore gravity and the body, and cloth costs one extra draw per crowd mob.
+- **What clothes are missing:** skin and fur are not hidden under cloth, there are no head or hand garments, layering is set only by `ease`, cloth has no textures, and spring chains ignore gravity and the body.
 
 ---
 
@@ -95,7 +95,10 @@ Research only. No files were edited and no builds were run. File:line references
   - The springs are included in the crowd bake.
 - **LOD:** Near and Far are decimated to 50% and 25% and pushed out by half a voxel.
 - **Shading:** one Cloth submesh with an 8-colour palette and a procedural weave.
-- **Cost** (`types.md` §13): 4000 dressed mobs take about 23–27 ms per frame, against about 15 ms undressed.
+- **Cost** (`types.md` §13): dressing a 4000-mob crowd costs about 0.8 ms a frame on toth and
+  about 2 ms on the Steam Deck (2026-11-02). The 23–27 against 15 ms read on tir in October no
+  longer holds. Cloth is an extra entity per dressed mob, not an extra draw — crowd mobs are
+  instanced — and merging it into the skin mesh was measured and gained nothing.
 
 ### B2. Gaps
 | Requirement | Status |
@@ -108,7 +111,7 @@ Research only. No files were edited and no builds were run. File:line references
 | Hang | Only from one edge. |
 | Budget | 128 bones in total (64 before 2026-10-31), 32 for crowds. Cloth chains compete with tails and wings and become rigid when the budget runs out. At most 8 garments. |
 | Materials | Palette colour only, no UVs or textures. |
-| Crowd cost | One extra draw per dressed mob. |
+| Crowd cost | One extra entity per dressed mob (not a draw: crowd mobs are instanced), about 0.8 ms a frame per 4000 on toth and 2 ms on the Deck. |
 
 ### B3. How others do it
 - **Spore:** creature skin is an implicit (metaball) surface, with rigid parts blended on ([Hecker](https://www.chrishecker.com/My_Liner_Notes_for_Spore), [janeng](https://janeng.com/?p=143)). This is the same split as Sculpt versus Hard here.

@@ -1292,9 +1292,13 @@ pub const MAX_GARMENTS: usize = 8;                  // palette entries; later ga
   the vertex colour's w), with a faint weave that fades by pixel footprint.
 - Samples: `tools/gen_garments.py` → `assets/garments/garments.gltf`;
   `assets/outfits/{peasant,warrior,harness,orc}.outfit.ron`.
-- Measured (2026-10-18, `examples/crowd.rs`): 4000 dressed mobs about 23–27 ms/frame against
-  about 15 ms plain. The cloth submesh is an extra draw entity per dressed mob; merging it into
-  the skin mesh is the obvious next step.
+- Measured again (2026-11-02, `examples/crowd 4000 ORNISCULPT_OUTFITS=1`): dressing the crowd
+  costs 0.8 ms a frame on toth (15.45 → 16.25 ms) and about 2 ms on the Steam Deck (41.3 → 43.0),
+  not the 23–27 against 15 ms read on 2026-10-18 on tir. The cloth submesh is an extra *entity*
+  per dressed mob, not an extra draw: crowd mobs are instanced (the v5 main pass runs in 1630
+  instances). Merging it into the skin mesh was built and measured and gains nothing — it loses
+  0.1 to 0.9 ms on toth, where the cloth branch joins a crowd-skin shader already doing fur,
+  feathers and scales, and sits inside the spread on the Deck. Not kept (`bench/LOG.md`).
 - Not yet: head and hood mapping, hanging from both span edges, layering beyond `ease`, garments
   in contacts, textures.
 
