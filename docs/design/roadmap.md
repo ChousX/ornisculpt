@@ -182,8 +182,10 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      phase is steadier, or many interleaved pairs. The trace did find a hotspot worth fixing on
      its own: the worst cold frame is 2.4 s in `start_generation`, where every mob computes its
      `BodyKey` before any body exists, and `body_key` RON-serialises the formed plan, settings,
-     coat and outfit each time — 65 µs a mob, a quarter of a second for 4000. Hashing the plan
-     asset once and mixing in `Form`, the seed and the coat and outfit hashes would remove it.
+     coat and outfit each time — 65 µs a mob, a quarter of a second for 4000.
+     - *Done* (2026-11-02): the formed plan's hash is memoised per (plan asset, `Form`) and
+       dropped when the plan reloads, so a crowd hashes its dozen distinct bodies instead of
+       four thousand. `body_key` 62.5 → 6.2 µs a mob, 250 → 25 ms on that frame.
    - A headless run that exits early sometimes crashes in teardown (`free(): invalid size`, or
      a segfault) after logging its error. This predates f115db7, so scripts should test for a
      non-zero exit rather than 1.

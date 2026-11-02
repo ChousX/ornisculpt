@@ -5,7 +5,7 @@ use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
-use xxhash_rust::xxh3::xxh3_128;
+use xxhash_rust::xxh3::{xxh3_64, xxh3_128};
 
 use super::loads::{Loaded, loaded, loaded_or_default};
 use super::{BodyFailed, LiveBody, Mob, MobSeed};
@@ -34,12 +34,25 @@ pub struct BodyKey(pub u128);
 /// bodies normally share meshes.
 #[must_use]
 pub fn body_key(live: &BodyPlan, settings: &SurfaceSettings, seed: u64, assets: &PartAssets, coat: &Coat, outfit: &Outfit) -> BodyKey {
+    body_key_of(plan_hash(live), settings, seed, assets, coat, outfit)
+}
+
+/// A formed plan's content hash. The slow part of a [`BodyKey`] by far — 6.5 KB of RON and 56 of
+/// the 62 µs for the man — so a crowd memoises it per (plan asset, [`Form`]) rather than paying
+/// it a mob ([`GenCache::plan_hash_for`]).
+#[must_use]
+fn plan_hash(live: &BodyPlan) -> u64 {
+    xxh3_64(ron::to_string(live).unwrap_or_default().as_bytes())
+}
+
+/// [`body_key`] with the plan already hashed.
+#[must_use]
+fn body_key_of(plan: u64, settings: &SurfaceSettings, seed: u64, assets: &PartAssets, coat: &Coat, outfit: &Outfit) -> BodyKey {
     let uses_seed = LodLevel::ALL.iter().any(|l| settings.get(*l).geometric_folds);
     let mut mesh_hashes: Vec<(&String, u64)> = assets.meshes.iter().map(|(p, m)| (p, m.hash)).collect();
     mesh_hashes.sort();
     let text = format!(
-        "{GENERATOR_VERSION}|{}|{}|{}|{mesh_hashes:?}|{}|{}",
-        ron::to_string(live).unwrap_or_default(),
+        "{GENERATOR_VERSION}|{plan:016x}|{}|{}|{mesh_hashes:?}|{}|{}",
         ron::to_string(settings).unwrap_or_default(),
         if uses_seed { seed } else { 0 },
         ron::to_string(coat).unwrap_or_default(),
@@ -130,8 +143,9 @@ pub(super) fn reload_changed_assets(
     mobs: Query<(Entity, &Mob, Option<&LiveBody>)>,
     mut cache: ResMut<GenCache>,
 ) {
+    let plans = reloaded(&mut plan_events, &mut cache.failed_loads);
+    cache.forget_plans(&plans);
     let failed = &mut cache.failed_loads;
-    let plans = reloaded(&mut plan_events, failed);
     for (entity, mob, _) in &mobs {
         if plans.contains(&mob.body.id()) {
             commands.entity(entity).remove::<LiveBody>().insert(GenRequest);
@@ -321,6 +335,12 @@ pub struct GenCache {
     /// What each in-flight body is for, by name: its plan's asset path and its coat's, for the
     /// warnings about the coat once it is baked on the body.
     labels: HashMap<BodyKey, (String, String)>,
+    /// Formed plans' content hashes by (plan asset, [`Form`]). A crowd is thousands of mobs over
+    /// a handful of plans and forms, and hashing a formed plan means serialising it (56 µs for
+    /// the man), so without this the frame that first sees a crowd spends a quarter of a second
+    /// hashing the same dozen bodies over and over. Dropped for a plan when it reloads, since
+    /// the formed plan is then a different one.
+    plan_hashes: HashMap<(AssetId<BodyPlan>, u64), u64>,
 }
 
 /// Failure messages kept; past this the oldest are forgotten (they are read within a frame).
@@ -340,6 +360,20 @@ impl GenCache {
     /// A pending mob's body, once its key is ready (used by `attach_body`).
     pub(super) fn ready(&self, pending: &GenPending) -> Option<Handle<GeneratedBody>> {
         self.bodies.get(&pending.0).cloned()
+    }
+
+    /// The content hash of `plan` formed by `form`, computing it only the first time this pairing
+    /// is seen. Only for a plan this crate formed itself: an edited [`LiveBody`] shares the
+    /// asset and form of the plan it came from while no longer matching it, so it is hashed
+    /// outright.
+    fn plan_hash_for(&mut self, asset: AssetId<BodyPlan>, form: &Form, live: &BodyPlan) -> u64 {
+        let form_key = xxh3_64(ron::to_string(form).unwrap_or_default().as_bytes());
+        *self.plan_hashes.entry((asset, form_key)).or_insert_with(|| plan_hash(live))
+    }
+
+    /// Forgets the memoised hashes of plans that reloaded.
+    fn forget_plans(&mut self, reloaded: &[AssetId<BodyPlan>]) {
+        self.plan_hashes.retain(|(asset, _), _| !reloaded.contains(asset));
     }
 
     /// Failed keys are neither cached nor in flight; mobs waiting on them give up. Returns the
@@ -589,6 +623,9 @@ pub(super) fn start_generation(
                 continue;
             }
         };
+        // Whether this plan is one we formed from the asset just now, and so may take its hash
+        // from the memo, or an edited `LiveBody` that must be hashed as it stands.
+        let mut formed = false;
         let live = if let Some(l) = live { l.0.clone() } else {
             let plan = match loaded(&mob.body, &plans, &server) {
                 Loaded::Ready(p) => p,
@@ -601,6 +638,7 @@ pub(super) fn start_generation(
             match apply_form(plan, form) {
                 Ok(l) => {
                     commands.entity(entity).insert(LiveBody(l.clone()));
+                    formed = true;
                     l
                 }
                 Err(e) => {
@@ -621,7 +659,12 @@ pub(super) fn start_generation(
                 continue;
             }
         };
-        let key = body_key(&live, &settings, seed.0, &assets, &coat, &outfit);
+        let plan = if formed {
+            cache.plan_hash_for(mob.body.id(), form, &live)
+        } else {
+            plan_hash(&live)
+        };
+        let key = body_key_of(plan, &settings, seed.0, &assets, &coat, &outfit);
         if !cache.known(&key) {
             if cache.in_flight.len() >= budget.max_in_flight {
                 commands.entity(entity).insert(WaitingKey(key));
@@ -768,6 +811,31 @@ impl BodyMeshes {
 mod key_tests {
     use super::*;
 
+    /// A plan's hash is computed once per (asset, form) and dropped when the plan reloads. Two
+    /// mobs of the same body must never pay for it twice, and an edited plan must never be
+    /// answered with the old hash.
+    #[test]
+    fn a_plans_hash_is_memoised_per_form_and_dropped_on_reload() {
+        let man: BodyPlan = ron::from_str(include_str!("../../assets/mobs/man.body.ron")).expect("the man's plan");
+        let woman: BodyPlan = ron::from_str(include_str!("../../assets/mobs/woman.body.ron")).expect("the woman's plan");
+        let asset = AssetId::<BodyPlan>::Uuid { uuid: bevy::asset::uuid::Uuid::from_u128(1) };
+        let other = AssetId::<BodyPlan>::Uuid { uuid: bevy::asset::uuid::Uuid::from_u128(2) };
+        let mut cache = GenCache::default();
+        let form = Form::default();
+        assert_eq!(cache.plan_hash_for(asset, &form, &man), plan_hash(&man), "the first ask hashes the plan");
+        // Asking again answers from the memo. Handing it a different plan proves it: a memo
+        // that re-hashed would return the woman's.
+        assert_eq!(cache.plan_hash_for(asset, &form, &woman), plan_hash(&man), "the second ask must not hash again");
+        // A different form of the same plan, and a different plan, are their own entries.
+        let bigger = Form { overall_scale: 1.5, ..default() };
+        assert_eq!(cache.plan_hash_for(asset, &bigger, &woman), plan_hash(&woman));
+        assert_eq!(cache.plan_hash_for(other, &form, &woman), plan_hash(&woman));
+        // The plan reloads: its entries go, the other asset's stay.
+        cache.forget_plans(&[asset]);
+        assert_eq!(cache.plan_hash_for(asset, &form, &woman), plan_hash(&woman), "a reloaded plan is hashed afresh");
+        assert_eq!(cache.plan_hashes.len(), 2, "the reloaded plan's two entries went, the other asset's stayed, one was re-made");
+    }
+
     /// Timing (ignored): what one mob costs `start_generation` before anything is spawned. Every
     /// mob pays this on the frame it first asks for a body, so a crowd pays it 4000 times at
     /// once (`bench/LOG.md`, the cold phase's worst frame).
@@ -800,5 +868,19 @@ mod key_tests {
         let refs_each = t.elapsed() / n.try_into().unwrap_or(1);
         eprintln!("referenced_assets: {refs_each:?} a mob, so {:?} for 4000", refs_each * 4000);
         eprintln!("together: {:?} for a 4000-mob crowd in one frame", (each + form_each + refs_each) * 4000);
+        // What the memo saves: the plan's own hash is nearly all of a key, and a crowd of one
+        // plan and one form needs it once rather than once a mob.
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(plan_hash(&plan));
+        }
+        let hash_each = t.elapsed() / n.try_into().unwrap_or(1);
+        let memo = plan_hash(&plan);
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(body_key_of(memo, &settings, 0, &assets, &coat, &outfit));
+        }
+        let memoised = t.elapsed() / n.try_into().unwrap_or(1);
+        eprintln!("plan_hash: {hash_each:?} a mob; key with it memoised: {memoised:?} a mob, {:?} for 4000", memoised * 4000);
     }
 }
