@@ -14,7 +14,9 @@
 //! crowd tiers from baked clips; a mob triggers an action every few seconds);
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits
 //! (`ORNISCULPT_SHOT_FRAME=n` picks the frame);
-//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
+//! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera;
+//! `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]` sets the quality profile (Q still cycles the
+//! presets), for measuring what a tier costs per mob.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -41,6 +43,7 @@ fn main() -> AppExit {
         .insert_resource(Count(count))
         .insert_resource(GlobalAmbientLight { brightness: 300.0, ..default() })
         .insert_resource(Orbit::from_env(0.6, 0.5, 30.0, Vec3::ZERO, (0.5, 400.0)))
+        .insert_resource(quality_from_env())
         .init_resource::<UploadStats>()
         .add_systems(Startup, setup)
         .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, screenshot_frames(600)))
@@ -131,6 +134,25 @@ fn act(time: Res<Time>, mut actors: Query<(&mut Actor, &mut MotionParams)>) {
 
 fn controls(keys: Res<ButtonInput<KeyCode>>, mut profile: ResMut<QualityProfile>, mut quality: Local<usize>) {
     cycle_quality(&keys, &mut profile, &mut quality);
+}
+
+/// `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]`, else the default profile. The tier thresholds
+/// decide how many mobs each tier holds, so a sweep of them says what a tier costs per mob.
+fn quality_from_env() -> QualityProfile {
+    let mut profile = QualityProfile::default();
+    let Ok(spec) = std::env::var("ORNISCULPT_TIERS") else { return profile };
+    let mut fields = spec.split(',');
+    if let Some(px) = fields.next().and_then(|f| f.parse().ok()) {
+        profile.hero_px = px;
+    }
+    if let Some(px) = fields.next().and_then(|f| f.parse().ok()) {
+        profile.near_px = px;
+    }
+    if let Some(n) = fields.next().and_then(|f| f.parse().ok()) {
+        profile.max_hero = n;
+    }
+    info!("tiers: hero {} px, near {} px, max hero {}", profile.hero_px, profile.near_px, profile.max_hero);
+    profile
 }
 
 fn report(
