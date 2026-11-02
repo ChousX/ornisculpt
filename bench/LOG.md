@@ -181,9 +181,11 @@ the library gives crowd meshes, so all 4000 crowd mobs cast their simplified geo
   out of the question, but the nearest few hundred is 2 to 3 ms. It wants a caster budget, not
   an on/off switch.
 - **A coarse shadow for a hero** would take the 32 heroes' 14.9 ms to about 0.2 ms — 56 % of
-  this frame. Bevy 0.20 can draw one: shadow casters are gathered on `InheritedVisibility` and
-  filtered by the light's `RenderLayers` (`bevy_light-0.20.1/src/lib.rs:342`), so a proxy on a
-  layer the camera does not see but the light does casts without being drawn. The proxy has to
+  this frame. Drawing one needs a trick, though: Bevy has no shadow-only component, and the way
+  to fake it — a proxy on a `RenderLayers` layer the camera does not see but the light does,
+  which works because casters are gathered on `InheritedVisibility` and filtered by the light's
+  mask (`bevy_light-0.20.1/src/lib.rs:342`) — rests on an interaction neither `RenderLayers` nor
+  the light types document. The proxy has to
   follow the hero's real pose, so it would be the Near mesh Bevy-skinned by the hero's joints in
   crowd-skeleton order — not the crowd instance, which hero mobs stop uploading
   (`Without<MobSkeleton>`, `motion/crowd.rs:342`) and which carries the baked pose, not the

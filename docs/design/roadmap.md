@@ -131,13 +131,23 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      frame**. It also prices item 6: crowd shadows are 5 µs a caster, so the nearest few hundred
      cost 2 to 3 ms and all 4000 cost 20.
    - Next, and the one real decision left in this item: **how a hero casts a cheap shadow.**
-     Bevy 0.20 gathers casters on `InheritedVisibility` and filters them by the light's
-     `RenderLayers`, so a proxy on a layer the camera doesn't see but the light does casts
-     without being drawn. The proxy must follow the played pose, so it is the Near mesh
-     Bevy-skinned by the hero's own joints in crowd-skeleton order — not the crowd instance,
-     which hero mobs stop uploading and which holds the baked pose. The cost is an API
-     convention: apps would have to put their shadow-casting lights on the proxy's layer, or the
-     plugin would have to do it for them. Decide that before writing it.
+     - *A coarse proxy* keeps every hero's shadow and takes nearly all the saving, but there is
+       no first-party way to draw one. Bevy has `NotShadowCaster` and `NotShadowReceiver` and
+       nothing for shadow-only. It would have to lean on `RenderLayers`: casters are gathered on
+       `InheritedVisibility` and filtered by the light's own mask
+       (`check_dir_light_mesh_visibility`, `bevy_light-0.20.1/src/lib.rs:342`), so a proxy on a
+       layer the camera doesn't see but the light does casts without being drawn. That
+       interaction is real but **undocumented** — `RenderLayers` documents cameras only, and the
+       light types never mention it — so it could go in a release without being called
+       breaking, which matters with three consumers on `main`. It also costs an API convention:
+       apps would have to put their lights on the proxy's layer, or the plugin would have to.
+       The proxy must follow the played pose, so it is the Near mesh Bevy-skinned by the hero's
+       own joints in crowd-skeleton order — not the crowd instance, which hero mobs stop
+       uploading and which holds the baked pose.
+     - *A caster cap* is documented API and no trick: the nearest few heroes cast, the rest take
+       `NotShadowCaster`. Four casters is 1.9 ms against 32's 14.9. The cost is that a mob pops
+       its shadow as it crosses the threshold.
+     Decide between them before writing either.
 5. **Long sessions.**
    - Free a body's space in the crowd clip atlas when the body goes.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (20 to 30 s for
