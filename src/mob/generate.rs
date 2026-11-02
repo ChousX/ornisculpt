@@ -174,6 +174,13 @@ pub struct GeneratedBody {
     /// Indexed by `LodLevel as usize`. `Hero` uses the full skeleton, coarser levels the crowd one.
     pub lods: [LodMeshes; 3],
     pub full_bindposes: Handle<SkinnedMeshInverseBindposes>,
+    /// The hero tier's shadow proxy: the `Near` level's geometry as one mesh, Bevy-skinned, with
+    /// [`crowd_bindposes`](Self::crowd_bindposes) and the mob's joints in crowd-skeleton order.
+    /// A hero's own meshes don't cast ([`spawn`](super::spawn)); this stands in for them at a
+    /// twentieth of the triangles. See [`SHADOW_PROXY_LAYER`](super::SHADOW_PROXY_LAYER).
+    pub shadow_mesh: Handle<Mesh>,
+    /// Inverse bind poses of the crowd skeleton, for the shadow proxy.
+    pub crowd_bindposes: Handle<SkinnedMeshInverseBindposes>,
     /// Bounding radius around the mob origin, for tiering.
     pub radius: f32,
     /// Baked crowd-tier motion for the default gait of this body's leg count.
@@ -666,6 +673,10 @@ pub(super) fn finish_generation(
         #[cfg(feature = "soft-tissue")]
         full_bind.extend(out.soft.hero.iter().map(|r| skeleton.inverse_bind.get(r.bone.index()).copied().unwrap_or(Mat4::IDENTITY)));
         let full = bindposes.add(SkinnedMeshInverseBindposes::from(full_bind));
+        // The shadow proxy's skeleton: the crowd bones, in crowd order.
+        let crowd_bind: Vec<Mat4> =
+            skeleton.crowd.bones.iter().map(|b| skeleton.inverse_bind.get(b.index()).copied().unwrap_or(Mat4::IDENTITY)).collect();
+        let crowd_bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(crowd_bind));
         let radius = LodLevel::Far.pick(&out.lods).positions.iter().map(|p| p.length()).fold(0.1, f32::max);
         let lods = ready.lods.map(|split| LodMeshes(split.into_iter().map(|(slot, mesh)| (slot, meshes.add(mesh))).collect()));
         let coat_meshes = ready.coats.map(|[shells, feathers, hair]| CoatMeshHandles {
@@ -680,6 +691,8 @@ pub(super) fn finish_generation(
             anatomy: Arc::new(out.anatomy),
             lods,
             full_bindposes: full,
+            shadow_mesh: meshes.add(ready.shadow),
+            crowd_bindposes,
             radius,
             motion: Arc::new(out.motion),
             coat_meshes,
@@ -710,6 +723,8 @@ pub(super) struct BodyMeshes {
     lods: [Vec<(MaterialSlot, Mesh)>; 3],
     /// Per level, fur shells, feather cards and hair cards.
     coats: [[Option<Mesh>; 3]; 3],
+    /// The hero's shadow proxy: `Near` geometry, every slot in one mesh, Bevy-skinned.
+    shadow: Mesh,
 }
 
 impl BodyMeshes {
@@ -724,6 +739,10 @@ impl BodyMeshes {
             let m = level.pick(&out.coat_meshes);
             [&m.shells, &m.feathers, &m.hair].map(|d| d.as_ref().map(|d| if crowd(level) { d.to_crowd_mesh() } else { d.to_bevy_mesh() }))
         });
-        Self { lods, coats }
+        // One mesh, not one per slot: the shadow pass only wants the silhouette, and a hero mob
+        // then adds one entity instead of four. `Near` is remapped to the crowd skeleton, so
+        // Bevy skins it from the mob's joints in that order (`crowd_bindposes`).
+        let shadow = LodLevel::Near.pick(&out.lods).to_bevy_mesh();
+        Self { lods, coats, shadow }
     }
 }

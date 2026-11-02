@@ -26,7 +26,9 @@ pub use generate::{
     StageTimes, body_key, generate_body,
 };
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};
-pub use spawn::{HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder};
+pub use spawn::{
+    HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder, SHADOW_PROXY_LAYER, ShadowProxy,
+};
 #[cfg(feature = "soft-tissue")]
 pub use spawn::SoftJoint;
 pub use tier::{ForceTier, MobTier, QualityProfile, TierCamera};
@@ -171,6 +173,7 @@ impl Plugin for MobPlugin {
                     (tier::choose_tiers, spawn::sync_hero_visuals, tier::apply_tier_visibility, spawn::sync_part_entities)
                         .chain()
                         .in_set(MobSet::Tiering),
+                    spawn::shadow_proxy_layers.in_set(MobSet::Tiering),
                     levers::apply_bone_scales.in_set(MobSet::Levers),
                 ),
             );

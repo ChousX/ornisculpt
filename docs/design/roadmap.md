@@ -130,7 +130,15 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      coarse shadow would take the 32 heroes' 14.9 ms to about 0.2 ms, **56 % of the Deck's crowd
      frame**. It also prices item 6: crowd shadows are 5 µs a caster, so the nearest few hundred
      cost 2 to 3 ms and all 4000 cost 20.
-   - Next, and the one real decision left in this item: **how a hero casts a cheap shadow.**
+   - *Done* (2026-11-02): hero mobs cast through a coarse proxy, taking the Deck's crowd frame
+     **26.1 → 9.9 ms at 32 heroes and 43.8 → 10.3 at 64**. A hero's marginal cost is 12 µs where
+     it was 0.5 ms. The proxy is the `Near` mesh skinned by the mob's own joints in
+     crowd-skeleton order, so the shadow follows the played pose; it is kept off camera on
+     `SHADOW_PROXY_LAYER`, which `shadow_proxy_layers` adds to every shadow-casting light. The
+     chosen route was the first of the two below, with its warning written into the constant,
+     `README.md` and `types.md` §10. What it cost: one more mesh per body, one entity per hero,
+     and a dependence on undocumented engine behaviour to watch at each Bevy upgrade.
+   - The two routes that were weighed, kept here because the choice may want revisiting:
      - *A coarse proxy* keeps every hero's shadow and takes nearly all the saving, but there is
        no first-party way to draw one. Bevy has `NotShadowCaster` and `NotShadowReceiver` and
        nothing for shadow-only. It would have to lean on `RenderLayers`: casters are gathered on

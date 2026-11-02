@@ -1206,8 +1206,16 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
   of 32 it is 16 of the 27 ms. On tir the balance was the other way round (the near tier at
   24.5 µs a mob); the Deck's near tier is five times cheaper than tir's, its hero tier dearer.
   A 60 fps frame there buys about 30 hero mobs, or thousands of crowd ones. Nearly all of a
-  hero's cost is its shadow casting (0.47 of the 0.49 ms; crowd tiers are `NotShadowCaster`):
+  hero's cost was its shadow casting (0.47 of the 0.49 ms; crowd tiers are `NotShadowCaster`):
   its mesh, joints and skinning together come to 24 µs.
+- **Hero shadows go through a proxy** (`spawn::SHADOW_PROXY_LAYER`, 2026-11-02): a hero's own
+  meshes are `NotShadowCaster`, and one extra entity per hero carries the `Near` mesh
+  (`GeneratedBody::shadow_mesh`) skinned by the mob's joints in crowd-skeleton order
+  (`crowd_bindposes`), so the shadow follows the played pose rather than a baked one. It is kept
+  off camera by render layer 61, which `shadow_proxy_layers` adds to every shadow-casting light.
+  **This relies on `RenderLayers` filtering shadow casters by the light's mask, which `bevy_light`
+  implements but does not document** — see the warning on the constant and in `README.md`. The
+  cost is one more mesh per body (`Near` geometry in Bevy-skinned form) and one entity per hero.
 - Not yet: crowd shadows, `BoneScales` and custom gaits in crowd tiers, `PlayCycle` in crowd
   tiers, atlas compaction when bodies are freed, dispatch splitting above about 2M crowd bones.
 

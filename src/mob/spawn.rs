@@ -6,7 +6,8 @@ use bevy::prelude::*;
 use super::generate::GenPending;
 use super::crowd::{CrowdSkin, CrowdSlot, CrowdUploaded};
 use super::{BodyFailed, BodyReady, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
-use bevy::light::NotShadowCaster;
+use bevy::camera::visibility::{Layer, RenderLayers};
+use bevy::light::{NotShadowCaster, NotShadowReceiver, WithLight};
 use bevy::mesh::MeshTag;
 use crate::anatomy::{BoneId, LodLevel, PartKind, PartPath};
 
@@ -174,6 +175,48 @@ pub(super) fn attach_body(
 #[derive(Component, Clone, Default)]
 pub struct HeroVisual;
 
+/// The render layer a hero mob's shadow proxy lives on.
+///
+/// A hero's own meshes are `NotShadowCaster`: at 74 k triangles a hero costs 0.47 ms a frame in
+/// the shadow passes on a Steam Deck, 95 % of what the whole tier costs, while the same mob's
+/// `Near` geometry casts for 5 µs (`bench/LOG.md`, 2026-11-02). So the hero casts through a
+/// proxy — the `Near` mesh, skinned by the mob's own joints so it follows the played pose — and
+/// the proxy is kept off camera by this layer.
+///
+/// # Warning: this rests on behaviour Bevy does not document
+///
+/// Bevy has `NotShadowCaster` and `NotShadowReceiver` and nothing for "cast but do not draw".
+/// The proxy is invisible because the camera's layers don't include this one, and it still casts
+/// because `check_dir_light_mesh_visibility` (`bevy_light`) gathers casters from
+/// `InheritedVisibility` and filters them by the *light's* layers, not the camera's.
+/// `RenderLayers` documents cameras only, and the light types never mention it, so a Bevy
+/// release could drop the interaction without calling it a breaking change. If hero mobs ever
+/// lose their shadows after an engine update, look here first.
+///
+/// [`shadow_proxy_layers`] keeps every shadow-casting light on this layer, so apps need do
+/// nothing. An app that sets `RenderLayers` on a light keeps whatever it chose, with this layer
+/// added. A camera must *not* include this layer, or the proxy will be drawn over the mob.
+///
+/// The number is high to stay clear of the layers apps pick for themselves, and under 64 so the
+/// mask stays one word.
+pub const SHADOW_PROXY_LAYER: Layer = 61;
+
+/// Marks a hero mob's shadow proxy (see [`SHADOW_PROXY_LAYER`]).
+#[derive(Component, Clone, Default)]
+pub struct ShadowProxy;
+
+/// Keeps every shadow-casting light on [`SHADOW_PROXY_LAYER`], so that hero mobs' proxies cast
+/// for it. Lights keep the layers they already had; this one is added.
+pub(super) fn shadow_proxy_layers(mut commands: Commands, lights: Query<(Entity, Option<&RenderLayers>), WithLight>) {
+    let proxy = RenderLayers::layer(SHADOW_PROXY_LAYER);
+    for (light, layers) in &lights {
+        let layers = layers.cloned().unwrap_or_default();
+        if !layers.intersects(&proxy) {
+            commands.entity(light).insert(layers.with(SHADOW_PROXY_LAYER));
+        }
+    }
+}
+
 /// Spawns joints + skinned hero meshes for mobs at `Hero` tier and removes them below it.
 #[allow(clippy::type_complexity)]
 pub(super) fn sync_hero_visuals(
@@ -209,7 +252,23 @@ pub(super) fn sync_hero_visuals(
                 commands.entity(mob).insert(crate::soft::SoftState::new(regions.len()));
             }
             let skin = SkinnedMesh { inverse_bindposes: body.full_bindposes.clone(), joints: skinned };
-            spawn_level_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin), ());
+            spawn_level_meshes(&mut commands, mob, body, LodLevel::Hero, (HeroVisual, skin), NotShadowCaster);
+            // The shadow proxy in their place: the same mob at `Near` detail, skinned by its own
+            // joints in crowd-skeleton order, so the shadow follows the pose being played rather
+            // than the baked one a crowd instance would carry. Off camera, on for the lights
+            // (see `SHADOW_PROXY_LAYER`, and the warning there).
+            let crowd_joints: Vec<Entity> = skeleton.crowd.bones.iter().filter_map(|b| joints.get(b.index()).copied()).collect();
+            commands.spawn((
+                MobVisual,
+                HeroVisual,
+                ShadowProxy,
+                Mesh3d(body.shadow_mesh.clone()),
+                MeshMaterial3d(body.materials_for(LodLevel::Hero).skin.clone()),
+                SkinnedMesh { inverse_bindposes: body.crowd_bindposes.clone(), joints: crowd_joints },
+                RenderLayers::layer(SHADOW_PROXY_LAYER),
+                NotShadowReceiver,
+                ChildOf(mob),
+            ));
             commands.entity(mob).insert(MobSkeleton(joints));
         } else if !hero && has_skeleton {
             for child in children.into_iter().flatten() {

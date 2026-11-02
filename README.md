@@ -68,6 +68,31 @@ Tests: `cargo test --release --lib`. Lints are strict (clippy pedantic and nurse
 `expect`, indexing, panics or `as`), so run `cargo clippy --release --all-targets` with each
 feature a change touches.
 
+## Shadows: a render layer you should know about
+
+A hero-tier mob's own meshes do not cast shadows. At 74 k triangles a hero costs about 0.47 ms a
+frame in the shadow passes on a Steam Deck — 95 % of what the whole tier costs, and well over
+half the frame at the default cap of 32 — while the same mob's `Near` geometry casts for 5 µs.
+So a hero casts through a proxy: its `Near` mesh, skinned by the mob's own joints so the shadow
+follows the pose being played, kept off camera on render layer
+[`SHADOW_PROXY_LAYER`](src/mob/spawn.rs) (61).
+
+**This leans on behaviour Bevy does not document.** Bevy has `NotShadowCaster` and
+`NotShadowReceiver` and nothing for "cast but do not draw". The proxy is invisible because no
+camera has its layer, and it still casts because `check_dir_light_mesh_visibility` in
+`bevy_light` gathers casters from `InheritedVisibility` and filters them by the *light's* layers,
+not the camera's. `RenderLayers` documents cameras only, and the light types never mention it, so
+a Bevy upgrade could drop the interaction without calling it breaking. **If hero mobs lose their
+shadows after an engine update, this is why.**
+
+What it means for an app:
+
+- **Nothing, normally.** The plugin keeps every shadow-casting light on that layer
+  (`shadow_proxy_layers`), adding it to whatever layers the light already has.
+- **Don't put a camera on layer 61**, or you will see each hero's coarse proxy drawn over it.
+- A mob's shadow is its `Near` silhouette, so it is slightly coarser than its body and bends at
+  32-bone resolution rather than the full skeleton's.
+
 ## Used by
 
 - ornisculpter: the editor, which authors plans, coats
