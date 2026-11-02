@@ -1199,11 +1199,15 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
 - Measured (2026-10-17, `examples/crowd.rs`): 4000 mobs about 13.7 ms/frame, about 99 KB/frame
   of instance uploads (was 8 MB of matrices). The versioned bench measures the crowd differently
   (1920×1080, coats on, cold start and steady state): tir 62.8–68.8 ms steady, Steam Deck
-  62.7–63.2 ms (`bench/LOG.md`, 2026-10-29 and 2026-10-31). The near tier is the cost, about
-  24.5 µs per near mob on tir.
+  62.7–63.2 ms (`bench/LOG.md`, 2026-10-29 and 2026-10-31).
+- **What a tier costs** (Steam Deck, 2026-11-02, 4000 bare mobs at a fixed camera,
+  `ORNISCULPT_TIERS` sweeps): about 0.5 ms a **hero** mob, 5 µs a **near** mob and under half a
+  microsecond a **far** one, over a base under 1 ms. The hero tier dominates: at the default cap
+  of 32 it is 16 of the 27 ms. On tir the balance was the other way round (the near tier at
+  24.5 µs a mob); the Deck's near tier is five times cheaper than tir's, its hero tier dearer.
+  A 60 fps frame there buys about 30 hero mobs, or thousands of crowd ones.
 - Not yet: crowd shadows, `BoneScales` and custom gaits in crowd tiers, `PlayCycle` in crowd
-  tiers, atlas compaction when bodies are freed, dispatch splitting above about 2M crowd bones,
-  merging the cloth submesh into the skin mesh (`roadmap.md`, Phase 2).
+  tiers, atlas compaction when bodies are freed, dispatch splitting above about 2M crowd bones.
 
 ---
 

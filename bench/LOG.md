@@ -123,6 +123,37 @@ and fur at the eye framing is far over. At the Deck's own 1280×800 the pixel-bo
 cost less, but that hasn't been measured, because the resolution is fixed within a bench version.
 4000 mobs is a stress case, not a Deck target.
 
+### What a tier costs on the Deck (2026-11-02)
+
+`examples/crowd 4000` (bare mobs, no coats or outfits), one camera, 9000 frames so every body is
+generated before the reading, `ORNISCULPT_TIERS=hero_px,near_px,max_hero` sweeping the thresholds.
+All runs settle at 12 bodies and the same far count.
+
+| `max_hero` (near_px 80) | hero / near / far | frame | | `near_px` (32 heroes) | hero / near / far | frame |
+|---|---|---|---|---|---|---|
+| 0 | 0 / 1903 / 2097 | 10.4 ms | | 160 | 32 / 1284 / 2684 | 23.8 ms |
+| 8 | 8 / 1895 / 2097 | 13.9 ms | | 80 | 32 / 1871 / 2097 | 26.7 ms |
+| 16 | 16 / 1887 / 2097 | 17.1 ms | | 40 | 32 / 2892 / 1076 | 32.0 ms |
+| 32 | 32 / 1871 / 2097 | 26.7 ms | | none (hero overflow only) | 32 / 1003 / 2965 | 23.3 ms |
+| 64 | 64 / 1839 / 2097 | 43.8 ms | | | | |
+
+Which fits **base under 1 ms + 0.5 ms a hero mob + 5 µs a near mob + under 0.5 µs a far one**:
+
+- **The hero tier is the Deck's crowd frame.** The marginal hero costs 0.44 / 0.40 / 0.60 /
+  0.53 ms across the four steps — linear, so it is geometry and the shadow passes, not screen
+  size (the biggest mobs are promoted first, and they are no dearer than the rest). At the
+  default cap of 32 that is 16.3 of 26.7 ms, 61 % of the frame for 0.8 % of the mobs.
+- **The near tier is cheap here**, 4.92 µs a mob from 160 to 80 px and 5.18 µs from 80 to 40 —
+  flat in on-screen size, so it is per-mob work, not pixels. tir measured 24.5 µs (v5 notes
+  above): the Deck's near tier is five times cheaper than tir's while its hero tier is dearer.
+  The near tier is not where this device's frame goes.
+- **A 60 fps frame on the Deck** buys about 30 hero mobs, or 3000 near ones, or a mix. Phase 2
+  opens by noting domain-expance holds every creature at `ForceTier(Hero)`; that is the budget
+  it is spending.
+- Still unsplit: how much of the 0.5 ms is the two shadow cascades (crowd tiers are
+  `NotShadowCaster`, and the v5 capture puts 10.8 M shadow indices on exactly these 32 mobs),
+  how much the full-detail mesh (74 k triangles on the man), and how much the joint upload.
+
 ## Bench version 4 baseline (2026-10-24)
 
 Version 4 runs headless (no window or winit; see `docs/design/perf-and-look-plan.md` §1.1).

@@ -114,8 +114,18 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      so a garment is an extra *entity*, not an extra draw, and the merge (built, look-identical,
      measured) gains nothing: −0.1 to −0.9 ms on toth and inside the spread on the Deck. Rows in
      `bench/LOG.md`.
-   - Find the near tier's remaining per-mob cost (`bench/LOG.md`, v5 RenderDoc notes). This is
-     where the crowd's frame goes: about 24.5 µs a near mob, 1700 of them on the Deck.
+   - *Done* (2026-11-02): what each tier costs on the Deck, by sweeping `ORNISCULPT_TIERS` over
+     4000 bare mobs at one camera (table in `bench/LOG.md`). A frame is a base under 1 ms plus
+     **0.5 ms a hero mob, 5 µs a near mob and under half a microsecond a far one**. So the near
+     tier is not the cost here — tir's 24.5 µs a near mob doesn't carry over, the Deck's is five
+     times cheaper — **the hero tier is**: at the default cap of 32 it is 16.3 of the 26.7 ms,
+     61 % of the frame for 0.8 % of the mobs, and it grows linearly to 43.8 ms at 64. A 60 fps
+     frame on the Deck buys about 30 hero mobs or 3000 crowd ones.
+   - Next, split that 0.5 ms: the two shadow cascades (crowd tiers are `NotShadowCaster`, and
+     the v5 capture puts 10.8 M shadow indices on exactly those 32 mobs), the full-detail mesh
+     (74 k triangles on the man) and the joint upload are separable with one experiment each.
+     This is the lever for the opening line of this phase: domain-expance holds every creature
+     at `ForceTier(Hero)`, which on the Deck is a budget of about 30.
 5. **Long sessions.**
    - Free a body's space in the crowd clip atlas when the body goes.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (20 to 30 s for
