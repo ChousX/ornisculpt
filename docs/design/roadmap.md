@@ -176,7 +176,14 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
    crowd tiers, and crowd shadows. The game's needs set the order.
 7. **Bugs the work above turned up.**
    - The crowd's cold-start median rose 13 % with the crowd layers (822df11), and the steady
-     frame didn't move. The cause isn't known; a Tracy trace of the cold phase is next.
+     frame didn't move. The Tracy trace the item asked for (2026-11-02, `--features tracy`)
+     **could not separate it on toth**: one unchanged binary gave cold p50 9.3 to 17.8 ms and
+     frames over 33 ms of 12 to 214 over four runs. Retrying it wants the Deck, whose cold
+     phase is steadier, or many interleaved pairs. The trace did find a hotspot worth fixing on
+     its own: the worst cold frame is 2.4 s in `start_generation`, where every mob computes its
+     `BodyKey` before any body exists, and `body_key` RON-serialises the formed plan, settings,
+     coat and outfit each time — 65 µs a mob, a quarter of a second for 4000. Hashing the plan
+     asset once and mixing in `Form`, the seed and the coat and outfit hashes would remove it.
    - A headless run that exits early sometimes crashes in teardown (`free(): invalid size`, or
      a segfault) after logging its error. This predates f115db7, so scripts should test for a
      non-zero exit rather than 1.

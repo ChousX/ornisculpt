@@ -763,3 +763,42 @@ impl BodyMeshes {
         Self { lods, coats, shadow }
     }
 }
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    /// Timing (ignored): what one mob costs `start_generation` before anything is spawned. Every
+    /// mob pays this on the frame it first asks for a body, so a crowd pays it 4000 times at
+    /// once (`bench/LOG.md`, the cold phase's worst frame).
+    #[test]
+    #[ignore = "timing"]
+    fn body_key_timing() {
+        let plan: crate::anatomy::BodyPlan = ron::from_str(include_str!("../../assets/mobs/man.body.ron")).expect("the man's plan");
+        let assets = crate::anatomy::test_assets(&plan);
+        let (settings, coat, outfit) = (SurfaceSettings::default(), Coat::default(), Outfit::default());
+        let t = std::time::Instant::now();
+        let n = 1000;
+        for i in 0..n {
+            std::hint::black_box(body_key(&plan, &settings, i, &assets, &coat, &outfit));
+        }
+        let each = t.elapsed() / n.try_into().unwrap_or(1);
+        eprintln!("body_key: {each:?} a mob, so {:?} for a 4000-mob crowd", each * 4000);
+
+        // The rest of what a mob pays before its body is even asked for.
+        let form = crate::anatomy::Form { overall_scale: 1.1, ..default() };
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            let _ = std::hint::black_box(apply_form(&plan, &form).map(LiveBody));
+        }
+        let form_each = t.elapsed() / n.try_into().unwrap_or(1);
+        eprintln!("apply_form + LiveBody: {form_each:?} a mob, so {:?} for 4000", form_each * 4000);
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(referenced_assets(&plan));
+        }
+        let refs_each = t.elapsed() / n.try_into().unwrap_or(1);
+        eprintln!("referenced_assets: {refs_each:?} a mob, so {:?} for 4000", refs_each * 4000);
+        eprintln!("together: {:?} for a 4000-mob crowd in one frame", (each + form_each + refs_each) * 4000);
+    }
+}

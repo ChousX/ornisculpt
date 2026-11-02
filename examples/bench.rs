@@ -521,8 +521,9 @@ fn run_app(scenario: &str, out: PathBuf) -> AppExit {
         ScheduleRunnerPlugin::run_loop(Duration::ZERO),
         OrnisculptPlugin,
     ));
-    // `--no-gpu-timing`: no timestamp queries (per-pass GPU times are then missing).
-    if !std::env::args().any(|a| a == "--no-gpu-timing") {
+    // `--no-gpu-timing`: no timestamp queries (per-pass GPU times are then missing). The `tracy`
+    // feature brings this plugin in itself, and adding it twice is a panic.
+    if !std::env::args().any(|a| a == "--no-gpu-timing") && !app.is_plugin_added::<RenderDiagnosticsPlugin>() {
         app.add_plugins(RenderDiagnosticsPlugin);
     }
     // Finish each frame on the GPU before the next: headless frames have no swapchain to hold the
