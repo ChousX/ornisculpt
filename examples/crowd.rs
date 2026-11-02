@@ -17,15 +17,18 @@
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera;
 //! `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]` sets the quality profile (Q still cycles the
 //! presets), for measuring what a tier costs per mob;
-//! `ORNISCULPT_SHADOWS=0` stops the key light casting, for weighing the shadow passes.
+//! `ORNISCULPT_SHADOWS=0` stops the key light casting, for weighing the shadow passes;
+//! `ORNISCULPT_CROWD_SHADOWS=1` lets the crowd tiers cast too (they are `NotShadowCaster` by
+//! default), for pricing crowd shadows and a coarse shadow proxy for heroes.
 
+use bevy::light::NotShadowCaster;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::MobCoat;
-use ornisculpt::mob::{CrowdInstance, CrowdUploads, GenCache, Mob, MobTier, QualityProfile, TierCamera};
+use ornisculpt::mob::{CrowdInstance, CrowdUploads, GenCache, LodMesh, Mob, MobTier, QualityProfile, TierCamera};
 use ornisculpt::motion::{MobMotion, MotionGraph, MotionParams, library};
 use ornisculpt::num::{Saturate, ToF32};
 
@@ -47,7 +50,7 @@ fn main() -> AppExit {
         .insert_resource(quality_from_env())
         .init_resource::<UploadStats>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, screenshot_frames(600)))
+        .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, crowd_shadows, screenshot_frames(600)))
         .add_systems(Last, count_uploads)
         .add_observer(common::exit_on_body_failed)
         .run()
@@ -135,6 +138,19 @@ fn act(time: Res<Time>, mut actors: Query<(&mut Actor, &mut MotionParams)>) {
 
 fn controls(keys: Res<ButtonInput<KeyCode>>, mut profile: ResMut<QualityProfile>, mut quality: Local<usize>) {
     cycle_quality(&keys, &mut profile, &mut quality);
+}
+
+/// `ORNISCULPT_CROWD_SHADOWS=1`: crowd-tier meshes cast shadows, which they never do in the
+/// library (`spawn_level_meshes` gives them `NotShadowCaster`). For measuring what a coarse mesh
+/// costs to cast: both what crowd shadows would cost and the ceiling on casting a hero's shadow
+/// from its crowd geometry instead of its 74 k-triangle mesh.
+fn crowd_shadows(mut commands: Commands, meshes: Query<Entity, (With<LodMesh>, With<NotShadowCaster>)>) {
+    if std::env::var("ORNISCULPT_CROWD_SHADOWS").as_deref() != Ok("1") {
+        return;
+    }
+    for entity in &meshes {
+        commands.entity(entity).remove::<NotShadowCaster>();
+    }
 }
 
 /// `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]`, else the default profile. The tier thresholds
