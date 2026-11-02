@@ -160,7 +160,14 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
        its shadow as it crosses the threshold.
      Decide between them before writing either.
 5. **Long sessions.**
-   - Free a body's space in the crowd clip atlas when the body goes.
+   - *Done* (2026-11-02): a body's space in the crowd clip atlas comes back when the body
+     goes. The atlas only grew before — `append` handed out the next index and nothing gave one
+     back — so a session that replaces bodies grew the clip buffer without bound, and every
+     motion-graph reload leaked the blocks of every bake it dropped. `CrowdSkin` now keeps the
+     holes (smallest fit, joined where they touch, the atlas shortening when the end is freed),
+     `register_clips` frees a body's clips on `AssetEvent::Removed`, and `CrowdCycles` frees a
+     bake's block when its graphs reload or its body goes. Blocks are reused but never moved,
+     so compaction is still open and still wants every `ClipLayout` rewritten.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (78 s for 4000 on
      the Deck) and the first head SDF are then paid once per install.
      - *Done* (2026-11-02), the head SDF half: `PartAssetCache::set_cache_dir` keeps converted

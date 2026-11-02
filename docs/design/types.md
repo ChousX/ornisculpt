@@ -1076,7 +1076,9 @@ Flow (`MobSet::Generation`):
   `PartLodRules` (the one generation input the key does not cover, recorded in the file) is
   ignored and the body built again. Off by default — the crate writes nothing to disk unless an
   app asks.
-- Not yet: freeing a body's atlas space when it goes (`roadmap.md`, Phase 2).
+- **A body's atlas space comes back** (2026-11-02): `register_clips` frees its gait clips on
+  `AssetEvent::Removed`, which fires once the last handle is gone, so no mob can still be
+  playing them (§10).
 
 ---
 
@@ -1199,6 +1201,11 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
 - Joint entities exist only at `Hero`. Every generated body's baked clips are appended once to a
   GPU **clip atlas** (`register_clips`); a graph's idles and actions per (body, graph set) too,
   each with a mask row of the crowd bones it moves (§6.5).
+- The atlas is allocated, not just grown (2026-11-02): `CrowdSkin::append` takes the smallest
+  hole that fits, `release_range` gives a block back, joining holes that touch and shortening
+  the atlas when the block is at its end, and `atlas_usage` reports both numbers. A body that
+  goes frees its gait clips, and `CrowdCycles` frees a bake's block when its graphs reload or
+  its body goes — that reload path leaked the whole baked set each time a graph was saved.
 - Each frame `crowd_animate` computes every non-hero mob's `CrowdInstance` in parallel: the
   idle pose plus up to three layers of frame pairs. Layer 0 is the gait at `1 − idle weight`;
   the two heaviest playing graph layers fill the rest (override before additive, then heavier).
@@ -1234,7 +1241,9 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
   implements but does not document** — see the warning on the constant and in `README.md`. The
   cost is one more mesh per body (`Near` geometry in Bevy-skinned form) and one entity per hero.
 - Not yet: crowd shadows, `BoneScales` and custom gaits in crowd tiers, `PlayCycle` in crowd
-  tiers, atlas compaction when bodies are freed, dispatch splitting above about 2M crowd bones.
+  tiers, dispatch splitting above about 2M crowd bones. Freed atlas blocks are reused but never
+  moved, so a long session can leave the atlas holed; compacting it would mean rewriting every
+  `ClipLayout` and `CrowdClip` that points into it.
 
 ---
 
@@ -1368,7 +1377,6 @@ templates, the Blender add-on) live in ornisculpter.
 
 The order work goes in is [`roadmap.md`](roadmap.md). Gathered from the sections above:
 
-- A disk cache of generated bodies; freeing a body's atlas space when it goes (§7, §10).
 - `Reach` arm IK; fingers closing on a grip; `BoneScales` and custom gaits in crowd tiers; crowd
   shadows (§6, §8.3, §10).
 - `HiddenRegions` (§8.2); `Wrist` sockets (§3.1); `QualityProfile` scaling the surface settings
