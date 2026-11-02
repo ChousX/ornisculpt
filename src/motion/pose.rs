@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use super::heft::Heft;
 use super::stages::{self, Frame, PoseInput, PoseState, leg_length};
 use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, Reach, ReachState, TorsoState, MotionTime};
-use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, HandPose, MobGait, MobIntent};
+use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, GripPose, HandPose, MobGait, MobIntent};
 use crate::anatomy::Anatomy;
 use crate::mob::{BodyReady, GeneratedBody, MobBody, MobJoint, MobSkeleton};
 
@@ -160,6 +160,7 @@ pub(super) struct HeroPose {
     heft: &'static Heft,
     cycles: &'static CyclePose,
     hands: Option<&'static HandPose>,
+    grips: Option<&'static GripPose>,
     reach: Option<&'static Reach>,
     ground: Option<&'static FootGround>,
     feet: &'static mut Feet,
@@ -176,13 +177,16 @@ pub(super) fn pose_heroes(assets: MotionAssets, mut mobs: Query<HeroPose>, joint
     mobs.par_iter_mut().for_each(|mut m| {
         let Some(f) = assets.frame(m.body, m.gait, m.tf) else { return };
         let scales = m.skeleton.0.iter().map(|e| joints.get(*e).map_or(Vec3::ONE, |t| t.scale));
+        // What the mob holds closes its fingers, unless the game poses that hand itself.
+        let (set, held) = (m.hands.copied().unwrap_or_default(), m.grips.map_or_else(HandPose::default, |g| g.0));
+        let hands = HandPose { left: set.left.or(held.left), right: set.right.or(held.right) };
         let input = PoseInput {
             loco: m.loco,
             clock: m.clock,
             step: m.step,
             heft: m.heft,
             cycles: m.cycles.0.as_ref(),
-            hands: m.hands,
+            hands: (hands != HandPose::default()).then_some(&hands),
             reach: m.reach,
             ground: m.ground.map_or(&[][..], |g| &g.0[..]),
             look_at: m.intent.look_at,

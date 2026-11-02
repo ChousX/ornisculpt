@@ -19,6 +19,7 @@ use bevy::transform::TransformSystems;
 
 use crate::anatomy::{Anatomy, BoneId, Side, SocketDef, SocketKind};
 use crate::mob::{CrowdSkin, CrowdUploaded, GeneratedBody, MobBody, MobJoint, MobSkeleton};
+use crate::motion::{GripPose, Hand, HandPose};
 
 /// Which socket of the holder a tool goes in.
 #[derive(Reflect, Clone, Debug, PartialEq, Eq)]
@@ -59,12 +60,16 @@ pub struct HeldBy {
     pub socket: SocketSel,
     /// Where the tool is held, in the tool's own space (its frame is matched to the socket's).
     pub grip: Transform,
+    /// How thick the tool is where it is held: the haft's radius in metres. The holder's fingers
+    /// close round it (`close_fingers`); 0, the default, closes them into a fist, so a tool with
+    /// a haft should say how thick it is.
+    pub radius: f32,
 }
 
 impl HeldBy {
     #[must_use]
     pub const fn new(mob: Entity, socket: SocketSel) -> Self {
-        Self { mob, socket, grip: Transform::IDENTITY }
+        Self { mob, socket, grip: Transform::IDENTITY, radius: 0.0 }
     }
 
     #[must_use]
@@ -72,11 +77,22 @@ impl HeldBy {
         self.grip = grip;
         self
     }
+
+    /// The haft's radius in metres, which the holder's fingers close round.
+    #[must_use]
+    pub const fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
 }
 
 /// The tools a mob holds.
+///
+/// Requires [`GripPose`]: a mob that has held anything keeps one, so `close_fingers` can open
+/// its hands again when it lets go.
 #[derive(Component, Reflect, Debug, Default)]
 #[relationship_target(relationship = HeldBy)]
+#[require(GripPose)]
 pub struct Holding(Vec<Entity>);
 
 /// Places held tools after the mob's pose is final for the frame.
@@ -87,6 +103,8 @@ impl Plugin for EquipPlugin {
         app.register_type::<HeldBy>()
             .register_type::<Holding>()
             .add_observer(take_in_hand)
+            // Before the pose, which reads the hands it writes.
+            .add_systems(Update, close_fingers.before(crate::mob::MobSet::Motion))
             .add_systems(PostUpdate, place_held.before(TransformSystems::Propagate));
     }
 }
@@ -96,6 +114,35 @@ fn take_in_hand(ev: On<Add<HeldBy>>, mut commands: Commands, parented: Query<(),
     if parented.contains(ev.entity) {
         commands.entity(ev.entity).remove::<ChildOf>();
     }
+}
+
+/// Closes each holder's fingers round what it holds: a tool in a grip socket gives that side a
+/// hand curled round its haft ([`Hand::round`]), and a side holding nothing is left to the
+/// animation. Hero tier only in effect, since digits exist only there.
+pub(crate) fn close_fingers(
+    bodies: Res<Assets<GeneratedBody>>,
+    mut holders: Query<(&MobBody, &Holding, &mut GripPose)>,
+    tools: Query<&HeldBy>,
+) {
+    for (body, holding, mut grips) in &mut holders {
+        let held = holding.0.iter().filter_map(|t| tools.get(*t).ok());
+        let want = bodies.get(&body.0).map_or_else(HandPose::default, |body| grip_hands(&body.anatomy, held));
+        if grips.0 != want {
+            grips.0 = want;
+        }
+    }
+}
+
+/// The hand each side takes from the tools `held` in `anatomy`'s grip sockets. A side holding
+/// nothing (or holding something in a socket that isn't a grip, a pack on the back) is left out,
+/// and its hand stays with the animation.
+fn grip_hands<'a>(anatomy: &Anatomy, held: impl Iterator<Item = &'a HeldBy>) -> HandPose {
+    let mut hands = HandPose::default();
+    for tool in held {
+        let Some(socket) = tool.socket.find(&anatomy.sockets).filter(|s| s.kind == SocketKind::Grip) else { continue };
+        hands.set(socket.side, Some(Hand::round(tool.radius, socket.size)));
+    }
+    hands
 }
 
 /// Model-space rest transform of `bone` (forward kinematics up its chain).
@@ -171,4 +218,56 @@ pub(crate) fn place_held(
             *transform = placed;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anatomy::build_src;
+
+    fn man() -> Anatomy {
+        build_src(include_str!("../../assets/mobs/man.body.ron"))
+    }
+
+    /// A hand closes round what it holds: tight on a thin haft, flat on something as thick as
+    /// its own palm, and nothing at all in a hand that holds nothing.
+    #[test]
+    fn fingers_close_round_a_held_haft() {
+        let a = man();
+        let palm = a.sockets.iter().find(|s| s.kind == SocketKind::Grip).expect("the man has a grip").size;
+        let mob = Entity::from_raw_u32(1).expect("an entity id");
+        let spear = HeldBy::new(mob, SocketSel::grip(Side::Right)).with_radius(0.012);
+        let hands = grip_hands(&a, [&spear].into_iter());
+        let right = hands.right.expect("the right hand closed");
+        assert!(hands.left.is_none(), "the empty hand is left to the animation");
+        for (i, (&curl, fist)) in right.curl.iter().zip(Hand::FIST.curl).enumerate() {
+            assert!(curl < fist, "digit {i} should not be a full fist round a haft: {curl} vs {fist}");
+            assert!(curl > fist * 0.5, "digit {i} barely closed on a thin haft: {curl}");
+        }
+        // Something as thick as the palm can't be wrapped: the hand lies flat on it.
+        let slab = HeldBy::new(mob, SocketSel::grip(Side::Right)).with_radius(palm);
+        let flat = grip_hands(&a, [&slab].into_iter()).right.expect("the right hand");
+        assert_eq!(flat.curl, Hand::OPEN.curl, "a palm-thick haft opens the hand");
+        // Nothing said about the tool: the hand closes all the way.
+        let bare = HeldBy::new(mob, SocketSel::grip(Side::Right));
+        assert_eq!(grip_hands(&a, [&bare].into_iter()).right.expect("the right hand").curl, Hand::FIST.curl);
+        // A pack on the back is not something a hand holds.
+        let pack = HeldBy::new(mob, SocketSel::Kind(SocketKind::Back, Side::Center)).with_radius(0.1);
+        assert_eq!(grip_hands(&a, [&pack].into_iter()), HandPose::default());
+    }
+
+    /// Thicker hafts close the fingers less, all the way through.
+    #[test]
+    fn a_thicker_haft_opens_the_hand() {
+        let a = man();
+        let mob = Entity::from_raw_u32(1).expect("an entity id");
+        let curl = |radius: f32| {
+            let tool = HeldBy::new(mob, SocketSel::grip(Side::Right)).with_radius(radius);
+            grip_hands(&a, [&tool].into_iter()).right.expect("the right hand").curl[1]
+        };
+        let steps: Vec<f32> = (0..6).map(|i| curl(0.005 * crate::num::ToF32::to_f32(i))).collect();
+        for pair in steps.windows(2) {
+            assert!(pair[1] < pair[0], "a thicker haft must not curl the fingers further: {steps:?}");
+        }
+    }
 }

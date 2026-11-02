@@ -44,7 +44,7 @@ pub use graph::{
     Param, ParamValue, Play, State, Switch, Transition, compose,
 };
 pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
-pub use hand::{Hand, HandPose, pose_hands};
+pub use hand::{GripPose, Hand, HandPose, pose_hands};
 pub use heft::{Heft, HeftResponse, StepShape};
 pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, Reach, ReachState, SpringState, TorsoState};
 pub use ik::{SOFT_START, fabrik, two_bone_soft};

@@ -860,6 +860,7 @@ pub struct FootProbes(SmallVec<[Vec3; 8]>);                 // one ray origin pe
 #[require(CrowdGround)] pub struct FootGround(SmallVec<[Option<Vec3>; 8]>);   // the game's hits; None = root height
 pub struct HandPose { pub left: Option<Hand>, pub right: Option<Hand> }   // per-digit curl and spread, hero only
 pub struct Reach { pub left: Option<Vec3>, pub right: Option<Vec3> }     // world points the grips reach for, hero only
+pub struct GripPose(pub HandPose);                                      // the hands what it holds asks for; HandPose wins
 ```
 
 - The plugin moves the root toward the intent, or reads it under `ExternalRoot` (root motion
@@ -877,7 +878,12 @@ pub struct Reach { pub left: Option<Vec3>, pub right: Option<Vec3> }     // worl
   reach lifts the shoulder — which moves the shoulder point, leaving the grip about 3 mm off a
   comfortable target on the sample biped. Hero tier only. Every arm of a side takes that side's
   target; `ArmInfo` (chain, pole, length, grip socket) is built per manipulator limb.
-- Not yet: fingers closing on a held grip (`roadmap.md`, Phase 2).
+- **Fingers close on what is held** (2026-11-02, `equip::close_fingers`): a tool in a grip
+  socket gives that side a `Hand::round(radius, palm)` — a fist on nothing, flat on something as
+  thick as the palm, wrapping in between — written to `GripPose` on the holder. `HandPose`
+  overrides it side by side, so a game that poses a hand itself still wins, and a side holding
+  nothing is left to the cycles. `HeldBy::radius` is the haft's radius, 0 by default (a fist),
+  so a tool with a haft should say how thick it is (§8.3).
 
 ### 6.3 Hero tier: pose stages
 
@@ -1159,9 +1165,11 @@ pub struct HeldBy { pub mob: Entity, pub socket: SocketSel, pub grip: Transform 
   (`CrowdSkin::blend_bone`). So tools survive tier changes, regeneration and the holder's
   despawn, and gameplay always has a real transform. Bevy instances identical tool meshes.
 - Measured (2026-10-17, `examples/hold.rs`): 2000 mobs holding about 5000 tools, 12–19 ms/frame.
-- Not yet: fingers closing round a grip, `BoneScales` in crowd-tier placement, and the ground
-  fit's foot offsets (tools take the lift and tilt). `Reach` (§6.2) moves the grip, and a held
-  tool follows it, since `place_held` reads the socket's bone every frame.
+- `HeldBy::radius` says how thick the tool is where it is held, and the holder's fingers close
+  round it (§6.2). `Reach` (§6.2) moves the grip, and a held tool follows it, since `place_held`
+  reads the socket's bone every frame.
+- Not yet: `BoneScales` in crowd-tier placement, and the ground fit's foot offsets (tools take
+  the lift and tilt).
 
 ---
 
@@ -1387,8 +1395,7 @@ templates, the Blender add-on) live in ornisculpter.
 
 The order work goes in is [`roadmap.md`](roadmap.md). Gathered from the sections above:
 
-- Fingers closing on a grip; `BoneScales` and custom gaits in crowd tiers; crowd shadows
-  (§6, §8.3, §10).
+- `BoneScales` and custom gaits in crowd tiers; crowd shadows (§6, §8.3, §10).
 - `HiddenRegions` (§8.2); `Wrist` sockets (§3.1); `QualityProfile` scaling the surface settings
   (§9).
 - Clothing: hoods, both-edge hangs, layering, garments in contacts (§13). Merging the cloth

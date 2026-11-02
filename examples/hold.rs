@@ -7,7 +7,8 @@
 //!
 //! Controls: left-drag orbit · scroll zoom · H drop / pick up everything · 1/2/3 force every mob
 //! to hero/near/far tier · 0 automatic tiers.
-//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
+//! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits
+//! (`ORNISCULPT_SHOT_FRAME=n` picks the frame);
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera; `ORNISCULPT_TIER=hero|near|far`
 //! forces a tier from the start; `ORNISCULPT_STILL=1` keeps the mobs standing. Frame time is
 //! logged every second.
@@ -23,7 +24,7 @@ use ornisculpt::motion::MobIntent;
 use ornisculpt::num::{Saturate, ToF32};
 
 mod common;
-use common::{Orbit, TIER_KEYS, default_plugins, orbit_camera, screenshot_at, spawn_stage, tier_env};
+use common::{Orbit, TIER_KEYS, default_plugins, orbit_camera, screenshot_frames, spawn_stage, tier_env};
 
 /// (body plan, coat).
 const BODIES: [(&str, &str); 4] = [
@@ -46,7 +47,7 @@ fn main() -> AppExit {
         .insert_resource(Count(count))
         .insert_resource(Orbit::from_env(0.5, 0.35, 8.0, Vec3::new(0.0, 0.6, 0.0), (0.5, 200.0)))
         .add_systems(Startup, setup)
-        .add_systems(Update, (wander, keys, orbit_camera, screenshot_at(360)))
+        .add_systems(Update, (wander, keys, orbit_camera, screenshot_frames(360)))
         .add_observer(equip)
         .add_observer(common::exit_on_body_failed)
         .run()
@@ -131,24 +132,26 @@ fn equip(
     let sockets = &body.anatomy.sockets;
     let has = |kind, side| sockets.iter().any(|s| s.kind == kind && s.side == side);
     let mob = ev.entity;
-    let mut give = |tool: &(Handle<Mesh>, Handle<StandardMaterial>), socket: SocketSel, grip: Transform| {
-        let held = HeldBy::new(mob, socket).with_grip(grip);
+    // The haft's radius where the hand takes it, so the fingers close round it rather than into
+    // a fist.
+    let mut give = |tool: &(Handle<Mesh>, Handle<StandardMaterial>), socket: SocketSel, grip: Transform, radius: f32| {
+        let held = HeldBy::new(mob, socket).with_grip(grip).with_radius(radius);
         commands.spawn((Mesh3d(tool.0.clone()), MeshMaterial3d(tool.1.clone()), Transform::default(), Owned(held.clone()), held));
     };
     if has(SocketKind::Grip, Side::Right) {
         // Held a third of the way up the shaft, point forward and up.
-        give(&kit.spear, SocketSel::grip(Side::Right), Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(0.6)));
+        give(&kit.spear, SocketSel::grip(Side::Right), Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(0.6)), 0.012);
     }
     if has(SocketKind::Grip, Side::Left) {
-        give(&kit.club, SocketSel::grip(Side::Left), Transform::IDENTITY);
+        give(&kit.club, SocketSel::grip(Side::Left), Transform::IDENTITY, 0.014);
     }
     if has(SocketKind::Grip, Side::Left) && has(SocketKind::Back, Side::Center) {
-        give(&kit.pack, SocketSel::Kind(SocketKind::Back, Side::Center), Transform::IDENTITY);
+        give(&kit.pack, SocketSel::Kind(SocketKind::Back, Side::Center), Transform::IDENTITY, 0.0);
     } else if has(SocketKind::Saddle, Side::Center) {
-        give(&kit.pack, SocketSel::Kind(SocketKind::Saddle, Side::Center), Transform::IDENTITY);
+        give(&kit.pack, SocketSel::Kind(SocketKind::Saddle, Side::Center), Transform::IDENTITY, 0.0);
     }
     if has(SocketKind::Hip, Side::Left) {
-        give(&kit.pouch, SocketSel::Kind(SocketKind::Hip, Side::Left), Transform::IDENTITY);
+        give(&kit.pouch, SocketSel::Kind(SocketKind::Hip, Side::Left), Transform::IDENTITY, 0.0);
     }
 }
 

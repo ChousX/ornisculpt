@@ -38,6 +38,22 @@ impl Hand {
         Self { curl, spread, weight: 1.0 }
     }
 
+    /// Closed round a haft of `radius` metres in a hand whose grip socket is `palm` across.
+    ///
+    /// A hand closes to a fist on nothing and lies flat on something as thick as its palm, so
+    /// the fingers wrap a thin haft nearly shut and open out as it thickens. The thumb stays a
+    /// little straighter than the fingers, as it does in [`FIST`](Self::FIST), and the fingers
+    /// draw together rather than fanning.
+    #[must_use]
+    pub fn round(radius: f32, palm: f32) -> Self {
+        let t = (2.0 * radius / palm.max(1e-4)).clamp(0.0, 1.0);
+        let mut curl = Self::FIST.curl;
+        for (c, open) in curl.iter_mut().zip(Self::OPEN.curl) {
+            *c = (open - *c).mul_add(t, *c);
+        }
+        Self::new(curl, -4.0)
+    }
+
     /// This pose with one digit's curl replaced (`0` = the thumb).
     #[must_use]
     pub fn with_digit(mut self, digit: usize, curl: f32) -> Self {
@@ -88,6 +104,14 @@ impl HandPose {
         }
     }
 }
+
+/// The hand pose each side takes from what the mob holds.
+///
+/// A tool in a grip socket closes the fingers round its haft (`equip::close_fingers`).
+/// [`HandPose`] overrides it side by side, so a game that poses a hand itself still wins.
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[reflect(Component)]
+pub struct GripPose(pub HandPose);
 
 /// Bend of each finger joint at full curl, knuckle first, degrees (a fist); later joints of a
 /// longer digit repeat the last.
