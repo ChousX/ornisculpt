@@ -167,9 +167,27 @@ casting; same scene and camera):
   fragment of all 4000 mobs pays. Crowd tiers cast nothing (`NotShadowCaster`).
 - With shadows off, 32 heroes (7.7 ms) runs *faster* than none (7.0 ms → within the 6.2–8.3
   spread): promoting the nearest mobs out of the crowd shader costs nothing measurable.
-- So the lever is the shadow pass, not the hero mesh: a coarse shadow-only mesh (cast from the
-  crowd-tier geometry while the hero mesh is `NotShadowCaster`), a cap on casters, or fewer
-  cascades. Each is worth a measurement before it is worth code.
+**What a coarse mesh costs to cast** (`ORNISCULPT_CROWD_SHADOWS=1` drops the `NotShadowCaster`
+the library gives crowd meshes, so all 4000 crowd mobs cast their simplified geometry):
+
+| | not casting | casting | the casting |
+|---|---|---|---|
+| 4000 crowd mobs, 0 heroes | 10.4 ms | 30.1 ms | 19.7 ms → **4.9 µs a mob** |
+| 3968 crowd mobs + 32 heroes | 26.1 ms | 48.8 ms | 22.7 ms → **5.7 µs a mob** |
+
+- A crowd mesh casts for 5 µs, a hero mesh for 470 µs: **90 times cheaper** — about what the
+  triangle counts say (3.4 k against 74 k on the man), so the shadow pass is geometry-bound.
+- **Crowd shadows** (roadmap item 6) therefore cost about 5 µs a caster: all 4000 is +20 ms and
+  out of the question, but the nearest few hundred is 2 to 3 ms. It wants a caster budget, not
+  an on/off switch.
+- **A coarse shadow for a hero** would take the 32 heroes' 14.9 ms to about 0.2 ms — 56 % of
+  this frame. Bevy 0.20 can draw one: shadow casters are gathered on `InheritedVisibility` and
+  filtered by the light's `RenderLayers` (`bevy_light-0.20.1/src/lib.rs:342`), so a proxy on a
+  layer the camera does not see but the light does casts without being drawn. The proxy has to
+  follow the hero's real pose, so it would be the Near mesh Bevy-skinned by the hero's joints in
+  crowd-skeleton order — not the crowd instance, which hero mobs stop uploading
+  (`Without<MobSkeleton>`, `motion/crowd.rs:342`) and which carries the baked pose, not the
+  played one.
 
 ## Bench version 4 baseline (2026-10-24)
 

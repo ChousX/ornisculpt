@@ -125,11 +125,19 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      table in `bench/LOG.md`). The 32 heroes' casting is 14.9 ms, 0.47 ms each; everything else
      about being a hero — the 74 k-triangle mesh, the joint upload, Bevy skinning — is 24 µs a
      mob, only five times a near mob. With shadows off, 32 heroes costs no more than none.
-   - Next, make a hero's shadow cheap rather than its mesh coarse: cast from the crowd-tier
-     geometry with the hero mesh `NotShadowCaster`, cap the casters, or cut cascades. Measure
-     each before writing it. This is the lever for the line this phase opens with —
-     domain-expance holds every creature at `ForceTier(Hero)`, which on the Deck is a budget of
-     about 30 — and for item 6's crowd shadows, which would multiply exactly this cost.
+   - *Measured* (2026-11-02): a coarse mesh casts for 5 µs against the hero mesh's 470 µs, 90
+     times cheaper and in proportion to the triangles (3.4 k against 74 k). So giving a hero a
+     coarse shadow would take the 32 heroes' 14.9 ms to about 0.2 ms, **56 % of the Deck's crowd
+     frame**. It also prices item 6: crowd shadows are 5 µs a caster, so the nearest few hundred
+     cost 2 to 3 ms and all 4000 cost 20.
+   - Next, and the one real decision left in this item: **how a hero casts a cheap shadow.**
+     Bevy 0.20 gathers casters on `InheritedVisibility` and filters them by the light's
+     `RenderLayers`, so a proxy on a layer the camera doesn't see but the light does casts
+     without being drawn. The proxy must follow the played pose, so it is the Near mesh
+     Bevy-skinned by the hero's own joints in crowd-skeleton order — not the crowd instance,
+     which hero mobs stop uploading and which holds the baked pose. The cost is an API
+     convention: apps would have to put their shadow-casting lights on the proxy's layer, or the
+     plugin would have to do it for them. Decide that before writing it.
 5. **Long sessions.**
    - Free a body's space in the crowd clip atlas when the body goes.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (20 to 30 s for
