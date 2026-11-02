@@ -10,6 +10,7 @@
 //! bake lands (or for cycles that don't fit), the mob plays its gait alone, as a mob without a
 //! graph does. The state machine itself runs on the CPU for every tier, so events fire as usual.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use bevy::platform::collections::HashMap;
@@ -77,6 +78,9 @@ impl GraphClips {
 
 type GraphKey = Vec<AssetId<MotionGraph>>;
 
+/// One body's bakes: per graph set, the clips and the atlas block holding them.
+type Bakes = Vec<(GraphKey, Arc<GraphClips>, Range<u32>)>;
+
 /// What a bake task returns: the matrices to append and, per (layer, cycle), offsets into them.
 struct Baked {
     data: Vec<[f32; 16]>,
@@ -86,9 +90,12 @@ struct Baked {
 }
 
 /// Baked graph cycles per body and graph set, and the bakes in flight.
+///
+/// Each entry owns a block of the clip atlas, so an entry that goes — its graphs reloaded, or its
+/// body dropped — gives that block back (`CrowdSkin::release_range`).
 #[derive(Resource, Default)]
 pub struct CrowdCycles {
-    baked: HashMap<AssetId<GeneratedBody>, Vec<(GraphKey, Arc<GraphClips>)>>,
+    baked: HashMap<AssetId<GeneratedBody>, Bakes>,
     in_flight: Vec<(AssetId<GeneratedBody>, GraphKey, u32, Task<Baked>)>,
     /// Bumped when the graphs change: results from before are dropped.
     epoch: u32,
@@ -98,11 +105,22 @@ impl CrowdCycles {
     /// The clips of graph set `key` on `body`, once baked.
     #[must_use]
     pub fn get(&self, body: AssetId<GeneratedBody>, key: &[AssetId<MotionGraph>]) -> Option<&Arc<GraphClips>> {
-        self.baked.get(&body)?.iter().find(|(k, _)| k == key).map(|(_, c)| c)
+        self.baked.get(&body)?.iter().find(|(k, _, _)| k == key).map(|(_, c, _)| c)
     }
 
     fn known(&self, body: AssetId<GeneratedBody>, key: &[AssetId<MotionGraph>]) -> bool {
         self.get(body, key).is_some() || self.in_flight.iter().any(|(b, k, _, _)| *b == body && k == key)
+    }
+
+    /// Drops every bake of `body` (or of all bodies), freeing the atlas blocks they hold.
+    fn forget(&mut self, body: Option<AssetId<GeneratedBody>>, skin: &mut CrowdSkin) {
+        let gone = match body {
+            Some(id) => self.baked.remove(&id).into_iter().collect(),
+            None => self.baked.drain().map(|(_, v)| v).collect::<Vec<_>>(),
+        };
+        for (_, _, block) in gone.into_iter().flatten() {
+            skin.release_range(block.start, block.end - block.start);
+        }
     }
 }
 
@@ -195,6 +213,7 @@ fn bake_graph(anatomy: &Anatomy, rig: &MotionRig, graph: &ComposedGraph, cycles:
 pub(super) fn bake_graph_clips(
     mut crowd: ResMut<CrowdCycles>,
     mut graph_events: MessageReader<AssetEvent<MotionGraph>>,
+    mut body_events: MessageReader<AssetEvent<GeneratedBody>>,
     bodies: Res<Assets<GeneratedBody>>,
     cycles: Res<Assets<Cycle>>,
     mut skin: ResMut<CrowdSkin>,
@@ -204,8 +223,14 @@ pub(super) fn bake_graph_clips(
     if graph_events.read().any(|e| {
         matches!(e, AssetEvent::Added { .. } | AssetEvent::Modified { .. } | AssetEvent::Removed { .. } | AssetEvent::LoadedWithDependencies { .. })
     }) {
-        crowd.baked.clear();
+        crowd.forget(None, &mut skin);
         crowd.epoch = crowd.epoch.wrapping_add(1);
+    }
+    // A body that has gone takes its bakes with it, atlas blocks and all.
+    for ev in body_events.read() {
+        if let AssetEvent::Removed { id } = ev {
+            crowd.forget(Some(*id), &mut skin);
+        }
     }
     let crowd = &mut *crowd;
     // Finished bakes.
@@ -217,9 +242,12 @@ pub(super) fn bake_graph_clips(
             continue;
         };
         let (body, key, epoch, _) = crowd.in_flight.swap_remove(i);
-        if epoch != crowd.epoch {
+        // Stale graphs, or a body that went while this baked: appending either would hold a
+        // block of the atlas that nothing would ever read.
+        if epoch != crowd.epoch || !bodies.contains(body) {
             continue;
         }
+        let len = baked.data.len().clamp_u32();
         let base = skin.append(Arc::new(baked.data), &mut uploads);
         let clips = baked
             .clips
@@ -228,7 +256,7 @@ pub(super) fn bake_graph_clips(
             .collect();
         let clips = Arc::new(GraphClips { cycles: baked.cycles, clips });
         debug!("crowd: baked {} graph cycles for body {body:?}", clips.len());
-        crowd.baked.entry(body).or_default().push((key, clips));
+        crowd.baked.entry(body).or_default().push((key, clips, base..base + len));
     }
     // New bakes.
     for (body, rt) in &mobs {
@@ -370,6 +398,34 @@ mod tests {
     use super::*;
     use crate::anatomy::build_src;
     use crate::motion::{compose, idle_frame, library};
+
+    /// Every bake holds a block of the clip atlas, and the graphs reloading drops every bake.
+    /// Those blocks have to go back, or editing a graph in a running game leaks the whole baked
+    /// set each time it is saved.
+    #[test]
+    fn forgotten_bakes_give_their_atlas_blocks_back() {
+        let mut skin = CrowdSkin::for_test();
+        let mut uploads = CrowdUploads::default();
+        let mut crowd = CrowdCycles::default();
+        let body = |n: u128| AssetId::<GeneratedBody>::Uuid { uuid: bevy::asset::uuid::Uuid::from_u128(n) };
+        let mut bake = |to: AssetId<GeneratedBody>, len: usize, crowd: &mut CrowdCycles| {
+            let base = skin.append(Arc::new(vec![[0.0; 16]; len]), &mut uploads);
+            crowd.baked.entry(to).or_default().push((Vec::new(), Arc::new(GraphClips::default()), base..base + len.clamp_u32()));
+        };
+        bake(body(1), 8, &mut crowd);
+        bake(body(2), 4, &mut crowd);
+        bake(body(1), 6, &mut crowd);
+        assert_eq!(skin.atlas_usage(), (18, 0));
+
+        // One body goes: its two blocks go, the other body's stays.
+        crowd.forget(Some(body(1)), &mut skin);
+        assert_eq!(skin.atlas_usage(), (12, 8), "the tail block shortened the atlas, the first is a hole");
+        assert!(crowd.baked.get(&body(1)).is_none() && crowd.baked.contains_key(&body(2)));
+        // The graphs reload: everything goes and the atlas is empty again.
+        crowd.forget(None, &mut skin);
+        assert_eq!(skin.atlas_usage(), (0, 0));
+        assert!(crowd.baked.is_empty());
+    }
 
     #[test]
     fn frame_pairs_loop_or_stop() {

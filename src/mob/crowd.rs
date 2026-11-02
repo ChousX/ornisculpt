@@ -9,6 +9,7 @@
 //! vertex shader skins from that buffer at the slot in the mesh's `MeshTag`. Mobs sharing a body
 //! share mesh and material, so Bevy batches them into instanced draws.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
@@ -258,6 +259,11 @@ pub struct CrowdSkin {
     next: u32,
     atlas: HashMap<AssetId<GeneratedBody>, ClipLayout>,
     atlas_len: u32,
+    /// Holes in the atlas left by bodies and graph bakes that went, sorted by index and joined
+    /// up where they touch. The next block that fits takes one instead of growing the atlas: a
+    /// long session that generates bodies it later drops (an editor, or a game streaming
+    /// creatures in and out) would otherwise grow the clip buffer for ever.
+    free_clips: Vec<Range<u32>>,
     /// Everything appended to the atlas, by base index, for CPU-side sampling (held tools).
     chunks: Vec<(u32, Arc<Vec<[f32; 16]>>)>,
 }
@@ -266,7 +272,7 @@ impl FromWorld for CrowdSkin {
     fn from_world(world: &mut World) -> Self {
         let capacity = 64;
         let bones = world.resource_mut::<Assets<ShaderBuffer>>().add(bone_buffer(capacity));
-        Self { bones, bone_capacity: capacity, free: Vec::new(), next: 0, atlas: default(), atlas_len: 0, chunks: Vec::new() }
+        Self::new(bones, capacity)
     }
 }
 
@@ -282,6 +288,26 @@ fn bone_buffer(slots: u32) -> ShaderBuffer {
 }
 
 impl CrowdSkin {
+    fn new(bones: Handle<ShaderBuffer>, capacity: u32) -> Self {
+        Self {
+            bones,
+            bone_capacity: capacity,
+            free: Vec::new(),
+            next: 0,
+            atlas: default(),
+            atlas_len: 0,
+            free_clips: Vec::new(),
+            chunks: Vec::new(),
+        }
+    }
+
+    /// A skin with no GPU buffer behind it, for tests of the atlas allocator.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_test() -> Self {
+        Self::new(Handle::default(), 64)
+    }
+
     pub fn alloc(&mut self) -> u32 {
         self.free.pop().unwrap_or_else(|| {
             self.next += 1;
@@ -298,13 +324,85 @@ impl CrowdSkin {
         self.atlas.get(&body).copied()
     }
 
-    /// Appends `data` to the clip atlas (queued for upload) and returns its first matrix's index.
+    /// Puts `data` in the clip atlas (queued for upload) and returns its first matrix's index:
+    /// in the smallest hole that holds it ([`release_range`](Self::release_range)), else at the
+    /// end. Give the range back with `release_range(base, data.len())` when nothing reads it.
     pub fn append(&mut self, data: Arc<Vec<[f32; 16]>>, uploads: &mut CrowdUploads) -> u32 {
-        let base = self.atlas_len;
-        self.atlas_len += data.len().clamp_u32();
-        self.chunks.push((base, data.clone()));
+        let base = self.take_range(data.len().clamp_u32());
+        // Chunks stay sorted by index, since a block may land in a hole between two others.
+        let at = self.chunks.partition_point(|(b, _)| *b < base);
+        self.chunks.insert(at, (base, data.clone()));
         uploads.clips.push((base, data));
         base
+    }
+
+    /// `len` matrices from the smallest hole that holds them (so the big holes stay whole), else
+    /// from the atlas's end.
+    fn take_range(&mut self, len: u32) -> u32 {
+        let best = self
+            .free_clips
+            .iter()
+            .enumerate()
+            .filter(|(_, hole)| hole.end - hole.start >= len)
+            .min_by_key(|(_, hole)| hole.end - hole.start)
+            .map(|(i, _)| i);
+        let Some(i) = best else {
+            let base = self.atlas_len;
+            self.atlas_len += len;
+            return base;
+        };
+        let Some(hole) = self.free_clips.get_mut(i) else { return self.atlas_len };
+        let base = hole.start;
+        hole.start += len;
+        if hole.start >= hole.end {
+            self.free_clips.remove(i);
+        }
+        base
+    }
+
+    /// Gives `len` matrices at `base` back to the atlas, for the next block to use. The matrices
+    /// stay on the GPU until something is written over them; nothing reads them, because a block
+    /// is only released once whatever referred to it has gone.
+    pub fn release_range(&mut self, base: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
+        let at = self.chunks.partition_point(|(b, _)| *b < base);
+        if self.chunks.get(at).is_some_and(|(b, _)| *b == base) {
+            self.chunks.remove(at);
+        }
+        let at = self.free_clips.partition_point(|hole| hole.start < base);
+        self.free_clips.insert(at, base..base + len);
+        // Join holes that touch, so a body's block can be reused by a bigger one later.
+        let mut joined: Vec<Range<u32>> = Vec::with_capacity(self.free_clips.len());
+        for hole in self.free_clips.drain(..) {
+            match joined.last_mut() {
+                Some(last) if last.end >= hole.start => last.end = last.end.max(hole.end),
+                _ => joined.push(hole),
+            }
+        }
+        self.free_clips = joined;
+        // A hole at the end is not a hole: shorten the atlas instead, so the GPU buffer stops
+        // growing in a session that keeps replacing bodies.
+        if self.free_clips.last().is_some_and(|hole| hole.end >= self.atlas_len)
+            && let Some(hole) = self.free_clips.pop()
+        {
+            self.atlas_len = hole.start;
+        }
+    }
+
+    /// Frees the gait clips of a body that has gone (`register_clips`).
+    fn release_clips(&mut self, body: AssetId<GeneratedBody>) {
+        let Some(layout) = self.atlas.remove(&body) else { return };
+        let at = self.chunks.partition_point(|(b, _)| *b < layout.base);
+        let len = self.chunks.get(at).filter(|(b, _)| *b == layout.base).map_or(0, |(_, data)| data.len().clamp_u32());
+        self.release_range(layout.base, len);
+    }
+
+    /// Matrices in the atlas, and the holes left in it by blocks that were released.
+    #[must_use]
+    pub fn atlas_usage(&self) -> (u32, u32) {
+        (self.atlas_len, self.free_clips.iter().map(|hole| hole.end - hole.start).sum())
     }
 
     /// Atlas matrix `index`, from the CPU copy.
@@ -392,7 +490,8 @@ pub(super) fn clear_uploads(mut uploads: ResMut<CrowdUploads>) {
     uploads.clips.clear();
 }
 
-/// Appends newly generated bodies' baked clips to the atlas.
+/// Appends newly generated bodies' baked clips to the atlas, and frees the clips of bodies that
+/// have gone (the asset is removed when its last handle drops, so by then no mob plays them).
 pub(super) fn register_clips(
     mut events: MessageReader<AssetEvent<GeneratedBody>>,
     bodies: Res<Assets<GeneratedBody>>,
@@ -400,6 +499,10 @@ pub(super) fn register_clips(
     mut uploads: ResMut<CrowdUploads>,
 ) {
     for ev in events.read() {
+        if let AssetEvent::Removed { id } = ev {
+            skin.release_clips(*id);
+            continue;
+        }
         let AssetEvent::Added { id } = ev else { continue };
         let Some(body) = bodies.get(*id) else { continue };
         let m = &body.motion;
@@ -450,6 +553,68 @@ pub(super) fn release_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn skin() -> CrowdSkin {
+        CrowdSkin::for_test()
+    }
+
+    /// `n` matrices, each holding `mark` so a reader can tell the blocks apart.
+    fn block(n: usize, mark: f32) -> Arc<Vec<[f32; 16]>> {
+        Arc::new(vec![[mark; 16]; n])
+    }
+
+    /// A body's clips are a block of the atlas, and a block whose body has gone must be reused
+    /// rather than left as a hole: a session that keeps replacing bodies would otherwise grow
+    /// the clip buffer without bound.
+    #[test]
+    fn a_released_block_is_used_again() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let first = skin.append(block(10, 1.0), &mut uploads);
+        let second = skin.append(block(4, 2.0), &mut uploads);
+        let third = skin.append(block(6, 3.0), &mut uploads);
+        assert_eq!((first, second, third), (0, 10, 14));
+        assert_eq!(skin.atlas_usage(), (20, 0));
+
+        // The middle block goes: the atlas keeps its length and holds a hole of 4.
+        skin.release_range(second, 4);
+        assert_eq!(skin.atlas_usage(), (20, 4));
+        // Too big for the hole, so it goes on the end; one that fits takes the hole.
+        assert_eq!(skin.append(block(5, 4.0), &mut uploads), 20);
+        assert_eq!(skin.append(block(3, 5.0), &mut uploads), second);
+        assert_eq!(skin.atlas_usage(), (25, 1), "a matrix of the hole is left over");
+        // Chunks stay sorted by index, so the CPU-side read still finds the right block.
+        assert_eq!(skin.matrix(second).map(|m| m[0]), Some(5.0));
+        assert_eq!(skin.matrix(third).map(|m| m[0]), Some(3.0));
+        assert_eq!(skin.matrix(second + 3), None, "the matrix left over belongs to nothing");
+    }
+
+    #[test]
+    fn released_blocks_next_to_each_other_join_up() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let a = skin.append(block(4, 1.0), &mut uploads);
+        let b = skin.append(block(4, 2.0), &mut uploads);
+        let c = skin.append(block(4, 3.0), &mut uploads);
+        skin.append(block(4, 4.0), &mut uploads);
+        // Freed out of order, with the join landing both ways round.
+        skin.release_range(b, 4);
+        skin.release_range(a, 4);
+        skin.release_range(c, 4);
+        assert_eq!(skin.atlas_usage(), (16, 12));
+        assert_eq!(skin.append(block(12, 5.0), &mut uploads), a, "one hole of twelve, not three of four");
+        assert_eq!(skin.atlas_usage(), (16, 0));
+    }
+
+    #[test]
+    fn a_released_block_at_the_end_shortens_the_atlas() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let a = skin.append(block(4, 1.0), &mut uploads);
+        let b = skin.append(block(6, 2.0), &mut uploads);
+        skin.release_range(b, 6);
+        assert_eq!(skin.atlas_usage(), (4, 0), "the end is given up, not held as a hole");
+        skin.release_range(a, 4);
+        assert_eq!(skin.atlas_usage(), (0, 0), "an emptied atlas is empty");
+        assert_eq!(skin.append(block(2, 3.0), &mut uploads), 0);
+    }
 
     #[test]
     fn instance_layout_matches_the_shader() {
