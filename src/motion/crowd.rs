@@ -28,11 +28,12 @@ use super::ground::CrowdGround;
 use super::eval::MotionRig;
 use super::player::MotionRuntime;
 use super::stages::leg_length;
-use super::{GaitClock, Locomotion};
+use super::bake::bake_motion;
+use super::{BakedMotion, Gait, GaitClock, Locomotion, MobGait};
 use crate::anatomy::Anatomy;
 use crate::mob::{
-    CROWD_LAYERS, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, GeneratedBody, LAYER_ADDITIVE,
-    MobBody, MobSkeleton, ROW_MATRICES,
+    CROWD_LAYERS, ClipBlock, ClipLayout, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, GeneratedBody,
+    LAYER_ADDITIVE, MobBody, MobSkeleton, ROW_MATRICES,
 };
 use crate::num::{Clamp, Saturate, ToF32};
 
@@ -121,6 +122,139 @@ impl CrowdCycles {
         for (_, _, block) in gone.into_iter().flatten() {
             skin.release_range(block.start, block.end - block.start);
         }
+    }
+}
+
+/// Custom gaits baked per (body, gait), and the bakes in flight.
+///
+/// A body's own gait is baked into the atlas when it is generated, but a mob with a [`MobGait`]
+/// of its own walks to something else. Those are baked on the compute pool, as the graph cycles
+/// are, and the mob plays its own block instead of its body's. Until the bake lands it plays
+/// its body's default gait, which is what it did before.
+#[derive(Resource, Default)]
+pub struct CrowdGaits {
+    baked: HashMap<(AssetId<GeneratedBody>, AssetId<Gait>), BakedGait>,
+    in_flight: Vec<(AssetId<GeneratedBody>, AssetId<Gait>, Task<BakedMotion>)>,
+}
+
+/// One body's custom gait in the atlas.
+struct BakedGait {
+    layout: ClipLayout,
+    motion: Arc<BakedMotion>,
+    /// The block of the atlas it holds, given back when it goes.
+    block: Range<u32>,
+}
+
+impl CrowdGaits {
+    /// The clips of `gait` on `body`, once baked.
+    #[must_use]
+    pub fn get(&self, body: AssetId<GeneratedBody>, gait: AssetId<Gait>) -> Option<(ClipLayout, &Arc<BakedMotion>)> {
+        let baked = self.baked.get(&(body, gait))?;
+        Some((baked.layout, &baked.motion))
+    }
+
+    /// The atlas block a crowd mob plays: its own gait's once that is baked, else its body's
+    /// own (which `register_clips` put there when the body was generated).
+    #[must_use]
+    pub fn block_for<'a>(
+        &'a self,
+        skin: &CrowdSkin,
+        body: AssetId<GeneratedBody>,
+        gait: Option<AssetId<Gait>>,
+        default: &'a Arc<BakedMotion>,
+    ) -> Option<(ClipLayout, &'a Arc<BakedMotion>)> {
+        gait.and_then(|g| self.get(body, g)).or_else(|| Some((skin.layout(body)?, default)))
+    }
+
+    /// Records a baked gait, for tests of the lookup.
+    #[cfg(test)]
+    fn insert_for_test(&mut self, body: AssetId<GeneratedBody>, gait: AssetId<Gait>, layout: ClipLayout, motion: Arc<BakedMotion>, block: Range<u32>) {
+        self.baked.insert((body, gait), BakedGait { layout, motion, block });
+    }
+
+    fn known(&self, body: AssetId<GeneratedBody>, gait: AssetId<Gait>) -> bool {
+        self.baked.contains_key(&(body, gait)) || self.in_flight.iter().any(|(b, g, _)| *b == body && *g == gait)
+    }
+
+    /// Drops every bake of `body`, or of `gait`, freeing the atlas blocks they hold.
+    fn forget(&mut self, of: impl Fn(AssetId<GeneratedBody>, AssetId<Gait>) -> bool, skin: &mut CrowdSkin) {
+        self.baked.retain(|(body, gait), baked| {
+            let keep = !of(*body, *gait);
+            if !keep {
+                skin.release_range(baked.block.start, baked.block.end - baked.block.start);
+            }
+            keep
+        });
+    }
+}
+
+/// Bakes the gait of every crowd mob whose body hasn't met it yet, and lands finished ones in
+/// the atlas. A mob without a [`MobGait`] needs nothing: its body's own gait is already there.
+#[allow(clippy::type_complexity)]
+pub(super) fn bake_crowd_gaits(
+    mut crowd: ResMut<CrowdGaits>,
+    mut gait_events: MessageReader<AssetEvent<Gait>>,
+    mut body_events: MessageReader<AssetEvent<GeneratedBody>>,
+    bodies: Res<Assets<GeneratedBody>>,
+    gaits: Res<Assets<Gait>>,
+    mut skin: ResMut<CrowdSkin>,
+    mut uploads: ResMut<CrowdUploads>,
+    mobs: Query<(&MobBody, &MobGait), (With<CrowdSlot>, Without<MobSkeleton>)>,
+) {
+    // A gait that reloaded, or a body that has gone, takes its bakes with it.
+    let reloaded: Vec<AssetId<Gait>> = gait_events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Modified { id } | AssetEvent::Removed { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if !reloaded.is_empty() {
+        crowd.forget(|_, gait| reloaded.contains(&gait), &mut skin);
+    }
+    let gone: Vec<AssetId<GeneratedBody>> = body_events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Removed { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if !gone.is_empty() {
+        crowd.forget(|body, _| gone.contains(&body), &mut skin);
+    }
+    let crowd = &mut *crowd;
+    // Finished bakes.
+    let mut i = 0;
+    while i < crowd.in_flight.len() {
+        let Some((_, _, task)) = crowd.in_flight.get_mut(i) else { break };
+        let Some(motion) = check_ready(task) else {
+            i += 1;
+            continue;
+        };
+        let (body, gait, _) = crowd.in_flight.swap_remove(i);
+        // A body that went while this baked would hold a block nothing reads.
+        let Some(b) = bodies.get(body) else { continue };
+        let block = ClipBlock::new(&b.anatomy, &motion);
+        let base = skin.append(block.data.clone(), &mut uploads);
+        debug!("crowd: baked {} gait modes for body {body:?}", motion.clips.len());
+        crowd.baked.insert(
+            (body, gait),
+            BakedGait { layout: block.layout_at(base), motion: Arc::new(motion), block: base..base + block.len() },
+        );
+    }
+    // New bakes.
+    for (body, mob_gait) in &mobs {
+        if crowd.in_flight.len() >= MAX_BAKES {
+            break;
+        }
+        let (id, gait_id) = (body.0.id(), mob_gait.0.id());
+        if crowd.known(id, gait_id) {
+            continue;
+        }
+        let (Some(b), Some(gait)) = (bodies.get(id), gaits.get(gait_id)) else { continue };
+        let (anatomy, gait) = (b.anatomy.clone(), gait.clone());
+        let task = AsyncComputeTaskPool::get().spawn(async move { bake_motion(&anatomy, &gait) });
+        crowd.in_flight.push((id, gait_id, task));
     }
 }
 
@@ -366,16 +500,19 @@ pub(super) fn crowd_animate(
     bodies: Res<Assets<GeneratedBody>>,
     skin: Res<CrowdSkin>,
     crowd: Res<CrowdCycles>,
+    custom: Res<CrowdGaits>,
     mut uploads: ResMut<CrowdUploads>,
-    mut mobs: Query<(&MobBody, &CrowdSlot, &Locomotion, &GaitClock, Option<&MotionRuntime>, Option<&CrowdGround>, &mut CrowdUploaded), Without<MobSkeleton>>,
+    mut mobs: Query<(&MobBody, &CrowdSlot, &Locomotion, &GaitClock, Option<&MobGait>, Option<&MotionRuntime>, Option<&CrowdGround>, &mut CrowdUploaded), Without<MobSkeleton>>,
     mut changed: Local<Parallel<Vec<(u32, CrowdInstance)>>>,
 ) {
-    mobs.par_iter_mut().for_each(|(body, slot, loco, clock, rt, ground, mut uploaded)| {
-        let Some(layout) = skin.layout(body.0.id()) else { return };
+    mobs.par_iter_mut().for_each(|(body, slot, loco, clock, gait, rt, ground, mut uploaded)| {
         let Some(b) = bodies.get(&body.0) else { return };
+        // A mob with a gait of its own plays that gait's block, once it is baked; until then,
+        // and without one, its body's own.
+        let Some((layout, motion)) = custom.block_for(&skin, body.0.id(), gait.map(|g| g.0.id()), &b.motion) else { return };
         let leg = leg_length(&b.anatomy);
         let idle = 1.0 - (loco.velocity.length() / leg / 0.3).clamp(0.0, 1.0);
-        let mut instance = layout.instance(&b.motion, clock.mode.min(b.motion.clips.len().saturating_sub(1)), clock.phase, idle);
+        let mut instance = layout.instance(motion, clock.mode.min(motion.clips.len().saturating_sub(1)), clock.phase, idle);
         if let Some(rt) = rt
             && let Some((key, graph)) = rt.composed()
             && let Some(clips) = crowd.get(body.0.id(), key)
@@ -524,5 +661,87 @@ mod blend_probe {
                 assert!(s.min_element() > 0.7 && s.max_element() < 1.3, "t {t} bone {bone}: scale {s}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gaits {
+    use super::*;
+    use crate::anatomy::build_src;
+    use crate::num::Idx;
+
+    /// A mob's own gait becomes its own block of the atlas, laid out for its own modes — not the
+    /// body's default, which is what a crowd mob used to play whatever gait it was given.
+    #[test]
+    fn a_custom_gait_bakes_into_a_block_of_its_own() {
+        let a = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
+        let default = Gait::for_legs(a.legs.len());
+        // The same gait with its faster modes taken away: one mode instead of several, and a
+        // longer stride, so the block and the walk both differ from the body's.
+        let mut slow = default.clone();
+        slow.modes.truncate(1);
+        if let Some(mode) = slow.modes.first_mut() {
+            mode.stride *= 1.5;
+        }
+
+        let body = ClipBlock::new(&a, &bake_motion(&a, &default));
+        let own = ClipBlock::new(&a, &bake_motion(&a, &slow));
+        assert_eq!(own.layout_at(0).modes, 1, "the custom block holds the custom gait's modes");
+        assert!(body.layout_at(0).modes > own.layout_at(0).modes, "the default has more modes");
+        assert!(own.len() < body.len(), "fewer modes, fewer matrices");
+
+        // Laid out at wherever the atlas puts it: the clips and the leg rows move with the base.
+        let (here, there) = (own.layout_at(0), own.layout_at(1000));
+        assert_eq!(there.base, 1000);
+        assert_eq!(there.legs, here.legs + 1000);
+        assert_eq!((there.bones, there.modes), (here.bones, here.modes));
+        // And the block really holds a different walk: the first clip's frames differ.
+        let frame = |block: &ClipBlock, i: usize| block.data.get(here.bones.idx() + i).copied().unwrap_or_default();
+        assert!(
+            (0..16).any(|i| (frame(&own, i)[13] - frame(&body, i)[13]).abs() > 1e-4),
+            "the custom gait's first frame matches the default's"
+        );
+    }
+
+    /// Which block a crowd mob plays: its own gait's when that is baked, its body's otherwise —
+    /// including while the bake is still running, which is what it used to do always.
+    #[test]
+    fn a_mob_plays_its_own_gait_only_once_it_is_baked() {
+        let a = build_src(include_str!("../../assets/mobs/quadruped.body.ron"));
+        let (mut skin, mut uploads) = (CrowdSkin::for_test(), CrowdUploads::default());
+        let mut gaits = CrowdGaits::default();
+        let id = |n: u128| bevy::asset::uuid::Uuid::from_u128(n);
+        let body = AssetId::<GeneratedBody>::Uuid { uuid: id(1) };
+        let slow = AssetId::<Gait>::Uuid { uuid: id(2) };
+        let default = Arc::new(bake_motion(&a, &Gait::for_legs(a.legs.len())));
+
+        // Nothing in the atlas yet: nothing to play.
+        assert!(gaits.block_for(&skin, body, None, &default).is_none());
+        // The body's own block lands when it is generated.
+        let own_block = ClipBlock::new(&a, &default);
+        let base = skin.append(own_block.data.clone(), &mut uploads);
+        skin.set_layout(body, own_block.layout_at(base));
+        let (layout, motion) = gaits.block_for(&skin, body, None, &default).expect("the body's block");
+        assert_eq!(layout.base, base);
+        // A mob with a gait that hasn't baked yet still plays the body's.
+        let (waiting, _) = gaits.block_for(&skin, body, Some(slow), &default).expect("the body's block");
+        assert_eq!(waiting.base, layout.base);
+        assert_eq!(motion.clips.len(), default.clips.len());
+
+        // Once it is baked, the mob plays its own block, with its own modes.
+        let mut only_walk = Gait::for_legs(a.legs.len());
+        only_walk.modes.truncate(1);
+        let baked = Arc::new(bake_motion(&a, &only_walk));
+        let block = ClipBlock::new(&a, &baked);
+        let at = skin.append(block.data.clone(), &mut uploads);
+        gaits.insert_for_test(body, slow, block.layout_at(at), baked, at..at + block.len());
+        let (own, motion) = gaits.block_for(&skin, body, Some(slow), &default).expect("its own block");
+        assert_eq!(own.base, at);
+        assert_eq!(own.modes, 1);
+        assert_eq!(motion.clips.len(), 1);
+        // The gait reloads: its block goes back to the atlas and the mob falls back again.
+        gaits.forget(|_, g| g == slow, &mut skin);
+        assert_eq!(gaits.block_for(&skin, body, Some(slow), &default).expect("the body's block").0.base, base);
+        assert_eq!(skin.atlas_usage(), (base + own_block.len(), 0), "the custom block was the atlas's tail");
     }
 }

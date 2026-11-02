@@ -31,7 +31,7 @@ mod state;
 mod testing;
 
 pub use bake::{BAKE_FRAMES, BakedClip, BakedMotion, SkinFrame, bake_cycle, bake_motion, idle_frame, standing_frame};
-pub use crowd::{CrowdClip, CrowdCycles, GraphClips};
+pub use crowd::{CrowdClip, CrowdCycles, CrowdGaits, GraphClips};
 pub use ground::{CrowdGround, ground_fit};
 pub use cycle::{
     Channel, Curve, Cycle, CycleError, CycleEvent, CycleKind, CycleLoader, CycleLoaderError, FootPlan, Joint, LegSel,
@@ -129,6 +129,7 @@ impl Plugin for MotionPlugin {
             .init_resource::<player::MotionCache>()
             .init_resource::<player::MotionWarnings>()
             .init_resource::<CrowdCycles>()
+            .init_resource::<CrowdGaits>()
             .init_resource::<MotionTime>()
             .register_type::<MobIntent>()
             .register_type::<HandPose>()
@@ -143,7 +144,7 @@ impl Plugin for MotionPlugin {
                     (pose::choose_steps, pose::advance_clocks).chain().in_set(M::Clock),
                     (
                         (pose::write_probes, player::evaluate_cycles, pose::pose_heroes, pose::write_joints).chain(),
-                        (crowd::bake_graph_clips, ground::crowd_ground, crowd::crowd_animate).chain(),
+                        (crowd::bake_crowd_gaits, crowd::bake_graph_clips, ground::crowd_ground, crowd::crowd_animate).chain(),
                     )
                         .in_set(M::Pose),
                 ),

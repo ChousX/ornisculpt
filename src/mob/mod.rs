@@ -19,7 +19,7 @@ mod tier;
 
 pub(crate) use crowd::crowd_slot_defs;
 pub use crowd::{
-    BONE_BYTES, CROWD_LAYERS, ClipLayout, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, LAYER_ADDITIVE,
+    BONE_BYTES, CROWD_LAYERS, ClipBlock, ClipLayout, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, LAYER_ADDITIVE,
     FOOT_RANGE, MASK_ALL, ROW_MATRICES, SLOT_BYTES, blend_with, leg_rows, pack_unorm2, unpack_unorm2,
 };
 pub use generate::{

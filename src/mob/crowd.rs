@@ -324,6 +324,12 @@ impl CrowdSkin {
         self.atlas.get(&body).copied()
     }
 
+    /// Records where a body's clips are, for tests of the lookup.
+    #[cfg(test)]
+    pub(crate) fn set_layout(&mut self, body: AssetId<GeneratedBody>, layout: ClipLayout) {
+        self.atlas.insert(body, layout);
+    }
+
     /// Puts `data` in the clip atlas (queued for upload) and returns its first matrix's index:
     /// in the smallest hole that holds it ([`release_range`](Self::release_range)), else at the
     /// end. Give the range back with `release_range(base, data.len())` when nothing reads it.
@@ -490,6 +496,52 @@ pub(super) fn clear_uploads(mut uploads: ResMut<CrowdUploads>) {
     uploads.clips.clear();
 }
 
+/// One baked motion as a block of the clip atlas: the idle pose, then every clip's frames, then
+/// the body's leg rows (the ground fit).
+pub struct ClipBlock {
+    pub data: Arc<Vec<[f32; 16]>>,
+    bones: u32,
+    modes: u32,
+    /// Offset of the leg rows within the block.
+    legs: u32,
+}
+
+impl ClipBlock {
+    /// The block for `motion` on `anatomy`, ready to [append](CrowdSkin::append).
+    #[must_use]
+    pub fn new(anatomy: &Anatomy, motion: &BakedMotion) -> Self {
+        let bones = motion.idle.len().clamp_u32();
+        let mut data: Vec<[f32; 16]> =
+            Vec::with_capacity(motion.idle.len() * (1 + motion.clips.len() * BAKE_FRAMES) + 2 * ROW_MATRICES);
+        data.extend_from_slice(&motion.idle);
+        for clip in &motion.clips {
+            for frame in &clip.frames {
+                data.extend_from_slice(frame);
+            }
+        }
+        let legs = data.len().clamp_u32();
+        data.extend(leg_rows(anatomy));
+        Self { data: Arc::new(data), bones, modes: motion.clips.len().clamp_u32(), legs }
+    }
+
+    /// Where the block's clips are, once it sits at `base`.
+    #[must_use]
+    pub const fn layout_at(&self, base: u32) -> ClipLayout {
+        ClipLayout { base, bones: self.bones, modes: self.modes, legs: base + self.legs }
+    }
+
+    /// How many matrices the block takes.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.data.len().clamp_u32()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
 /// Appends newly generated bodies' baked clips to the atlas, and frees the clips of bodies that
 /// have gone (the asset is removed when its last handle drops, so by then no mob plays them).
 pub(super) fn register_clips(
@@ -505,19 +557,9 @@ pub(super) fn register_clips(
         }
         let AssetEvent::Added { id } = ev else { continue };
         let Some(body) = bodies.get(*id) else { continue };
-        let m = &body.motion;
-        let bones = m.idle.len().clamp_u32();
-        let mut data: Vec<[f32; 16]> = Vec::with_capacity(m.idle.len() * (1 + m.clips.len() * BAKE_FRAMES) + 2 * ROW_MATRICES);
-        data.extend_from_slice(&m.idle);
-        for clip in &m.clips {
-            for frame in &clip.frames {
-                data.extend_from_slice(frame);
-            }
-        }
-        let legs = data.len().clamp_u32();
-        data.extend(leg_rows(&body.anatomy));
-        let base = skin.append(Arc::new(data), &mut uploads);
-        skin.atlas.insert(*id, ClipLayout { base, bones, modes: m.clips.len().clamp_u32(), legs: base + legs });
+        let block = ClipBlock::new(&body.anatomy, &body.motion);
+        let base = skin.append(block.data.clone(), &mut uploads);
+        skin.atlas.insert(*id, block.layout_at(base));
     }
 }
 

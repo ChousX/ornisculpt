@@ -1258,7 +1258,13 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
   **This relies on `RenderLayers` filtering shadow casters by the light's mask, which `bevy_light`
   implements but does not document** — see the warning on the constant and in `README.md`. The
   cost is one more mesh per body (`Near` geometry in Bevy-skinned form) and one entity per hero.
-- Not yet: crowd shadows, `BoneScales` and custom gaits in crowd tiers, `PlayCycle` in crowd
+- **A mob's own gait plays in the crowd** (2026-11-02, `CrowdGaits`): a crowd mob with a
+  `MobGait` used to play its body's default gait, because only that one was baked. Its gait is
+  now baked per (body, gait) on the compute pool, as the graph cycles are, appended as its own
+  `ClipBlock`, and the mob plays that block with its own modes. Until the bake lands, and for a
+  mob without a `MobGait`, nothing changes. The block goes back to the atlas when the gait
+  reloads or the body goes.
+- Not yet: crowd shadows, `BoneScales` in crowd tiers, `PlayCycle` in crowd
   tiers, dispatch splitting above about 2M crowd bones. Freed atlas blocks are reused but never
   moved, so a long session can leave the atlas holed; compacting it would mean rewriting every
   `ClipLayout` and `CrowdClip` that points into it.

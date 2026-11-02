@@ -185,8 +185,8 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
        falls a fifth there and the steady frame reads 3 % faster, both unlooked-at. A body is
        about 8 MB and nothing is evicted, so it wants a cache directory the platform may clear;
        `PartLodRules` is the one input the key does not cover, so the file records it.
-6. **Motion gaps:** `BoneScales` and custom gaits in crowd tiers, and crowd shadows. The game's
-   needs set the order.
+6. **Motion gaps:** `BoneScales` in crowd tiers, and crowd shadows. The game's needs set the
+   order.
    - *Done* (2026-11-02): `Reach` arm IK. A world point per side, and the arm's grip (where a
      held tool sits) is brought to it by a two-bone solve on the shoulder and elbow, the rest of
      the arm keeping its shape, eased in and out and leaning toward a point it cannot reach.
