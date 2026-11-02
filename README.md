@@ -68,6 +68,25 @@ Tests: `cargo test --release --lib`. Lints are strict (clippy pedantic and nurse
 `expect`, indexing, panics or `as`), so run `cargo clippy --release --all-targets` with each
 feature a change touches.
 
+## Caching converted meshes
+
+An authored mesh (a sculpted head) becomes an SDF grid before it can be blended into the body,
+which costs about 0.5 s on a desktop and 1 s on a Steam Deck, once per distinct mesh per launch.
+`PartAssetCache::set_cache_dir` keeps those grids on disk so it is paid once per install instead
+— reading one back takes about 3 ms:
+
+```rust,ignore
+fn sdf_cache(mut assets: ResMut<PartAssetCache>) {
+    assets.set_cache_dir(dirs::cache_dir().unwrap_or_default().join("my-game/sdf"));
+}
+```
+
+It is off by default: the crate writes nothing to disk unless asked. Entries are keyed by the
+mesh's content hash and the resolution, so an edited mesh writes a new file rather than
+colliding, and nothing is ever evicted — point it at a cache directory the platform may clear,
+not at save data. A file that is truncated, junk, or from an older layout is ignored and the
+grid converted again.
+
 ## Shadows: a render layer you should know about
 
 A hero-tier mob's own meshes do not cast shadows. At 74 k triangles a hero costs about 0.47 ms a

@@ -8,6 +8,7 @@
 //! `Orient::Model` a part keeps that orientation on the creature; mirrored copies are reflected.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bevy::prelude::*;
@@ -207,12 +208,65 @@ impl SdfGrid {
     }
 }
 
+/// Magic and version of a cached grid on disk. Bump the digit when the layout changes: an older
+/// file is then ignored and converted again, rather than read as nonsense.
+const SDF_FILE_MAGIC: [u8; 8] = *b"ORNISDF1";
+
+impl SdfGrid {
+    /// `origin`, `cell`, `dims`, then one little-endian `f32` a cell.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(SDF_FILE_MAGIC.len() + 36 + self.values.len() * 4);
+        out.extend_from_slice(&SDF_FILE_MAGIC);
+        for v in [self.origin.x, self.origin.y, self.origin.z, self.cell.x, self.cell.y, self.cell.z] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for d in [self.dims.x, self.dims.y, self.dims.z] {
+            out.extend_from_slice(&d.to_le_bytes());
+        }
+        for v in &self.values {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    /// The inverse of [`to_bytes`](Self::to_bytes), or `None` if the bytes are not a grid this
+    /// version wrote, or are truncated, or disagree with their own dimensions. A cache file can
+    /// be anything (a half-written file, a stale layout), so this never trusts what it reads.
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (magic, rest) = bytes.split_at_checked(SDF_FILE_MAGIC.len())?;
+        if magic != SDF_FILE_MAGIC {
+            return None;
+        }
+        let (header, values) = rest.split_at_checked(36)?;
+        let (words, _) = header.as_chunks::<4>();
+        let mut floats = words.iter().copied().map(f32::from_le_bytes);
+        let mut next = || floats.next();
+        let origin = Vec3::new(next()?, next()?, next()?);
+        let cell = Vec3::new(next()?, next()?, next()?);
+        let mut ints = words.iter().copied().skip(6).map(u32::from_le_bytes);
+        let mut next = || ints.next();
+        let dims = UVec3::new(next()?, next()?, next()?);
+        let cells = dims.x.checked_mul(dims.y)?.checked_mul(dims.z)?.idx();
+        if values.len() != cells.checked_mul(4)? {
+            return None;
+        }
+        let (words, _) = values.as_chunks::<4>();
+        Some(Self { origin, cell, dims, values: words.iter().copied().map(f32::from_le_bytes).collect() })
+    }
+}
+
 /// Authored meshes available to a build, by asset path. SDF grids are converted on first use and
 /// shared (the conversion is deterministic, so sharing never changes results).
+///
+/// With a [cache directory](Self::set_cache_dir) the grids also outlive the process, so the
+/// sculpted head is converted once per install instead of once per launch (about 0.4 s on this
+/// desktop, 1.0 s on a Steam Deck).
 #[derive(Clone, Debug, Default)]
 pub struct PartAssets {
     pub meshes: HashMap<String, Arc<TriMesh>>,
     sdfs: SdfCache,
+    /// Where converted grids are kept between runs. `None` keeps them in memory only.
+    cache_dir: Option<Arc<Path>>,
 }
 
 /// Converted SDFs by (mesh hash, resolution). Each entry is filled once: builds that ask for one
@@ -229,19 +283,59 @@ impl PartAssets {
         self.meshes.get(path).cloned()
     }
 
+    /// Keeps converted SDF grids in `dir` between runs, creating it if it isn't there. A grid is
+    /// keyed by its mesh's content hash and the resolution, so a changed mesh writes a new file
+    /// rather than colliding; nothing is ever evicted, so point this at a cache directory the
+    /// platform may clear (`dirs::cache_dir()`), not at the save data.
+    ///
+    /// A cache that can't be read or written is not an error: the grid is converted as it would
+    /// have been without one.
+    pub fn set_cache_dir(&mut self, dir: impl Into<PathBuf>) {
+        let dir = dir.into();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            warn!("SDF cache {}: {e}; converting every run instead", dir.display());
+            return;
+        }
+        self.cache_dir = Some(Arc::from(dir.as_path()));
+    }
+
     /// The SDF of `path` at `resolution`, converting it if needed.
     #[must_use]
     pub fn sdf(&self, path: &str, resolution: u16) -> Option<Arc<SdfGrid>> {
         let mesh = self.meshes.get(path)?;
         let entry = self.sdfs.lock().ok()?.entry((mesh.hash, resolution)).or_default().clone();
-        Some(entry.get_or_init(|| Arc::new(SdfGrid::from_mesh(mesh, resolution))).clone())
+        Some(entry.get_or_init(|| Arc::new(self.convert(mesh, resolution))).clone())
+    }
+
+    /// The grid from the cache directory if it holds one, else converted and written there.
+    fn convert(&self, mesh: &TriMesh, resolution: u16) -> SdfGrid {
+        let file = self.cache_dir.as_ref().map(|dir| dir.join(format!("{:016x}-{resolution}.sdf", mesh.hash)));
+        if let Some(file) = &file
+            && let Ok(bytes) = std::fs::read(file)
+            && let Some(grid) = SdfGrid::from_bytes(&bytes)
+        {
+            return grid;
+        }
+        let grid = SdfGrid::from_mesh(mesh, resolution);
+        if let Some(file) = &file {
+            // Through a temporary file so a reader never sees a half-written grid, and so two
+            // processes converting the same mesh can't interleave. The name is unique per
+            // process; a rename over an existing file replaces it atomically.
+            let temp = file.with_extension(format!("sdf.{}.part", std::process::id()));
+            let written = std::fs::write(&temp, grid.to_bytes()).and_then(|()| std::fs::rename(&temp, file));
+            if let Err(e) = written {
+                warn!("SDF cache {}: {e}", file.display());
+                drop(std::fs::remove_file(&temp));
+            }
+        }
+        grid
     }
 
     /// A copy restricted to `paths`, sharing the SDF cache.
     #[must_use]
     pub fn subset<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Self {
         let meshes = paths.into_iter().filter_map(|p| self.meshes.get(p).map(|m| (p.to_owned(), m.clone()))).collect();
-        Self { meshes, sdfs: self.sdfs.clone() }
+        Self { meshes, sdfs: self.sdfs.clone(), cache_dir: self.cache_dir.clone() }
     }
 }
 
@@ -294,6 +388,66 @@ mod tests {
         assert!(g.sample(Vec3::new(0.5, 0.0, 0.0)).abs() < 0.05);
     }
 
+    /// A grid survives the trip to disk and back exactly: the cache must never shift a surface.
+    #[test]
+    fn a_cached_grid_round_trips_byte_for_byte() {
+        let grid = SdfGrid::from_mesh(&cube(), 16);
+        let back = SdfGrid::from_bytes(&grid.to_bytes()).expect("a grid this version wrote");
+        assert_eq!((back.origin, back.cell, back.dims), (grid.origin, grid.cell, grid.dims));
+        assert_eq!(back.values, grid.values, "{} cells", grid.values.len());
+    }
+
+    /// A cache file is whatever is on the disk: another version's, half-written, or junk. None of
+    /// it may be read as a grid.
+    #[test]
+    fn a_damaged_cache_file_is_refused() {
+        let grid = SdfGrid::from_mesh(&cube(), 8);
+        let good = grid.to_bytes();
+        assert!(SdfGrid::from_bytes(&[]).is_none(), "empty");
+        assert!(SdfGrid::from_bytes(&good[..good.len() - 4]).is_none(), "truncated");
+        assert!(SdfGrid::from_bytes(&good[..20]).is_none(), "header only");
+        let mut wrong_magic = good.clone();
+        if let Some(b) = wrong_magic.get_mut(7) {
+            *b = b'0';
+        }
+        assert!(SdfGrid::from_bytes(&wrong_magic).is_none(), "another version");
+        let mut trailing = good;
+        trailing.push(0);
+        assert!(SdfGrid::from_bytes(&trailing).is_none(), "longer than its dimensions");
+    }
+
+    /// With a cache directory the second build reads the grid instead of converting it, and gets
+    /// the same one. The file is named for the mesh's content hash, so a different mesh misses.
+    #[test]
+    fn a_cache_directory_is_used_by_the_next_build() {
+        let dir = std::env::temp_dir().join(format!("ornisculpt-sdf-test-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        let mesh = Arc::new(cube());
+        let mut first = PartAssets::default();
+        first.set_cache_dir(&dir);
+        first.insert("cube", mesh.clone());
+        let converted = first.sdf("cube", 16).expect("a grid");
+        let files: Vec<_> = std::fs::read_dir(&dir).expect("the cache directory").filter_map(Result::ok).map(|e| e.file_name()).collect();
+        assert_eq!(files.len(), 1, "one file a (mesh, resolution): {files:?}");
+        assert_eq!(files.first().map(|f| f.to_string_lossy().into_owned()), Some(format!("{:016x}-16.sdf", mesh.hash)));
+
+        // A second `PartAssets` shares nothing in memory, so this can only come from the disk.
+        let mut second = PartAssets::default();
+        second.set_cache_dir(&dir);
+        second.insert("cube", mesh);
+        let loaded = second.sdf("cube", 16).expect("a grid");
+        assert_eq!(loaded.values, converted.values, "the cached grid differs from the converted one");
+
+        // Junk under the right name is ignored, not read: the grid comes back converted.
+        let file = dir.join(format!("{:016x}-16.sdf", second.meshes.get("cube").map_or(0, |m| m.hash)));
+        std::fs::write(&file, b"not a grid at all").expect("write");
+        let mut third = PartAssets::default();
+        third.set_cache_dir(&dir);
+        third.insert("cube", Arc::new(cube()));
+        assert_eq!(third.sdf("cube", 16).expect("a grid").values, converted.values);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
     /// Builds that ask for the same SDF at once share one conversion.
     #[test]
     fn concurrent_requests_share_one_conversion() {
@@ -332,5 +486,33 @@ mod tests {
             }
         });
         eprintln!("4 concurrent head SDFs: {:?}", t.elapsed());
+    }
+
+    /// Timing (ignored): the sculpted head converted, then read back from a cache directory.
+    #[test]
+    #[ignore = "timing"]
+    fn cached_head_sdf_timing() {
+        let plan: crate::anatomy::BodyPlan = ron::from_str(include_str!("../../assets/mobs/man.body.ron")).expect("the man's plan");
+        let source = crate::anatomy::test_assets(&plan);
+        let path = source.meshes.keys().next().expect("an authored mesh").clone();
+        let mesh = source.mesh(&path).expect("the head mesh");
+        let dir = std::env::temp_dir().join(format!("ornisculpt-sdf-timing-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        let mut cold = PartAssets::default();
+        cold.set_cache_dir(&dir);
+        cold.insert(path.clone(), mesh.clone());
+        let t = std::time::Instant::now();
+        let converted = cold.sdf(&path, 128).expect("a grid");
+        let convert = t.elapsed();
+        let mut warm = PartAssets::default();
+        warm.set_cache_dir(&dir);
+        warm.insert(path.clone(), mesh);
+        let t = std::time::Instant::now();
+        let loaded = warm.sdf(&path, 128).expect("a grid");
+        let load = t.elapsed();
+        let bytes: u64 = std::fs::read_dir(&dir).into_iter().flatten().filter_map(Result::ok).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+        eprintln!("head SDF: converted in {convert:?}, read in {load:?} ({} cells, {bytes} bytes on disk)", loaded.values.len());
+        assert_eq!(loaded.values, converted.values);
+        drop(std::fs::remove_dir_all(&dir));
     }
 }

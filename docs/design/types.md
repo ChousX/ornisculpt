@@ -502,7 +502,11 @@ Conventions: glTF's (Y up, +Z forward, metres), origin at the attach point. `Ori
 the authored orientation; `Orient::Slot` aligns +Y to the slot. Right copies sample the grid or
 mesh reflected. Meshes are loaded through `PartAssets` (converted SDFs shared by mesh hash and
 resolution; builds asking at once share one conversion) and their content hashes are in the
-`BodyKey`. Plans and part meshes hot-reload. The glTF side of authoring is in
+`BodyKey`. With `PartAssetCache::set_cache_dir` the grids are also kept on disk between runs,
+keyed by the same (hash, resolution): the sculpted head is then converted once per install
+rather than once per launch (0.5 s against 3 ms to read its 7 MB back, 2026-11-02). Off by
+default — the crate writes nothing to disk unless an app asks — and a file that is truncated,
+junk, or written by another layout version is ignored and converted again. Plans and part meshes hot-reload. The glTF side of authoring is in
 [`interchange.md`](interchange.md); the artist checklist and the gaps are in
 [`authored-parts-and-clothes.md`](authored-parts-and-clothes.md).
 

@@ -56,6 +56,23 @@ pub struct PartAssetCache {
 }
 
 impl PartAssetCache {
+    /// Keeps converted SDF grids in `dir` between runs
+    /// ([`PartAssets::set_cache_dir`](crate::anatomy::PartAssets::set_cache_dir)). Off by
+    /// default: the crate writes nothing to disk unless an app asks it to. Set it at startup,
+    /// before the first body is generated:
+    ///
+    /// ```no_run
+    /// # use bevy::prelude::*;
+    /// # use ornisculpt::mob::PartAssetCache;
+    /// fn sdf_cache(mut assets: ResMut<PartAssetCache>) {
+    ///     assets.set_cache_dir("/tmp/my-game/sdf");
+    /// }
+    /// # fn add(app: &mut App) { app.add_systems(Startup, sdf_cache); }
+    /// ```
+    pub fn set_cache_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
+        self.assets.set_cache_dir(dir);
+    }
+
     /// Ensures every path is loaded and extracted. Returns the subset, `None` while loading, or
     /// the first mesh that can't be used (its load failed, or it isn't an indexed triangle
     /// mesh) and why.
