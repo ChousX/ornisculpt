@@ -96,8 +96,17 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      conversion −83 %, the man's generation 4.4 → 1.65 s (rows in `bench/LOG.md`). Still
      open: `group_centres` is still 47 % of generation CPU, the body field 26 %; the other
      stages' `mul_add`s (`surface::body`, `sdf.rs`, `contact.rs`) cost the same way wherever
-     they are hot; a Deck rerun of the v5 bench (`tools/deck-bench.sh`) will say how much
-     of the 5× is left.
+     they are hot.
+   - *Done*: the Deck rerun (`tools/deck-bench.sh all`, results `deck-3717f25-1`). The two
+     stages fall as far there as on toth: centres of rotation −53 to −57 %, the head's
+     conversion −87 % (7.8 → 1.0 s), the man's generation 11.9 → 3.6 s and the woman's
+     14.7 → 5.2 s. **The crowd's cold start is 78 s instead of 128**, its median frame 91 ms
+     instead of 106, with 376 frames over 100 ms instead of 681. Hero frames, walks and the
+     crowd's steady frame don't move: they are GPU-bound. Against tir's v5 totals generation
+     is now 1.6 to 3.4 times rather than 4.7 to 5.6, though tir gains from the same changes,
+     so a tir rerun is owed before calling what is left the core-speed gap. What remains on
+     the Deck is meshing (1.4 to 2.5 s a mob) and the centres. Two minutes of cold start is
+     still two minutes at 4000 mobs, so item 5's body cache is what makes it cheap.
 4. **Crowd cost.**
    - Merge the cloth submesh into the skin mesh. A dressed mob costs an extra draw entity (23 to
      27 ms against 15 ms plain).
