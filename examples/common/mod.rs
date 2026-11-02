@@ -83,8 +83,11 @@ pub fn orbit_camera(
 /// sun's other side, lower, so shaded sides, eyes under their lids and the underside keep their
 /// shape, an overcast backdrop, and a square of ground `ground` metres across.
 pub fn spawn_stage(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, ground: f32, light: Vec3) {
+    // `ORNISCULPT_SHADOWS=0`: the key light casts none, for weighing the shadow passes (only
+    // hero-tier mobs cast; crowd tiers are spawned `NotShadowCaster`).
+    let shadows = std::env::var("ORNISCULPT_SHADOWS").as_deref() != Ok("0");
     commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, illuminance: 9000.0, color: Color::srgb(1.0, 0.96, 0.9), ..default() },
+        DirectionalLight { shadow_maps_enabled: shadows, illuminance: 9000.0, color: Color::srgb(1.0, 0.96, 0.9), ..default() },
         Transform::from_translation(light).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     let fill = Vec3::new(-light.x, light.y * 0.35, light.z);

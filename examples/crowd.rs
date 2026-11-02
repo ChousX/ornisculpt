@@ -16,7 +16,8 @@
 //! (`ORNISCULPT_SHOT_FRAME=n` picks the frame);
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera;
 //! `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]` sets the quality profile (Q still cycles the
-//! presets), for measuring what a tier costs per mob.
+//! presets), for measuring what a tier costs per mob;
+//! `ORNISCULPT_SHADOWS=0` stops the key light casting, for weighing the shadow passes.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
