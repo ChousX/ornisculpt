@@ -556,6 +556,20 @@ impl AnatomyBuilder {
         self.anatomy.clavicles.push(super::Clavicle { bone, arm, side });
     }
 
+    /// Registers a manipulator limb for reaching. `pole` is logical model space; `grip` indexes
+    /// the sockets, so register the grip first. A chain without bones is ignored.
+    pub fn arm(&mut self, chain: SmallVec<[BoneId; 4]>, side: Side, pole: Vec3, grip: Option<usize>) {
+        let length = chain.iter().filter_map(|b| self.anatomy.skeleton.get(*b)).map(|b| b.length).sum();
+        let Some(&hand) = chain.last() else { return };
+        self.anatomy.arms.push(super::ArmInfo { chain, hand, side, pole: self.point_to_stored(pole), length, grip });
+    }
+
+    /// Sockets registered so far: the index the next [`socket`](Self::socket) gets.
+    #[must_use]
+    pub const fn socket_count(&self) -> usize {
+        self.anatomy.sockets.len()
+    }
+
     /// Adds a thin generated surface (logical model space; mirrored copies are reflected and
     /// rewound).
     pub fn sheet(&mut self, mut sheet: Sheet) {

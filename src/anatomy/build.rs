@@ -24,6 +24,8 @@ pub struct Anatomy {
     pub legs: Vec<LegInfo>,
     /// Shoulder girdles of manipulator arms.
     pub clavicles: Vec<super::Clavicle>,
+    /// Manipulator limbs, for reaching.
+    pub arms: Vec<super::ArmInfo>,
     /// Torso bones, rear to front.
     pub spine: Vec<BoneId>,
     pub springs: Vec<SpringChainDef>,

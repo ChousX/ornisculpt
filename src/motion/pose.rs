@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use super::heft::Heft;
 use super::stages::{self, Frame, PoseInput, PoseState, leg_length};
-use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, TorsoState, MotionTime};
+use super::state::{ActiveStep, CyclePose, Feet, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringState, Reach, ReachState, TorsoState, MotionTime};
 use super::{DefaultGaits, ExternalRoot, FootGround, FootProbes, Footstep, Gait, HandPose, MobGait, MobIntent};
 use crate::anatomy::Anatomy;
 use crate::mob::{BodyReady, GeneratedBody, MobBody, MobJoint, MobSkeleton};
@@ -160,8 +160,10 @@ pub(super) struct HeroPose {
     heft: &'static Heft,
     cycles: &'static CyclePose,
     hands: Option<&'static HandPose>,
+    reach: Option<&'static Reach>,
     ground: Option<&'static FootGround>,
     feet: &'static mut Feet,
+    reach_state: &'static mut ReachState,
     springs: &'static mut SpringState,
     look: &'static mut LookState,
     torso: &'static mut TorsoState,
@@ -181,10 +183,18 @@ pub(super) fn pose_heroes(assets: MotionAssets, mut mobs: Query<HeroPose>, joint
             heft: m.heft,
             cycles: m.cycles.0.as_ref(),
             hands: m.hands,
+            reach: m.reach,
             ground: m.ground.map_or(&[][..], |g| &g.0[..]),
             look_at: m.intent.look_at,
         };
-        let state = PoseState { feet: &mut m.feet, springs: &mut m.springs, look: &mut m.look, torso: &mut m.torso, pose: &mut m.pose };
+        let state = PoseState {
+            feet: &mut m.feet,
+            reach: &mut m.reach_state,
+            springs: &mut m.springs,
+            look: &mut m.look,
+            torso: &mut m.torso,
+            pose: &mut m.pose,
+        };
         let landed = stages::pose_frame(&f, &input, scales, state);
         if !landed.is_empty() {
             commands.command_scope(|mut commands| {

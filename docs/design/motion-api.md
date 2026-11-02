@@ -161,8 +161,10 @@ pub enum Channel {
     // Arms
     Swing,                               // degrees, counter-phase to the same-side leg by default
     Raise,                               // degrees at the shoulder
-    ReachTo(Anchor),                     // blend the grip toward an anchor: Mouth, Head, Chest,
-                                         // Ground, Forward(dist), Target (a point the game sets)
+    ReachTo(Anchor),                     // not built: blend the grip toward an anchor: Mouth,
+                                         // Head, Chest, Ground, Forward(dist), Target. The
+                                         // component `Reach` does the IK half (a world point a
+                                         // side); this would let a cycle drive it.
 }
 
 pub enum Curve {

@@ -23,6 +23,26 @@ pub struct LegInfo {
     pub length: f32,
 }
 
+/// A manipulator limb, for reaching ([`motion::stages::reach_arms`](crate::motion::stages)).
+///
+/// The clavicle is not in the chain: it lifts with the shoulder rhythm, and a reach starts at the
+/// shoulder joint, as a swing or a raise does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmInfo {
+    /// Shoulder joint to hand, inclusive.
+    pub chain: SmallVec<[BoneId; 4]>,
+    /// The chain's last bone (the hand, or whatever the limb ends in).
+    pub hand: BoneId,
+    pub side: Side,
+    /// IK pole direction in mob root space: where the elbow points at rest.
+    pub pole: Vec3,
+    /// Shoulder-to-hand rest length.
+    pub length: f32,
+    /// Index into [`Anatomy::sockets`](super::Anatomy::sockets) of this arm's grip, when it
+    /// grasps: what a reach actually brings to the target, and where a held tool sits.
+    pub grip: Option<usize>,
+}
+
 /// Secondary-motion chain (tails, ears, antennae).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpringChainDef {

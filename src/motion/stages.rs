@@ -15,7 +15,7 @@ use super::eval::LayerPose;
 use super::gait::BodyMotion;
 use super::hand::{HandPose, pose_hands};
 use super::heft::{Heft, HeftResponse};
-use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, TorsoState};
+use super::state::{ActiveStep, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, SpringBone, SpringState, Reach, ReachState, Reaching, TorsoState};
 use super::{Gait, SOFT_START, fabrik, two_bone_soft};
 use crate::anatomy::{Anatomy, BoneDef, BoneId, Side};
 use crate::num::{ToF32, smoothstep};
@@ -505,14 +505,14 @@ fn angle_about(axis: Vec3, from: Vec3, to: Vec3) -> f32 {
 /// Which turns of a leg's lower segments (about `axis`) leave the joint above the foot within the
 /// upper bones' reach. The joint sits at `to_foot − R(θ)·tip` from the root, whose distance
 /// varies as a sinusoid in θ, so the reachable turns form one interval round the best turn.
-struct Reach {
+struct TurnRange {
     /// The turn that brings the joint closest to the root.
     best: f32,
     /// How far either side of it a turn may go; negative when no turn reaches.
     half_width: f32,
 }
 
-impl Reach {
+impl TurnRange {
     fn new(axis: Vec3, to_foot: Vec3, tip: Vec3, reach: f32) -> Self {
         let along = axis * axis.dot(tip);
         let across = tip - along;
@@ -570,7 +570,7 @@ impl HangingLeg {
         // ankle further than that is held at the edge of it, so the foot stays down.
         let upper = (root.distance(*knee) + knee.distance(ankle)) * self.soft;
         let tip = rest_lower.last().copied().unwrap_or(Vec3::ZERO);
-        let fit = Reach::new(self.side_axis, self.target - *root, tip, upper);
+        let fit = TurnRange::new(self.side_axis, self.target - *root, tip, upper);
         let mut solved = [*root, *knee, ankle];
         let mut lower = rest_lower.clone();
         let mut slide = Vec3::ZERO;
@@ -705,6 +705,112 @@ pub fn solve_legs(f: &Frame, feet: &Feet, cycles: Option<&LayerPose>, pose: &mut
         let swing = cloth_parent.inverse() * leg_parent * swing * leg_parent.inverse() * cloth_parent;
         if let Some(t) = local.get_mut(c.root.index()) {
             t.rotation = Quat::IDENTITY.slerp(swing, c.weight) * t.rotation;
+        }
+    }
+}
+
+/// How fast a reach eases in and out (`1 − e^{−k·dt}`), per second.
+const REACH_EASE: f32 = 10.0;
+/// How far the elbow hangs below the arm's pole direction when it bends (a share of the pole,
+/// which is a unit vector): 1 puts it at 45° below.
+const ELBOW_DROP: f32 = 1.0;
+/// How far into its reach an arm starts easing toward straight: a target past the arm's length is
+/// leaned toward, never snapped to, and the elbow never locks.
+const ARM_SOFT_START: f32 = 0.96;
+
+/// Hands reach for their targets ([`Reach`]): a two-bone solve on each arm's shoulder and elbow,
+/// everything below the elbow keeping its shape, eased in and out.
+///
+/// What is brought to the target is the arm's grip — where a held tool sits — or the hand's tip
+/// on a limb that doesn't grasp. Runs before [`shoulder_rhythm`], so a raised reach lifts the
+/// shoulder; that moves the shoulder point a little, as a real one does, so the grip lands a few
+/// millimetres off (3.5 mm on the sample biped at a comfortable reach).
+pub fn reach_arms(f: &Frame, reach: &Reach, state: &mut ReachState, pose: &mut MobPose) {
+    let (a, root) = (f.a, f.root);
+    if a.arms.is_empty() {
+        return;
+    }
+    if state.0.len() != a.arms.len() {
+        state.0.resize(a.arms.len(), Reaching::default());
+    }
+    let ease = 1.0 - (-REACH_EASE * f.dt).exp();
+    // Nothing reaching and nothing easing out: leave the pose (and the FK) alone.
+    let idle = a.arms.iter().zip(&state.0).all(|(arm, r)| reach.get(arm.side).is_none() && r.weight <= 1e-3);
+    if idle {
+        for r in &mut state.0 {
+            r.weight = 0.0;
+        }
+        return;
+    }
+    let bones = &a.skeleton.bones;
+    forward_kinematics_into(bones, &pose.local, root, &mut pose.world);
+    let (local, world) = (&mut pose.local, &pose.world);
+    let parent_rotation = |b: BoneId| bones.get(b.index()).and_then(|d| d.parent).and_then(|p| world.get(p.index())).map_or_else(|| rotation(&root), rotation);
+    for (arm, r) in a.arms.iter().zip(&mut state.0) {
+        let wanted = reach.get(arm.side);
+        if let Some(target) = wanted {
+            r.target = target;
+        }
+        r.weight = (f32::from(wanted.is_some()) - r.weight).mul_add(ease, r.weight);
+        if r.weight <= 1e-3 {
+            r.weight = 0.0;
+            continue;
+        }
+        let chain = &arm.chain;
+        let (Some(&shoulder), Some(&elbow)) = (chain.first(), chain.get(1)) else { continue };
+        let (Some(p0), Some(p1), Some(hand)) =
+            (world.get(shoulder.index()), world.get(elbow.index()), world.get(arm.hand.index()))
+        else {
+            continue;
+        };
+        let (p0, p1) = (Vec3::from(p0.translation), Vec3::from(p1.translation));
+        // What the solve carries: the joint below the elbow on a longer arm, else the forearm's
+        // own tip. Everything past it keeps its local rotations, so the hand stays rigid on the
+        // forearm.
+        let tip_of = |b: BoneId| {
+            let length = bones.get(b.index()).map_or(0.0, |d| d.length);
+            world.get(b.index()).map(|m| m.transform_point3(Vec3::Y * length))
+        };
+        let Some(carry) = chain.get(2).and_then(|b| world.get(b.index())).map(|m| Vec3::from(m.translation)).or_else(|| tip_of(elbow))
+        else {
+            continue;
+        };
+        // A segment of no length has no solve (and would divide by zero).
+        if p0.distance(p1) < 1e-5 || p1.distance(carry) < 1e-5 {
+            continue;
+        }
+        // The point actually brought to the target: the grip, or the hand's tip.
+        let effector = arm
+            .grip
+            .and_then(|g| a.sockets.get(g))
+            .map_or_else(|| tip_of(arm.hand).unwrap_or(carry), |s| hand.transform_point3(s.local.translation));
+        // Elbows bend toward the arm's pole, never whichever side the solve happens to find,
+        // and hang below it: an arm at rest points its elbow barely off its own line, so the
+        // pole alone leaves a hand reaching in front of the chest with its elbow winged out at
+        // shoulder height.
+        let hint = rotation(&root) * (arm.pole.normalize_or(Vec3::NEG_Z) + Vec3::NEG_Y * ELBOW_DROP);
+        // From the carried joint to the effector: rigid, but it turns with the forearm, so the
+        // solve is run twice with it turned by what the first pass did.
+        let rest_tail = effector - carry;
+        let rest_fore = (carry - p1).normalize_or(Vec3::Y);
+        let mut solved = [p0, p1, carry];
+        let mut tail = rest_tail;
+        for _ in 0..2 {
+            solved = [p0, p1, carry];
+            two_bone_soft(&mut solved, r.target - tail, hint, ARM_SOFT_START);
+            let fore = (solved[2] - solved[1]).normalize_or(rest_fore);
+            tail = Quat::from_rotation_arc(rest_fore, fore) * rest_tail;
+        }
+        // Only the shoulder and the elbow turn; the rest of the arm follows them.
+        let mut parent = parent_rotation(shoulder);
+        for (b, [from, to]) in [shoulder, elbow].iter().zip(solved.array_windows()) {
+            let Some(t) = local.get_mut(b.index()) else { continue };
+            let current = parent * t.rotation;
+            let aim = current * Vec3::Y;
+            let want = (*to - *from).normalize_or(aim);
+            let turned = parent.inverse() * (Quat::from_rotation_arc(aim, want) * current);
+            t.rotation = t.rotation.slerp(turned, r.weight);
+            parent *= t.rotation;
         }
     }
 }
@@ -917,6 +1023,8 @@ pub struct PoseInput<'a> {
     /// What the playing cycles add, if any.
     pub cycles: Option<&'a LayerPose>,
     pub hands: Option<&'a HandPose>,
+    /// Where the hands reach, if the game is steering them.
+    pub reach: Option<&'a Reach>,
     /// Ground hit per leg (empty: root height).
     pub ground: &'a [Option<Vec3>],
     /// World point for the head to look at.
@@ -926,6 +1034,7 @@ pub struct PoseInput<'a> {
 /// What the pose stages carry from frame to frame, and the pose they build.
 pub struct PoseState<'a> {
     pub feet: &'a mut Feet,
+    pub reach: &'a mut ReachState,
     pub springs: &'a mut SpringState,
     pub look: &'a mut LookState,
     pub torso: &'a mut TorsoState,
@@ -936,7 +1045,7 @@ pub struct PoseState<'a> {
 /// limits. Returns the legs that touched down this frame.
 pub fn pose_frame(f: &Frame, input: &PoseInput, scales: impl Iterator<Item = Vec3>, state: PoseState) -> SmallVec<[usize; 8]> {
     let (a, i) = (f.a, input);
-    let PoseState { feet, springs, look, torso, pose } = state;
+    let PoseState { feet, reach: state_reach, springs, look, torso, pose } = state;
     rest_pose(a, scales, pose);
     fold_wings(a, i.cycles, pose);
     let landed = plant_feet(f, i.loco, i.clock, i.step, i.ground, feet);
@@ -950,6 +1059,9 @@ pub fn pose_frame(f: &Frame, input: &PoseInput, scales: impl Iterator<Item = Vec
     }
     if let Some(hands) = i.hands {
         pose_hands(a, hands, pose);
+    }
+    if let Some(reach) = i.reach {
+        reach_arms(f, reach, state_reach, pose);
     }
     shoulder_rhythm(a, pose);
     solve_legs(f, feet, i.cycles, pose);
@@ -971,6 +1083,9 @@ pub struct Sim {
     pub clock: GaitClock,
     pub step: ActiveStep,
     pub feet: Feet,
+    /// Where the hands reach, with the state the ease carries.
+    pub reach: Reach,
+    pub reach_state: ReachState,
     pub springs: SpringState,
     pub look: LookState,
     pub torso: TorsoState,
@@ -995,8 +1110,15 @@ impl Sim {
     pub fn frame_with(&mut self, f: &Frame, cycles: Option<&LayerPose>, target: Option<Vec3>) -> &[Transform] {
         choose_step(f, &self.loco, &self.heft, &GaitOverride(None), &mut self.clock, &mut self.step);
         advance_clock(f, &self.loco, &self.heft, &self.step, Some(&self.feet), &mut self.clock);
-        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles, hands: None, ground: &[], look_at: target };
-        let state = PoseState { feet: &mut self.feet, springs: &mut self.springs, look: &mut self.look, torso: &mut self.torso, pose: &mut self.pose };
+        let input = PoseInput { loco: &self.loco, clock: &self.clock, step: &self.step, heft: &self.heft, cycles, hands: None, reach: Some(&self.reach), ground: &[], look_at: target };
+        let state = PoseState {
+            feet: &mut self.feet,
+            reach: &mut self.reach_state,
+            springs: &mut self.springs,
+            look: &mut self.look,
+            torso: &mut self.torso,
+            pose: &mut self.pose,
+        };
         pose_frame(f, &input, std::iter::repeat(Vec3::ONE), state);
         &self.pose.local
     }
@@ -1252,5 +1374,136 @@ mod joint_limits {
         if cfg!(feature = "joint-limits") {
             assert!(out.is_empty(), "out of range: {out:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod reaching {
+    use super::*;
+    use crate::anatomy::build_src;
+
+    fn human() -> Anatomy {
+        build_src(include_str!("../../assets/mobs/biped.body.ron"))
+    }
+
+    /// Stands `a` still for `frames` frames with `reach` set, and returns the world pose.
+    fn stand(a: &Anatomy, reach: Reach, frames: usize) -> (Sim, Vec<Affine3A>) {
+        let gait = Gait::for_legs(a.legs.len());
+        let leg = leg_length(a);
+        let mut sim = Sim::new(a, Affine3A::IDENTITY);
+        sim.reach = reach;
+        let dt = 1.0 / 60.0;
+        for i in 0..frames {
+            let f = Frame { a, gait: &gait, root: Affine3A::IDENTITY, dt, time: i.to_f32() * dt, leg };
+            sim.frame(&f, None);
+        }
+        let world = forward_kinematics(&a.skeleton.bones, &sim.pose.local, Affine3A::IDENTITY);
+        (sim, world)
+    }
+
+    /// Where an arm's grip sits in the world pose.
+    fn grip(a: &Anatomy, arm: &crate::anatomy::ArmInfo, world: &[Affine3A]) -> Vec3 {
+        let hand = world[arm.hand.index()];
+        arm.grip.and_then(|g| a.sockets.get(g)).map_or_else(
+            || hand.transform_point3(Vec3::Y * a.skeleton.get(arm.hand).map_or(0.0, |d| d.length)),
+            |s| hand.transform_point3(s.local.translation),
+        )
+    }
+
+    /// The point the reach is given is where the hand's grip ends up — that is the whole feature.
+    #[test]
+    fn a_hand_reaches_the_point_it_is_given() {
+        let a = human();
+        let left = a.arms.iter().find(|arm| arm.side == Side::Left).expect("the biped has a left arm");
+        let (_, rest) = stand(&a, Reach::default(), 1);
+        let start = grip(&a, left, &rest);
+        // A point in front of the chest, well inside the arm's reach.
+        let target = start + Vec3::new(0.0, 0.25, 0.35);
+        let (_, world) = stand(&a, Reach { left: Some(target), right: None }, 90);
+        let at = grip(&a, left, &world);
+        assert!(at.distance(target) < 0.01 * left.length, "the grip is {:.4} m from its target", at.distance(target));
+        // The other arm is untouched (against the same stand with no reach at all, since a body
+        // standing still goes on shifting its weight).
+        let (_, idle) = stand(&a, Reach::default(), 90);
+        let right = a.arms.iter().find(|arm| arm.side == Side::Right).expect("and a right arm");
+        assert!(grip(&a, right, &world).distance(grip(&a, right, &idle)) < 1e-4, "the right arm moved");
+    }
+
+    /// A target it cannot reach is leaned toward with the elbow nearly straight, never snapped
+    /// to and never with the arm pulled off the shoulder.
+    #[test]
+    fn an_impossible_target_is_leaned_toward() {
+        let a = human();
+        let left = a.arms.iter().find(|arm| arm.side == Side::Left).expect("a left arm");
+        let (_, rest) = stand(&a, Reach::default(), 1);
+        let shoulder = |w: &[Affine3A]| Vec3::from(w[left.chain[0].index()].translation);
+        let far = shoulder(&rest) + Vec3::new(0.0, 0.0, 10.0 * left.length);
+        let (_, world) = stand(&a, Reach { left: Some(far), right: None }, 90);
+        let at = grip(&a, left, &world);
+        let span = at.distance(shoulder(&world));
+        // An arm can be no longer than the sum of its segments, shoulder to grip.
+        let points = |w: &[Affine3A]| {
+            let mut v: Vec<Vec3> = left.chain.iter().map(|b| Vec3::from(w[b.index()].translation)).collect();
+            v.push(grip(&a, left, w));
+            v
+        };
+        let full: f32 = points(&rest).windows(2).map(|p| p[0].distance(p[1])).sum();
+        assert!(span <= full * 1.001, "the arm stretched to {span:.3} m of its {full:.3}");
+        assert!(span > full * 0.9, "the arm barely straightened: {span:.3} m of {full:.3}");
+        // It leans the right way: much nearer the target than the hand hanging at rest.
+        assert!(at.distance(far) < f32::mul_add(left.length, -0.5, grip(&a, left, &rest).distance(far)));
+    }
+
+    /// Bone lengths don't change, and the elbow bends toward the arm's pole rather than wherever
+    /// the solve lands.
+    #[test]
+    fn the_arm_keeps_its_shape_and_its_elbow_side() {
+        let a = human();
+        let left = a.arms.iter().find(|arm| arm.side == Side::Left).expect("a left arm");
+        let (_, rest) = stand(&a, Reach::default(), 1);
+        let elbow_side = |w: &[Affine3A]| {
+            let [s, e, h] = [left.chain[0], left.chain[1], left.hand].map(|b| Vec3::from(w[b.index()].translation));
+            let axis = (h - s).normalize_or(Vec3::NEG_Y);
+            let off = (e - s) - axis * (e - s).dot(axis);
+            off.normalize_or_zero()
+        };
+        let target = grip(&a, left, &rest) + Vec3::new(0.1, 0.3, 0.3);
+        let (_, world) = stand(&a, Reach { left: Some(target), right: None }, 90);
+        for pair in left.chain.windows(2) {
+            let [b, c] = [pair[0], pair[1]];
+            let len = |w: &[Affine3A]| Vec3::from(w[b.index()].translation).distance(w[c.index()].translation.into());
+            assert!((len(&world) - len(&rest)).abs() < 1e-4, "a bone changed length");
+        }
+        assert!(elbow_side(&world).dot(elbow_side(&rest)) > 0.0, "the elbow turned inside out");
+    }
+
+    /// A reach eases in rather than snapping, and the arm eases back to its animation when the
+    /// target goes.
+    #[test]
+    fn a_reach_eases_in_and_out() {
+        let a = human();
+        let left = a.arms.iter().find(|arm| arm.side == Side::Left).expect("a left arm");
+        let (_, rest) = stand(&a, Reach::default(), 1);
+        let target = grip(&a, left, &rest) + Vec3::new(0.0, 0.3, 0.3);
+        let reach = Reach { left: Some(target), right: None };
+        let (_, one) = stand(&a, reach, 1);
+        let (mut sim, settled) = stand(&a, reach, 90);
+        let (start, end) = (grip(&a, left, &one), grip(&a, left, &settled));
+        assert!(
+            start.distance(target) > end.distance(target) * 4.0,
+            "the first frame went {:.3} m of the way, the settled pose {:.3}",
+            start.distance(target),
+            end.distance(target)
+        );
+        // The target goes: the arm eases back to where it hangs.
+        let gait = Gait::for_legs(a.legs.len());
+        let leg = leg_length(&a);
+        sim.reach = Reach::default();
+        for i in 0..120 {
+            let f = Frame { a: &a, gait: &gait, root: Affine3A::IDENTITY, dt: 1.0 / 60.0, time: i.to_f32() / 60.0, leg };
+            sim.frame(&f, None);
+        }
+        let back = forward_kinematics(&a.skeleton.bones, &sim.pose.local, Affine3A::IDENTITY);
+        assert!(grip(&a, left, &back).distance(grip(&a, left, &rest)) < 0.01 * left.length, "the arm didn't come back");
     }
 }

@@ -565,6 +565,7 @@ impl PartBuild for LimbParams {
         let r = radius_at(&self.chain.radius, 1.0);
         let end_slot = limb_end(self.end, b, last, tip, r, end_region);
 
+        let mut grip_socket = None;
         if matches!(self.role, LimbRole::Manipulator | LimbRole::Both) && self.end.grasps() {
             let size = match self.end {
                 LimbEnd::Hand { palm } => palm,
@@ -575,23 +576,20 @@ impl PartBuild for LimbParams {
             // +Z runs down the limb toward the fingers.
             let fist_turn = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_X, Vec3::Z, Vec3::Y));
             let grip = moved(tip, Vec3::Y * size * 0.5).with_rotation(tip.rotation * fist_turn);
+            grip_socket = Some(b.socket_count());
             b.socket(&suffixed("grip", cx), SocketKind::Grip, cx.side, last, grip, size);
         }
+        if matches!(self.role, LimbRole::Manipulator | LimbRole::Both) {
+            let pole = ik_pole(&frames, &lens, self.joints.as_ref(), &tip, Vec3::NEG_Z);
+            b.arm(bones.iter().copied().collect(), cx.side, pole, grip_socket);
+        }
         if matches!(self.role, LimbRole::Locomotor | LimbRole::Both) {
-            let (hip, foot) = (frames.first().map_or(tip.translation, |f| f.translation), tip.translation);
-            let axis = (foot - hip).normalize_or(Vec3::NEG_Y);
             // The IK pole is the rest pose's own knee: elbows back, stifles forward, a spider's
             // knees up. With declared joints that rest bend is checked, so it can't point the
             // wrong way; a leg standing straight at its first hinge (where the rest pose shows
             // no side) takes the side the hinge closes toward.
-            let off_axis = |v: Vec3| v - axis * v.dot(axis);
-            let knee = off_axis(frames.get(1).unwrap_or(&tip).translation - hip);
-            let declared = self.joints.as_ref().and_then(|j| j.plan.hinges().first());
-            let pole = match (knee.try_normalize(), declared, frames.first()) {
-                (Some(k), _, _) if knee.length() > 1e-3 * lens.iter().sum::<f32>() => k,
-                (_, Some(h), Some(f)) => off_axis(f.rotation * h.flexes.points()).try_normalize().unwrap_or(Vec3::Z),
-                (k, ..) => k.unwrap_or(Vec3::Z),
-            };
+            let hip = frames.first().map_or(tip.translation, |f| f.translation);
+            let pole = ik_pole(&frames, &lens, self.joints.as_ref(), &tip, Vec3::Z);
             let leg = b.leg_count();
             b.leg(bones.iter().copied().collect(), cx.side, self.stance, tip.translation, pole);
             if self.joints.as_ref().is_some_and(|j| j.plan == JointPlan::Leg)
@@ -606,6 +604,23 @@ impl PartBuild for LimbParams {
             *end = slot(AttachSlot::End, last, end_slot);
         }
         Ok(slots)
+    }
+}
+
+/// A limb's IK pole: the rest pose's own middle joint, off the root-to-tip line (knees forward,
+/// elbows back, a spider's knees up). A limb standing straight at its first declared hinge shows
+/// no side in its rest pose, so it takes the side that hinge closes toward; one with neither
+/// takes `fallback`.
+fn ik_pole(frames: &[Transform], lens: &[f32], joints: Option<&super::part::LimbJoints>, tip: &Transform, fallback: Vec3) -> Vec3 {
+    let root = frames.first().map_or(tip.translation, |f| f.translation);
+    let axis = (tip.translation - root).normalize_or(Vec3::NEG_Y);
+    let off_axis = |v: Vec3| v - axis * v.dot(axis);
+    let middle = off_axis(frames.get(1).unwrap_or(tip).translation - root);
+    let declared = joints.and_then(|j| j.plan.hinges().first());
+    match (middle.try_normalize(), declared, frames.first()) {
+        (Some(m), _, _) if middle.length() > 1e-3 * lens.iter().sum::<f32>() => m,
+        (_, Some(h), Some(f)) => off_axis(f.rotation * h.flexes.points()).try_normalize().unwrap_or(fallback),
+        (m, ..) => m.unwrap_or(fallback),
     }
 }
 

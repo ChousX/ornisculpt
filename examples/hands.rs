@@ -7,8 +7,9 @@
 //!
 //! Controls: left-drag orbit · scroll zoom · 1 relaxed · 2 open · 3 fist · 4 grip · 5 point ·
 //! 6 pinch · Q/W/E/R/T bend or straighten one digit of the right hand (thumb first) · P piano ·
-//! 0 back to the animation.
+//! H both hands reach for the moving marker ([`Reach`]) · 0 back to the animation.
 //! `ORNISCULPT_HAND=relaxed|open|fist|grip|point|pinch|piano` starts in that pose;
+//! `ORNISCULPT_REACH=1` starts reaching;
 //! `ORNISCULPT_SCREENSHOT=out.png` saves a screenshot after a few seconds and exits;
 //! `ORNISCULPT_CAM=yaw,pitch,distance,x,y,z` sets the camera.
 
@@ -17,7 +18,7 @@ use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::LodLevel;
 use ornisculpt::coat::MobCoat;
 use ornisculpt::mob::{ForceTier, Mob, TierCamera};
-use ornisculpt::motion::{Hand, HandPose};
+use ornisculpt::motion::{Hand, HandPose, Reach};
 use ornisculpt::num::ToF32;
 
 mod common;
@@ -41,7 +42,7 @@ fn main() -> AppExit {
         .insert_resource(Orbit::from_env(-0.5, 0.15, 0.75, Vec3::new(-0.22, 0.7, 0.0), (0.2, 50.0)))
         .init_resource::<Mode>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (keys, piano, orbit_camera, screenshot_at(240)))
+        .add_systems(Update, (keys, piano, reach_marker, orbit_camera, screenshot_at(240)))
         .add_observer(common::exit_on_body_failed)
         .run()
 }
@@ -74,9 +75,18 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<As
         MobCoat(assets.load("coats/skin_woman.coat.ron")),
         ForceTier(LodLevel::Hero),
         HandPose::default(),
+        Reach::default(),
         Transform::default(),
     ));
-    info!("controls: 1-6 presets (relaxed, open, fist, grip, point, pinch), Q/W/E/R/T one digit, P piano, 0 animation");
+    // What the hands reach for with H: a marker that circles in front of her.
+    commands.spawn((
+        Marker,
+        Mesh3d(meshes.add(Sphere::new(0.035))),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.9, 0.3, 0.2), ..default() })),
+        Visibility::Hidden,
+        Transform::default(),
+    ));
+    info!("controls: 1-6 presets (relaxed, open, fist, grip, point, pinch), Q/W/E/R/T one digit, P piano, H reach, 0 animation");
 }
 
 fn keys(input: Res<ButtonInput<KeyCode>>, mut mode: ResMut<Mode>, mut mobs: Query<&mut HandPose>) {
@@ -113,6 +123,39 @@ fn keys(input: Res<ButtonInput<KeyCode>>, mut mode: ResMut<Mode>, mut mobs: Quer
     };
     for mut hands in &mut mobs {
         *hands = pose;
+    }
+}
+
+/// The thing the hands reach for.
+#[derive(Component)]
+struct Marker;
+
+/// `H` toggles reaching. The marker circles in front of her chest, so the arms follow a moving
+/// target and the shoulders lift as it goes high.
+fn reach_marker(
+    time: Res<Time>,
+    input: Res<ButtonInput<KeyCode>>,
+    mut marker: Query<(&mut Transform, &mut Visibility), With<Marker>>,
+    mut mobs: Query<&mut Reach>,
+    mut on: Local<bool>,
+    mut started: Local<bool>,
+) {
+    if !*started {
+        *started = true;
+        *on = std::env::var("ORNISCULPT_REACH").is_ok();
+    }
+    if input.just_pressed(KeyCode::KeyH) {
+        *on = !*on;
+        info!("reach: {}", if *on { "on" } else { "off" });
+    }
+    let t = time.elapsed_secs();
+    let at = Vec3::new(0.25 * t.sin(), 0.3f32.mul_add((t * 0.7).sin(), 1.15), 0.1f32.mul_add((t * 0.5).cos(), 0.35));
+    for (mut tf, mut vis) in &mut marker {
+        tf.translation = at;
+        *vis = if *on { Visibility::Visible } else { Visibility::Hidden };
+    }
+    for mut reach in &mut mobs {
+        *reach = if *on { Reach::both(at) } else { Reach::default() };
     }
 }
 

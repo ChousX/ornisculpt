@@ -185,8 +185,14 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
        falls a fifth there and the steady frame reads 3 % faster, both unlooked-at. A body is
        about 8 MB and nothing is evicted, so it wants a cache directory the platform may clear;
        `PartLodRules` is the one input the key does not cover, so the file records it.
-6. **Motion gaps:** `Reach` arm IK, fingers closing on a grip, `BoneScales` and custom gaits in
-   crowd tiers, and crowd shadows. The game's needs set the order.
+6. **Motion gaps:** fingers closing on a grip, `BoneScales` and custom gaits in crowd tiers, and
+   crowd shadows. The game's needs set the order.
+   - *Done* (2026-11-02): `Reach` arm IK. A world point per side, and the arm's grip (where a
+     held tool sits) is brought to it by a two-bone solve on the shoulder and elbow, the rest of
+     the arm keeping its shape, eased in and out and leaning toward a point it cannot reach.
+     `ArmInfo` records each manipulator limb's chain, pole, length and grip socket, the way
+     `LegInfo` does for a leg. Hero tier only: a crowd tier plays baked clips, which cannot
+     know a per-mob target. `examples/hands` reaches for a moving marker with `H`.
 7. **Bugs the work above turned up.**
    - The crowd's cold-start median rose 13 % with the crowd layers (822df11), and the steady
      frame didn't move. The Tracy trace the item asked for (2026-11-02, `--features tracy`)

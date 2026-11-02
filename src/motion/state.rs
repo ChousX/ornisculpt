@@ -9,7 +9,7 @@ use super::eval::LayerPose;
 use super::gait::{BodyMotion, PhasePattern};
 use super::heft::StepShape;
 use super::FootPlan;
-use crate::anatomy::LegInfo;
+use crate::anatomy::{LegInfo, Side};
 
 /// How the mob's root is moving.
 #[derive(Component, Clone, Debug, Default)]
@@ -114,6 +114,60 @@ impl Default for LookState {
     fn default() -> Self {
         Self(Quat::IDENTITY)
     }
+}
+
+/// Where a hero mob's hands reach, in world space.
+///
+/// The arm's grip (what a held tool sits in) is brought to the point, or the hand's tip on a limb
+/// that doesn't grasp. `None` leaves the arm to its animation. A reach eases in and out, so a
+/// target that appears or goes doesn't pop, and a point further than the arm can reach is leaned
+/// toward rather than snapped to.
+///
+/// Hero tier only: crowd mobs play baked clips, which cannot know a per-mob target. Every arm of
+/// a side takes that side's target, and a single centre arm takes `left`, as [`HandPose`] does.
+///
+/// [`HandPose`]: crate::motion::HandPose
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[reflect(Component)]
+pub struct Reach {
+    pub left: Option<Vec3>,
+    pub right: Option<Vec3>,
+}
+
+impl Reach {
+    #[must_use]
+    pub const fn both(target: Vec3) -> Self {
+        Self { left: Some(target), right: Some(target) }
+    }
+
+    #[must_use]
+    pub const fn get(&self, side: Side) -> Option<Vec3> {
+        match side {
+            Side::Right => self.right,
+            Side::Left | Side::Center => self.left,
+        }
+    }
+
+    pub const fn set(&mut self, side: Side, target: Option<Vec3>) {
+        match side {
+            Side::Right => self.right = target,
+            Side::Left | Side::Center => self.left = target,
+        }
+    }
+}
+
+/// How far each arm has eased into its reach, and the point it is easing to or from
+/// (`stages::reach_arms`). One entry per [`ArmInfo`](crate::anatomy::ArmInfo).
+#[derive(Component, Clone, Debug, Default)]
+pub struct ReachState(pub(crate) SmallVec<[Reaching; 2]>);
+
+/// One arm's reach as it is being eased.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Reaching {
+    /// 0 = the arm's own pose, 1 = all the way to `target`.
+    pub(crate) weight: f32,
+    /// Where it last reached, kept so the arm eases back out of a target that has gone.
+    pub(crate) target: Vec3,
 }
 
 /// The torso motion being eased toward the step's, and how lively it is (0 standing); the

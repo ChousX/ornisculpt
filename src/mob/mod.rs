@@ -55,6 +55,7 @@ use crate::anatomy::{BodyPlan, Form};
     crate::motion::Feet,
     crate::motion::SpringState,
     crate::motion::LookState,
+    crate::motion::ReachState,
     crate::motion::TorsoState,
     crate::motion::Heft,
     crate::motion::FootProbes

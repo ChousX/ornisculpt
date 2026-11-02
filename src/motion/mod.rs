@@ -46,7 +46,7 @@ pub use graph::{
 pub use gait::{BodyMotion, Gait, GaitLoader, GaitLoaderError, GaitMode, PhasePattern};
 pub use hand::{Hand, HandPose, pose_hands};
 pub use heft::{Heft, HeftResponse, StepShape};
-pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, SpringState, TorsoState};
+pub use state::{ActiveStep, CyclePose, Feet, Foot, GaitClock, GaitOverride, Locomotion, LookState, MobPose, MotionTime, Reach, ReachState, SpringState, TorsoState};
 pub use ik::{SOFT_START, fabrik, two_bone_soft};
 pub use player::{Footstep, MobMotion, MotionCache, MotionParams, MotionRuntime, PlayCycle, RootMotionDelta, TRIGGER_LIFETIME};
 
@@ -132,6 +132,7 @@ impl Plugin for MotionPlugin {
             .init_resource::<MotionTime>()
             .register_type::<MobIntent>()
             .register_type::<HandPose>()
+            .register_type::<Reach>()
             .add_observer(pose::bind_body)
             .configure_sets(Update, (M::Root, M::Player, M::Clock, M::Pose).chain().in_set(crate::mob::MobSet::Motion))
             .add_systems(
