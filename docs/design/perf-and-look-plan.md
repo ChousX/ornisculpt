@@ -155,12 +155,14 @@ prepass (TAA, SSAO) is turned on; crowd motion vectors ignore bone motion. 2 not
      `1e-3`) at hero tier only. This adds pipeline variants, so measure the C2 effect.
 
 ### M2: CPU and generation optimisations
-Status: **1 done, 2 partly done.** Key caching, mesh conversion in the task, a worker-thread budget
+Status: **1 and 2 partly done.** Key caching, mesh conversion in the task, a worker-thread budget
 and grouped centres of rotation: crowd cold start 45.4 → 34.8 s, p95 frames 282 → 49 ms, frames
 over 100 ms 175 → 3 (`bench/LOG.md`, v3). Tracy showed the old 1.5 s spike was renderer start-up
 (excluded by the v3 pre-roll). Found on the way: meshing depended on the thread count (fixed).
-Next: meshing is now the largest stage (~65–80 % of generation); its three LODs still run one
-after another.
+Since then the three LODs mesh at once (3d42f66) and a formed plan's hash is memoised (7d498d8);
+both have rows in `bench/LOG.md`. Next: `group_centres` is 47 % of the bench's generation CPU on
+toth and the body field 26 % (`bench/LOG.md`, 2026-11-01), and meshing is what is left on the
+Deck, at 1.4 to 2.5 s a mob.
 
 Hypotheses, ranked. Each one is confirmed by a Tracy capture first, then fixed and measured on
 C1/G.
@@ -170,8 +172,11 @@ C1/G.
      `max_in_flight` keep `GenRequest`. Each frame they clone plan, coat and outfit, call
      `referenced_assets`, and `ron::to_string` the plan, settings, coat and outfit to build
      `body_key`. With 4000 mobs this could be the hitch.
-     Fix: compute the key once per mob and cache it in a component; invalidate on `Form`, coat or
-     outfit change.
+     *Done* (7d498d8), by memo rather than by a component: the formed plan's hash is kept per
+     (plan asset, `Form`) and dropped when the plan reloads, so a crowd hashes its dozen distinct
+     bodies instead of four thousand. `body_key` 62.5 → 6.2 µs a mob. It was the hitch the item
+     guessed at: the worst cold frame was 2.4 s inside `start_generation`, a quarter-second of it
+     keys.
    - **`finish_generation` converts meshes on the main thread.** `to_bevy_meshes` /
      `to_crowd_meshes` run for 3 LODs plus coat meshes. Move the conversion into the task and hand
      over finished `Mesh`es.
@@ -182,9 +187,14 @@ C1/G.
    - **Task pool starving the main thread** while 4 generation tasks run. Try `max_in_flight` =
      cores − 4, or give generation a smaller pool.
 2. **Generation wall time (G).**
-   - `mesh_all_lods` meshes 3 LODs one after another (`src/surface/lod.rs:152`). Run them in
-     parallel (task-pool `scope`); expected speed-up 1.5–2× per body.
-   - `centres_of_rotation` (0.39 s): parallelise per vertex.
+   - *Done* (3d42f66): `mesh_all_lods` builds the three levels at once — near and far on scoped
+     threads while hero, most of the work, runs on the calling thread (`src/surface/lod.rs`,
+     through `surface::scope`; the `web` feature has no threads and keeps them sequential). Hero
+     `mesh_lod` biped 673 → 340 ms and horse 1206 → 556; gen totals −48 to −55 % (biped
+     1199 → 544 ms, horse 2452 → 1107); meshes bit-identical.
+   - *Done*: `centres_of_rotation` runs per group on `par_jobs` (`src/surface/cor.rs`), and then
+     lost another half to a cheap exponential and plain arithmetic (c31efed, 3717f25). It is
+     still 47 % of generation CPU on toth, so what is left there is algorithmic, not threading.
    - `muscle_flex`: 12 smoothing passes; check its cost and use a parallel or sparse version if
      it is large.
    - Run the same LOD-parallel treatment on `build_coat_meshes`.
