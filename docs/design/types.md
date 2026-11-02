@@ -1205,7 +1205,9 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
   microsecond a **far** one, over a base under 1 ms. The hero tier dominates: at the default cap
   of 32 it is 16 of the 27 ms. On tir the balance was the other way round (the near tier at
   24.5 µs a mob); the Deck's near tier is five times cheaper than tir's, its hero tier dearer.
-  A 60 fps frame there buys about 30 hero mobs, or thousands of crowd ones.
+  A 60 fps frame there buys about 30 hero mobs, or thousands of crowd ones. Nearly all of a
+  hero's cost is its shadow casting (0.47 of the 0.49 ms; crowd tiers are `NotShadowCaster`):
+  its mesh, joints and skinning together come to 24 µs.
 - Not yet: crowd shadows, `BoneScales` and custom gaits in crowd tiers, `PlayCycle` in crowd
   tiers, atlas compaction when bodies are freed, dispatch splitting above about 2M crowd bones.
 

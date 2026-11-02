@@ -150,9 +150,26 @@ Which fits **base under 1 ms + 0.5 ms a hero mob + 5 µs a near mob + under 0.5 
 - **A 60 fps frame on the Deck** buys about 30 hero mobs, or 3000 near ones, or a mix. Phase 2
   opens by noting domain-expance holds every creature at `ForceTier(Hero)`; that is the budget
   it is spending.
-- Still unsplit: how much of the 0.5 ms is the two shadow cascades (crowd tiers are
-  `NotShadowCaster`, and the v5 capture puts 10.8 M shadow indices on exactly these 32 mobs),
-  how much the full-detail mesh (74 k triangles on the man), and how much the joint upload.
+**Where the hero mob's half-millisecond goes** (`ORNISCULPT_SHADOWS=0` stops the key light
+casting; same scene and camera):
+
+| | shadows on | shadows off | the shadows |
+|---|---|---|---|
+| 0 heroes | 10.4 ms | 7.0 ms | 3.4 ms |
+| 32 heroes | 26.1 ms | 7.7 ms | 18.4 ms |
+
+- **A hero mob is its shadow.** The 32 heroes' casting is 18.4 − 3.4 = 14.9 ms, **0.47 ms each**;
+  everything else about being a hero — the 74 k-triangle mesh, the joint upload, Bevy skinning —
+  is (7.7 − 7.0) / 32 = **24 µs each**. Shadow casting is 95 % of the tier's cost, and the
+  remaining 24 µs is only five times a near mob's 5 µs, which is what the detail difference
+  ought to look like.
+- The 3.4 ms with no mob casting is the ground plane's cascades plus the shadow sample every
+  fragment of all 4000 mobs pays. Crowd tiers cast nothing (`NotShadowCaster`).
+- With shadows off, 32 heroes (7.7 ms) runs *faster* than none (7.0 ms → within the 6.2–8.3
+  spread): promoting the nearest mobs out of the crowd shader costs nothing measurable.
+- So the lever is the shadow pass, not the hero mesh: a coarse shadow-only mesh (cast from the
+  crowd-tier geometry while the hero mesh is `NotShadowCaster`), a cap on casters, or fewer
+  cascades. Each is worth a measurement before it is worth code.
 
 ## Bench version 4 baseline (2026-10-24)
 

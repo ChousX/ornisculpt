@@ -121,11 +121,15 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      times cheaper — **the hero tier is**: at the default cap of 32 it is 16.3 of the 26.7 ms,
      61 % of the frame for 0.8 % of the mobs, and it grows linearly to 43.8 ms at 64. A 60 fps
      frame on the Deck buys about 30 hero mobs or 3000 crowd ones.
-   - Next, split that 0.5 ms: the two shadow cascades (crowd tiers are `NotShadowCaster`, and
-     the v5 capture puts 10.8 M shadow indices on exactly those 32 mobs), the full-detail mesh
-     (74 k triangles on the man) and the joint upload are separable with one experiment each.
-     This is the lever for the opening line of this phase: domain-expance holds every creature
-     at `ForceTier(Hero)`, which on the Deck is a budget of about 30.
+   - *Done* (2026-11-02): that 0.5 ms is **the shadow pass, 95 % of it** (`ORNISCULPT_SHADOWS=0`;
+     table in `bench/LOG.md`). The 32 heroes' casting is 14.9 ms, 0.47 ms each; everything else
+     about being a hero — the 74 k-triangle mesh, the joint upload, Bevy skinning — is 24 µs a
+     mob, only five times a near mob. With shadows off, 32 heroes costs no more than none.
+   - Next, make a hero's shadow cheap rather than its mesh coarse: cast from the crowd-tier
+     geometry with the hero mesh `NotShadowCaster`, cap the casters, or cut cascades. Measure
+     each before writing it. This is the lever for the line this phase opens with —
+     domain-expance holds every creature at `ForceTier(Hero)`, which on the Deck is a budget of
+     about 30 — and for item 6's crowd shadows, which would multiply exactly this cost.
 5. **Long sessions.**
    - Free a body's space in the crowd clip atlas when the body goes.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (20 to 30 s for
