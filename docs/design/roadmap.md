@@ -172,10 +172,12 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
        graph. Those stages (meshing, garments, annotation, centres of rotation, muscle flex,
        soft-tissue weights, coat geometry) are a pure function of the key; anatomy, the motion
        bake and the contact set are rebuilt. The man is 15 ms warm against 1.57 s built, and
-       the bench's crowd cold start 1.0 s against 37.6 on toth, steady frame unchanged. A body
-       is about 8 MB and nothing is evicted, so it wants a cache directory the platform may
-       clear; `PartLodRules` is the one input the key does not cover, so the file records it.
-       Still owed: the same measurement on the Deck, where the cold start is 78 s.
+       the bench's crowd cold start 1.0 s against 37.6 on toth. **On the Steam Deck, which is
+       what the item was about, 79.2 s becomes 1.9**: the crowd stands in under two seconds
+       instead of a minute and a quarter, with 17 cold frames instead of 1124. Peak RSS also
+       falls a fifth there and the steady frame reads 3 % faster, both unlooked-at. A body is
+       about 8 MB and nothing is evicted, so it wants a cache directory the platform may clear;
+       `PartLodRules` is the one input the key does not cover, so the file records it.
 6. **Motion gaps:** `Reach` arm IK, fingers closing on a grip, `BoneScales` and custom gaits in
    crowd tiers, and crowd shadows. The game's needs set the order.
 7. **Bugs the work above turned up.**

@@ -1069,7 +1069,8 @@ Flow (`MobSet::Generation`):
   centres of rotation, muscle flex, soft-tissue weights and the coat's cards and shells, which
   are nearly all of generation and depend on nothing but the key. Anatomy, the motion bake and
   the contact set are rebuilt: the man is 15 ms warm against 1.57 s built, and the bench's crowd
-  cold start 1.0 s against 37.6 (toth, 2026-11-02), with the steady frame unchanged. A body is
+  cold start 1.0 s against 37.6 on toth and 1.9 s against 79.2 on a Steam Deck (2026-11-02),
+  with the steady frame unchanged (3 % faster on the Deck) and peak RSS a fifth lower there. A body is
   about 8 MB of plain little-endian arrays written by hand (`mob::mesh_cache`), nothing is
   evicted, and a file that is damaged, from another layout version, or written under other
   `PartLodRules` (the one generation input the key does not cover, recorded in the file) is

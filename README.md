@@ -100,7 +100,8 @@ fn body_cache(mut cache: ResMut<BodyMeshCache>) {
 
 A warm run reads a body back in about 1 ms and rebuilds only anatomy, the motion bake and the
 contact set, a hundredth of generating it (15 ms against 1.57 s for the man). The bench's crowd
-cold start is 37.6 s cold and 1.0 s warm on this desktop, with the steady frame unchanged.
+cold start is 37.6 s cold and 1.0 s warm on a desktop, and 79.2 s against 1.9 s on a Steam Deck,
+with the steady frame unchanged.
 
 The same caveats as the grids, and one more: a body is large — about 8 MB, a crowd's two dozen
 190 MB — because every level's vertices, the coat's cards and shells, the centres of rotation and
