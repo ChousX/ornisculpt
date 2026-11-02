@@ -103,10 +103,13 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      14.7 → 5.2 s. **The crowd's cold start is 78 s instead of 128**, its median frame 91 ms
      instead of 106, with 376 frames over 100 ms instead of 681. Hero frames, walks and the
      crowd's steady frame don't move: they are GPU-bound. Against tir's v5 totals generation
-     is now 1.6 to 3.4 times rather than 4.7 to 5.6, though tir gains from the same changes,
-     so a tir rerun is owed before calling what is left the core-speed gap. What remains on
-     the Deck is meshing (1.4 to 2.5 s a mob) and the centres. Two minutes of cold start is
-     still two minutes at 4000 mobs, so item 5's body cache is what makes it cheap.
+     is now 1.6 to 3.4 times rather than 4.7 to 5.6. What remains on the Deck is meshing (1.4 to
+     2.5 s a mob) and the centres. Two minutes of cold start is still two minutes at 4000 mobs,
+     so item 5's body cache is what makes it cheap.
+   - *Done* (2026-11-02): the tir rerun that was owed. tir's own totals fell 13 to 47 % (man
+     2306 → 1211 ms, woman 2882 → 1570), so **the Deck is 2.3 to 3.8 times tir's generation
+     against 4.3 to 5.4 at v5** — the fixes paid more on x86 than on aarch64, as the libm story
+     predicts, and what is left is close to the core-speed difference.
 4. **Crowd cost.**
    - *Done* (nothing kept, 2026-11-02): merging the cloth submesh into the skin mesh. The item
      rested on 23 to 27 ms against 15 ms plain, read on tir in October; measured again, dressing
