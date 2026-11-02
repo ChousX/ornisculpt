@@ -185,14 +185,40 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
        falls a fifth there and the steady frame reads 3 % faster, both unlooked-at. A body is
        about 8 MB and nothing is evicted, so it wants a cache directory the platform may clear;
        `PartLodRules` is the one input the key does not cover, so the file records it.
-6. **Motion gaps:** `BoneScales` in crowd tiers, and crowd shadows. The game's needs set the
-   order.
+6. **Motion gaps:** `BoneScales` in crowd tiers. The game's needs set the order.
    - *Done* (2026-11-02): `Reach` arm IK. A world point per side, and the arm's grip (where a
      held tool sits) is brought to it by a two-bone solve on the shoulder and elbow, the rest of
      the arm keeping its shape, eased in and out and leaning toward a point it cannot reach.
      `ArmInfo` records each manipulator limb's chain, pole, length and grip socket, the way
      `LegInfo` does for a leg. Hero tier only: a crowd tier plays baked clips, which cannot
      know a per-mob target. `examples/hands` reaches for a moving marker with `H`.
+   - *Done* (2026-11-02): fingers close on a grip. A tool says how thick it is where it is held
+     (`HeldBy::radius`) and the holder's hand takes `Hand::round(radius, palm)`: a fist on
+     nothing, flat on something as thick as its palm, wrapping in between. It lands in
+     `GripPose`, which `HandPose` overrides side by side, so a game that poses a hand itself
+     still wins. `examples/hold` gives its spear and club their radii.
+   - *Done* (2026-11-02): a crowd mob plays its own gait. Only the body's default gait was
+     baked, so a mob with a `MobGait` walked to the wrong one at near and far tiers. `CrowdGaits`
+     bakes each (body, gait) on the compute pool, as `CrowdCycles` does for graph cycles, appends
+     it as its own `ClipBlock` and hands the mob that block; until the bake lands it plays the
+     body's, as before. The block goes back to the atlas when the gait reloads or the body goes.
+   - *Done* (2026-11-02): crowd shadows, on a budget. `QualityProfile::max_casters` lets the
+     biggest crowd mobs on screen cast their coarse mesh; coat shells and cards never cast.
+     **Off except on the high profile (64)**, because what a caster costs turns out to depend
+     on how big it is on screen rather than on its triangles: on toth at 4000 mobs the same 64
+     casters cost 0.1 ms in a wide shot and 1.3 ms with the camera down among the mobs, and 16
+     of the near ones cost 0.6. The item's own "5 µs a caster" came from measuring all 4000 at
+     once, nearly all of them tiny, and understates a near caster five to ten times.
+     Found and fixed on the way: a mob **behind** the camera took the clamped near depth in
+     `screen_px` and read as the biggest thing in the scene, so a camera standing in a crowd
+     spent its whole hero budget (and the first version of the caster budget) on mobs at its
+     back; at 4000 mobs it also tiered 729 of them `Near`.
+   - Still open: `BoneScales` in crowd tiers. It is not a gap that can be filled the way these
+     were: the baked frames have the skeleton's chain already flattened, so a per-mob bone
+     scale — which moves a bone's children — would need the forward kinematics redone on the
+     GPU with per-mob scales uploaded. Girth alone could be a local scale on the skin matrix,
+     but length could not. A game that needs a crowd mob's proportions changed has `Form`,
+     which gives it a body of its own.
 7. **Bugs the work above turned up.**
    - The crowd's cold-start median rose 13 % with the crowd layers (822df11), and the steady
      frame didn't move. The Tracy trace the item asked for (2026-11-02, `--features tracy`)

@@ -20,17 +20,16 @@
 //! `ORNISCULPT_SHADOWS=0` stops the key light casting, for weighing the shadow passes;
 //! `ORNISCULPT_CACHE=<dir>` keeps converted part SDFs and generated bodies there between runs,
 //! so a second run starts warm (`ORNISCULPT_CACHE=/tmp/ornisculpt-cache`);
-//! `ORNISCULPT_CROWD_SHADOWS=1` lets the crowd tiers cast too (they are `NotShadowCaster` by
-//! default), for pricing crowd shadows and a coarse shadow proxy for heroes.
+//! `ORNISCULPT_CASTERS=n` sets how many crowd mobs may cast a shadow (the default profile's is
+//! 64); `ORNISCULPT_CROWD_SHADOWS=1` lets every one of them cast, for pricing crowd shadows.
 
-use bevy::light::NotShadowCaster;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
 use ornisculpt::clothing::MobOutfit;
 use ornisculpt::coat::MobCoat;
-use ornisculpt::mob::{CrowdInstance, CrowdUploads, GenCache, LodMesh, Mob, MobTier, QualityProfile, TierCamera};
+use ornisculpt::mob::{CrowdCaster, CrowdInstance, CrowdUploads, GenCache, Mob, MobTier, QualityProfile, TierCamera};
 use ornisculpt::motion::{MobMotion, MotionGraph, MotionParams, library};
 use ornisculpt::num::{Saturate, ToF32};
 
@@ -52,7 +51,7 @@ fn main() -> AppExit {
         .insert_resource(quality_from_env())
         .init_resource::<UploadStats>()
         .add_systems(Startup, (disk_caches, setup))
-        .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, crowd_shadows, screenshot_frames(600)))
+        .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, screenshot_frames(600)))
         .add_systems(Last, count_uploads)
         .add_observer(common::exit_on_body_failed)
         .run()
@@ -142,23 +141,17 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut profile: ResMut<QualityProfile>
     cycle_quality(&keys, &mut profile, &mut quality);
 }
 
-/// `ORNISCULPT_CROWD_SHADOWS=1`: crowd-tier meshes cast shadows, which they never do in the
-/// library (`spawn_level_meshes` gives them `NotShadowCaster`). For measuring what a coarse mesh
-/// costs to cast: both what crowd shadows would cost and the ceiling on casting a hero's shadow
-/// from its crowd geometry instead of its 74 k-triangle mesh.
-fn crowd_shadows(mut commands: Commands, meshes: Query<Entity, (With<LodMesh>, With<NotShadowCaster>)>) {
-    if std::env::var("ORNISCULPT_CROWD_SHADOWS").as_deref() != Ok("1") {
-        return;
-    }
-    for entity in &meshes {
-        commands.entity(entity).remove::<NotShadowCaster>();
-    }
-}
-
-/// `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]`, else the default profile. The tier thresholds
-/// decide how many mobs each tier holds, so a sweep of them says what a tier costs per mob.
+/// `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]`, else the default profile; `ORNISCULPT_CASTERS`
+/// and `ORNISCULPT_CROWD_SHADOWS` set the shadow budget. The tier thresholds decide how many
+/// mobs each tier holds, so a sweep of them says what a tier costs per mob.
 fn quality_from_env() -> QualityProfile {
     let mut profile = QualityProfile::default();
+    if let Ok(n) = std::env::var("ORNISCULPT_CASTERS") {
+        profile.max_casters = n.parse().unwrap_or(profile.max_casters);
+    }
+    if std::env::var("ORNISCULPT_CROWD_SHADOWS").as_deref() == Ok("1") {
+        profile.max_casters = usize::MAX;
+    }
     let Ok(spec) = std::env::var("ORNISCULPT_TIERS") else { return profile };
     let mut fields = spec.split(',');
     if let Some(px) = fields.next().and_then(|f| f.parse().ok()) {
@@ -182,6 +175,7 @@ fn report(
     mut uploads: ResMut<UploadStats>,
     tiers: Query<&MobTier>,
     mobs: Query<(), With<Mob>>,
+    casters: Query<(), With<CrowdCaster>>,
 ) {
     if time.elapsed_secs() < *next {
         return;
@@ -195,13 +189,14 @@ fn report(
     let per_frame = uploads.slots.to_f32() / uploads.frames.max(1).to_f32();
     *uploads = default();
     info!(
-        "{} mobs | frame {:.2} ms ({:.0} fps) | bodies {} cached, {} generating | hero/near/far {:?} | {:.0} slots ({:.1} KB) uploaded/frame",
+        "{} mobs | frame {:.2} ms ({:.0} fps) | bodies {} cached, {} generating | hero/near/far {:?} | {} casting | {:.0} slots ({:.1} KB) uploaded/frame",
         mobs.iter().count(),
         frame_ms,
         1000.0 / frame_ms.max(0.001),
         cache.bodies.len(),
         cache.in_flight(),
         counts,
+        casters.iter().count(),
         per_frame,
         per_frame * size_of::<CrowdInstance>().to_f32() / 1024.0,
     );

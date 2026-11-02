@@ -1177,7 +1177,7 @@ pub struct HeldBy { pub mob: Entity, pub socket: SocketSel, pub grip: Transform 
 
 ```rust
 #[derive(Resource)]
-pub struct QualityProfile { pub hero_px: f32, pub near_px: f32, pub hysteresis: f32, pub promotions_per_frame: usize, pub max_hero: usize }
+pub struct QualityProfile {   // + max_casters: crowd mobs allowed to cast (0 / 0 / 64) pub hero_px: f32, pub near_px: f32, pub hysteresis: f32, pub promotions_per_frame: usize, pub max_hero: usize }
 #[derive(Component)] pub struct TierCamera;           // cameras considered; the largest on-screen size wins
 #[derive(Component)] pub struct ForceTier(pub LodLevel);
 ```
@@ -1264,8 +1264,14 @@ pub struct ClipLayout { pub base: u32, pub bones: u32, pub modes: u32, pub legs:
   `ClipBlock`, and the mob plays that block with its own modes. Until the bake lands, and for a
   mob without a `MobGait`, nothing changes. The block goes back to the atlas when the gait
   reloads or the body goes.
-- Not yet: crowd shadows, `BoneScales` in crowd tiers, `PlayCycle` in crowd
-  tiers, dispatch splitting above about 2M crowd bones. Freed atlas blocks are reused but never
+- **Crowd shadows, on a budget** (2026-11-02): `QualityProfile::max_casters` lets the biggest
+  crowd mobs on screen cast (`CrowdCaster`, applied to their body meshes by the `cast_shadows` /
+  `stop_casting` observers); coat shells and cards never cast, being alpha-tested. **Off except
+  on the high profile (64)**: what a caster costs depends on how big it is on screen, not on its
+  triangles — the same 64 cost 0.1 ms in a wide crowd shot and 1.3 ms with the camera down among
+  them (toth, 4000 mobs). A mob pops its shadow as it crosses the budget.
+- Not yet: `BoneScales` in crowd tiers, `PlayCycle` in crowd tiers, dispatch splitting above
+  about 2M crowd bones. Freed atlas blocks are reused but never
   moved, so a long session can leave the atlas holed; compacting it would mean rewriting every
   `ClipLayout` and `CrowdClip` that points into it.
 

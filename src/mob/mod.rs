@@ -29,11 +29,12 @@ pub use generate::{
 pub use mesh_cache::{BodyMeshCache, CachedBody};
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};
 pub use spawn::{
-    HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder, SHADOW_PROXY_LAYER, ShadowProxy,
+    CrowdCastable, HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder,
+    SHADOW_PROXY_LAYER, ShadowProxy,
 };
 #[cfg(feature = "soft-tissue")]
 pub use spawn::SoftJoint;
-pub use tier::{ForceTier, MobTier, QualityProfile, TierCamera};
+pub use tier::{CrowdCaster, ForceTier, MobTier, QualityProfile, TierCamera};
 
 use bevy::prelude::*;
 
@@ -158,6 +159,8 @@ impl Plugin for MobPlugin {
             .add_observer(levers::sever_part)
             .add_observer(levers::graft_part)
             .add_observer(crowd::release_slot)
+            .add_observer(tier::cast_shadows)
+            .add_observer(tier::stop_casting)
             .add_systems(
                 Update,
                 (

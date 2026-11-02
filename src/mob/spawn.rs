@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use super::generate::GenPending;
 use super::crowd::{CrowdSkin, CrowdSlot, CrowdUploaded};
-use super::{BodyFailed, BodyReady, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
+use super::{BodyFailed, BodyReady, CrowdCaster, GenCache, GenRequest, GeneratedBody, LiveBody, MobBody, MobTier};
 use bevy::camera::visibility::{Layer, RenderLayers};
 use bevy::light::{NotShadowCaster, NotShadowReceiver, WithLight};
 use bevy::mesh::MeshTag;
@@ -122,7 +122,7 @@ pub(super) fn attach_body(
     bodies: Res<Assets<GeneratedBody>>,
     placeholder: Option<Res<PlaceholderAssets>>,
     mut crowd_skin: ResMut<CrowdSkin>,
-    pending: Query<(Entity, &GenPending, Option<&MobTier>, Option<&Children>, Option<&CrowdSlot>), Without<GenRequest>>,
+    pending: Query<(Entity, &GenPending, Option<&MobTier>, Option<&Children>, Option<&CrowdSlot>, Has<CrowdCaster>), Without<GenRequest>>,
     visuals: Query<(), Or<(With<MobVisual>, With<Placeholder>)>>,
     has_body: Query<(), With<MobBody>>,
     placeholders: Query<&ChildOf, With<Placeholder>>,
@@ -132,7 +132,7 @@ pub(super) fn attach_body(
         return;
     };
     let with_placeholder: Vec<Entity> = placeholders.iter().map(ChildOf::parent).collect();
-    for (mob, pend, tier, children, slot) in &pending {
+    for (mob, pend, tier, children, slot, casting) in &pending {
         if let Some(error) = cache.lost_error(pend) {
             commands.entity(mob).remove::<GenPending>().trigger(move |entity| BodyFailed { entity, error });
             continue;
@@ -161,7 +161,15 @@ pub(super) fn attach_body(
         let shown = tier.map_or(LodLevel::Far, |t| t.0);
         for level in [LodLevel::Near, LodLevel::Far] {
             let visibility = if level == shown { Visibility::Inherited } else { Visibility::Hidden };
-            spawn_level_meshes(&mut commands, mob, body, level, (MeshTag::new(slot.0), visibility), NotShadowCaster);
+            // A mob already inside the shadow budget keeps casting through a regeneration;
+            // one outside it gets `NotShadowCaster` here, and `tier::cast_shadows` takes that
+            // off when it next crosses.
+            let common = (MeshTag::new(slot.0), visibility);
+            if casting {
+                spawn_level_meshes(&mut commands, mob, body, level, common, CrowdCastable);
+            } else {
+                spawn_level_meshes(&mut commands, mob, body, level, common, (NotShadowCaster, CrowdCastable));
+            }
         }
         commands
             .entity(mob)
@@ -170,6 +178,13 @@ pub(super) fn attach_body(
             .trigger(|entity| BodyReady { entity });
     }
 }
+
+/// A crowd-tier body mesh, which the shadow budget may let cast.
+///
+/// See `tier::apply_shadow_budget`. Coat shells and cards never take it: they are alpha-tested,
+/// and far dearer to cast than the silhouette is worth.
+#[derive(Component, Clone, Default)]
+pub struct CrowdCastable;
 
 /// Marks hero-only visuals (joint roots and skinned hero meshes).
 #[derive(Component, Clone, Default)]
