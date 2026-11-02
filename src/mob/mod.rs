@@ -13,6 +13,7 @@ mod crowd_gpu;
 mod generate;
 mod levers;
 mod loads;
+mod mesh_cache;
 mod spawn;
 mod tier;
 
@@ -25,6 +26,7 @@ pub use generate::{
     BodyKey, CoatMeshHandles, GenBudget, GenCache, GenInput, GenOutput, GenRequest, GeneratedBody, LodMeshes, PartAssetCache, SlotMaterials,
     StageTimes, body_key, generate_body,
 };
+pub use mesh_cache::{BodyMeshCache, CachedBody};
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};
 pub use spawn::{
     HeroVisual, LodMesh, MobJoint, MobParts, MobSkeleton, MobVisual, Part, PartLod, PartOf, Placeholder, SHADOW_PROXY_LAYER, ShadowProxy,
@@ -143,6 +145,7 @@ impl Plugin for MobPlugin {
             .init_resource::<GenCache>()
             .init_resource::<GenBudget>()
             .init_resource::<PartAssetCache>()
+            .init_resource::<BodyMeshCache>()
             .init_resource::<QualityProfile>()
             .register_type::<MobSeed>()
             .register_type::<QualityProfile>()

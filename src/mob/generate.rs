@@ -8,6 +8,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use xxhash_rust::xxh3::{xxh3_64, xxh3_128};
 
 use super::loads::{Loaded, loaded, loaded_or_default};
+use super::mesh_cache::{BodyMeshCache, CachedBody, CachedMeshes};
 use super::{BodyFailed, LiveBody, Mob, MobSeed};
 use crate::anatomy::{
     Anatomy, BodyPlan, Form, LodLevel, PartAssets, PartLodRules, TriMesh, apply_form, build_anatomy, referenced_assets,
@@ -408,6 +409,9 @@ pub struct GenInput {
     pub seed: u64,
     pub coat: Coat,
     pub outfit: Outfit,
+    /// Where this body's meshes are kept between runs, from [`BodyMeshCache`](super::BodyMeshCache).
+    /// `None` generates them as always.
+    pub cache: Option<CachedBody>,
 }
 
 /// A generated body before it becomes GPU assets.
@@ -450,72 +454,37 @@ impl StageTimes {
 /// # Errors
 /// When the anatomy or a level's mesh can't be built.
 pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutput, String> {
-    let GenInput { live, rules, assets, settings, seed, coat, outfit } = input;
+    let GenInput { live, rules, assets, settings, seed, coat, outfit, cache } = input;
     let anatomy = times.stage("anatomy", || build_anatomy(&live, &rules, &assets)).map_err(|e| e.to_string())?;
     let (anatomy, cloth) =
         if outfit.garments.is_empty() { (anatomy, None) } else { times.stage("fit_outfit", || fit_outfit(anatomy, &outfit, &assets)) };
-    // Give the simplifier the coat's markings, baked on the full mesh, so the triangles it keeps
-    // go where the colour changes (a Hereford's white face and socks, a zebra's stripes) rather
-    // than wherever the shape alone allows: crowd levels simplify hard, and even the hero's half
-    // leaves triangles several centimetres across on a flat flank.
-    let keep = |dense: &BodyMeshData, _level: LodLevel| {
-        (!coat.markings.is_empty()).then(|| {
-            let mut painted = dense.clone();
-            // Bones are still the full skeleton's here (crowd levels remap them after).
-            crate::coat::paint(&mut painted, &coat, &anatomy, LodLevel::Hero);
-            painted.paint
-        })
-    };
-    let mut lods = times
-        .stage("mesh", || mesh_all_lods_keeping(&AdaptiveContour, &anatomy, &settings, seed, Some(&keep)))
-        .map_err(|e| e.to_string())?;
-    if let Some(cloth) = &cloth {
-        times.stage("garments", || {
-            for (lod, garments) in lods.iter_mut().zip(garment_lods(cloth, &anatomy, &settings)) {
-                merge(lod, &garments);
-            }
-        });
-    }
-    times.stage("annotate", || {
-        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
-            annotate(lod, &coat, &anatomy, level);
-        }
-    });
-    // Centres of rotation on the final vertices and weights (coat meshes copy them). Levels
-    // without `deformation` keep neither (empty = linear skinning, still muscles).
-    times.stage("centres_of_rotation", || {
-        for (lod, _) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
-            lod.cor = centres_of_rotation(lod);
-        }
-    });
-    // Muscle flex on the final skin (before the coat copies it onto shells and cards).
-    times.stage("muscle_flex", || {
-        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
-            lod.muscle = muscle_flex(lod, &anatomy, level);
-        }
-    });
-    // Soft tissue: regions from the stamps, each skin vertex's share of them (before the coat
-    // copies it onto shells and cards).
+    // Soft-tissue regions come from the anatomy's stamps, so a cached body rebuilds them; only
+    // their per-vertex weights are in the meshes.
     #[cfg(feature = "soft-tissue")]
-    let soft = times.stage("soft_tissue", || {
-        let soft = crate::soft::SoftTissue::of(&anatomy);
-        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
-            lod.soft = crate::soft::soft_weights(lod, &anatomy, &soft, level);
+    let soft = times.stage("soft_tissue", || crate::soft::SoftTissue::of(&anatomy));
+    // Meshing and the deformation stages that follow it are nearly all of generation, and they
+    // are a pure function of the body's key: a disk cache answers them outright.
+    let cached = cache.as_ref().and_then(|entry| times.stage("mesh_cache_read", || entry.read()));
+    let CachedMeshes { lods, coat_meshes } = if let Some(meshes) = cached {
+        meshes
+    } else {
+        let inputs = MeshInputs {
+            anatomy: &anatomy,
+            cloth: cloth.as_ref(),
+            coat: &coat,
+            outfit: &outfit,
+            settings: &settings,
+            seed,
+            #[cfg(feature = "soft-tissue")]
+            soft: &soft,
+        };
+        let meshes = body_meshes(&inputs, times)?;
+        if let Some(entry) = &cache {
+            times.stage("mesh_cache_write", || entry.write(&meshes));
         }
-        soft
-    });
-    // Cloth takes the flex and jiggle of the skin under it, then the skin it hides goes (after
-    // the stages above, before the coat copies the skin onto shells and cards).
-    if cloth.is_some() {
-        times.stage("cover_skin", || {
-            let design = GarmentCover::new(&anatomy, &outfit);
-            for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
-                cover_skin(lod, settings.get(level).mesh.voxel_size, &design);
-            }
-        });
-    }
+        meshes
+    };
     let motion = times.stage("bake_motion", || bake_motion(&anatomy, &Gait::for_legs(anatomy.legs.len())));
-    let coat_meshes = times.stage("coat_meshes", || LodLevel::ALL.map(|level| build_coat_meshes(&coat, &anatomy, level.pick(&lods), level)));
     let contacts = times.stage("contacts", || ContactSet::new(&anatomy));
     Ok(GenOutput {
         anatomy,
@@ -528,6 +497,91 @@ pub fn generate_body(input: GenInput, times: &mut StageTimes) -> Result<GenOutpu
         #[cfg(feature = "soft-tissue")]
         soft,
     })
+}
+
+/// What the mesh stages need from the rest of generation.
+struct MeshInputs<'a> {
+    anatomy: &'a Anatomy,
+    /// The fitted garments, if the body wears any.
+    cloth: Option<&'a BodyMeshData>,
+    coat: &'a Coat,
+    outfit: &'a Outfit,
+    settings: &'a SurfaceSettings,
+    seed: u64,
+    #[cfg(feature = "soft-tissue")]
+    soft: &'a crate::soft::SoftTissue,
+}
+
+/// The cacheable half of generation: every level's geometry and the coat's, from the anatomy.
+///
+/// These stages are two thirds of a body's cost (meshing) plus most of the rest (centres of
+/// rotation), and nothing in them reads anything outside [`MeshInputs`], all of which the
+/// [`BodyKey`] covers. See [`mesh_cache`](super::mesh_cache).
+///
+/// # Errors
+/// When a level's mesh can't be built.
+fn body_meshes(input: &MeshInputs, times: &mut StageTimes) -> Result<CachedMeshes, String> {
+    let MeshInputs { anatomy, cloth, coat, outfit, settings, seed, .. } = *input;
+    // Give the simplifier the coat's markings, baked on the full mesh, so the triangles it keeps
+    // go where the colour changes (a Hereford's white face and socks, a zebra's stripes) rather
+    // than wherever the shape alone allows: crowd levels simplify hard, and even the hero's half
+    // leaves triangles several centimetres across on a flat flank.
+    let keep = |dense: &BodyMeshData, _level: LodLevel| {
+        (!coat.markings.is_empty()).then(|| {
+            let mut painted = dense.clone();
+            // Bones are still the full skeleton's here (crowd levels remap them after).
+            crate::coat::paint(&mut painted, coat, anatomy, LodLevel::Hero);
+            painted.paint
+        })
+    };
+    let mut lods = times
+        .stage("mesh", || mesh_all_lods_keeping(&AdaptiveContour, anatomy, settings, seed, Some(&keep)))
+        .map_err(|e| e.to_string())?;
+    if let Some(cloth) = cloth {
+        times.stage("garments", || {
+            for (lod, garments) in lods.iter_mut().zip(garment_lods(cloth, anatomy, settings)) {
+                merge(lod, &garments);
+            }
+        });
+    }
+    times.stage("annotate", || {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+            annotate(lod, coat, anatomy, level);
+        }
+    });
+    // Centres of rotation on the final vertices and weights (coat meshes copy them). Levels
+    // without `deformation` keep neither (empty = linear skinning, still muscles).
+    times.stage("centres_of_rotation", || {
+        for (lod, _) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
+            lod.cor = centres_of_rotation(lod);
+        }
+    });
+    // Muscle flex on the final skin (before the coat copies it onto shells and cards).
+    times.stage("muscle_flex", || {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
+            lod.muscle = muscle_flex(lod, anatomy, level);
+        }
+    });
+    // Each skin vertex's share of the soft-tissue regions (before the coat copies it onto shells
+    // and cards).
+    #[cfg(feature = "soft-tissue")]
+    times.stage("soft_tissue", || {
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
+            lod.soft = crate::soft::soft_weights(lod, anatomy, input.soft, level);
+        }
+    });
+    // Cloth takes the flex and jiggle of the skin under it, then the skin it hides goes (after
+    // the stages above, before the coat copies the skin onto shells and cards).
+    if cloth.is_some() {
+        times.stage("cover_skin", || {
+            let design = GarmentCover::new(anatomy, outfit);
+            for (lod, level) in lods.iter_mut().zip(LodLevel::ALL) {
+                cover_skin(lod, settings.get(level).mesh.voxel_size, &design);
+            }
+        });
+    }
+    let coat_meshes = times.stage("coat_meshes", || LodLevel::ALL.map(|level| build_coat_meshes(coat, anatomy, level.pick(&lods), level)));
+    Ok(CachedMeshes { lods, coat_meshes })
 }
 
 pub(super) fn request_on_add(add: On<Add<Mob>>, mut commands: Commands) {
@@ -588,6 +642,7 @@ pub(super) fn start_generation(
     server: Res<AssetServer>,
     meshes: Res<Assets<Mesh>>,
     mut part_assets: ResMut<PartAssetCache>,
+    disk: Res<BodyMeshCache>,
     coats: Res<Assets<Coat>>,
     outfits: Res<Assets<Outfit>>,
     mobs: Query<
@@ -671,7 +726,7 @@ pub(super) fn start_generation(
                 continue;
             }
             let (settings, rules, seed) = (settings.clone(), *lod_rules, seed.0);
-            let input = GenInput { live, rules, assets, settings, seed, coat, outfit };
+            let input = GenInput { live, rules, assets, settings, seed, coat, outfit, cache: disk.entry(key, rules) };
             // Meshes are built in the task too: for a furry body that is several MB of vertex data.
             let task = AsyncComputeTaskPool::get().spawn(async move {
                 generate_body(input, &mut StageTimes::default()).map(|out| {

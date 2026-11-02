@@ -17,6 +17,10 @@
 //! - `motion`: two of them walking a circle, camera on a fixed orbit.
 //! - `crowd`: 4000 mobs as in `examples/crowd.rs` (coats on); cold start, then steady state.
 //!
+//! `ORNISCULPT_CACHE=<dir>` keeps converted part SDFs and generated bodies there between runs, so
+//! a second `crowd`, `hero` or `motion` run starts warm. Off by default, and the comparable way
+//! to run the bench: a result from a warm cache measures something else, so say so in the log.
+//!
 //! Runs headless, as ornithochory's grove: no window, every case renders into a fixed 1920×1080
 //! image that screenshots copy out of, and nothing waits on a display. Animation advances exactly
 //! 1/60 s per frame and is paused until bodies are ready, so frame N of a case renders the same
@@ -361,6 +365,7 @@ fn gen_input(plan: &str, coat: Option<&str>) -> Result<GenInput, String> {
         seed: 0,
         coat,
         outfit: default(),
+        cache: None,
     })
 }
 
@@ -561,7 +566,7 @@ fn run_app(scenario: &str, out: PathBuf) -> AppExit {
             error!("bench: mob {} failed: {}", ev.entity, ev.error);
             exit.write(AppExit::error());
         })
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (common::disk_caches, setup))
         .add_systems(First, record_frame)
         .add_systems(Update, (drive, crowd::wander, place_camera).chain().after(ornisculpt::mob::MobSet::Levers))
         .run()

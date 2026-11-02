@@ -15,7 +15,7 @@ use bevy::render::view::window::screenshot::{Screenshot, ScreenshotCaptured, sav
 use bevy::window::{ExitCondition, PresentMode};
 use bevy::winit::WinitPlugin;
 use ornisculpt::anatomy::{Anatomy, BodyPlan, LodLevel, PartAssets, PartLodRules, TriMesh, referenced_assets};
-use ornisculpt::mob::{BodyFailed, MobTier, QualityProfile};
+use ornisculpt::mob::{BodyFailed, BodyMeshCache, MobTier, PartAssetCache, QualityProfile};
 
 pub mod crowd;
 
@@ -120,6 +120,16 @@ pub fn default_plugins(window: Window) -> PluginGroupBuilder {
         // With a window plugin, DefaultPlugins leaves the runner to winit.
         .add(ScheduleRunnerPlugin::run_loop(wait))
         .add(ShotTargetPlugin)
+}
+
+/// `ORNISCULPT_CACHE=<dir>`: keeps converted part SDFs in `<dir>/sdf` and generated bodies in
+/// `<dir>/bodies` between runs, for a warm start (the first run fills them). Off without it, as
+/// in the library — add it as a `Startup` system.
+pub fn disk_caches(mut parts: ResMut<PartAssetCache>, mut bodies: ResMut<BodyMeshCache>) {
+    let Some(dir) = std::env::var_os("ORNISCULPT_CACHE") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    parts.set_cache_dir(dir.join("sdf"));
+    bodies.set_dir(dir.join("bodies"));
 }
 
 /// The size headless screenshots render at (the default window's).

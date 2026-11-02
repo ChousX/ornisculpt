@@ -1039,6 +1039,7 @@ rotation are the stages furthest behind, 2026-10-31).
 #[derive(Resource)] pub struct GenBudget { pub max_in_flight: usize /* 4 */, pub max_completions_per_frame: usize /* 2 */,
                                            pub reserved_threads: usize /* 2 */ }
 #[derive(Resource)] pub struct PartAssetCache { pub assets: PartAssets, .. }   // authored meshes, extracted once
+#[derive(Resource, Default)] pub struct BodyMeshCache { .. }                   // generated meshes kept on disk; off unless set_dir
 #[derive(EntityEvent)] pub struct BodyReady { pub entity: Entity }
 #[derive(EntityEvent)] pub struct BodyFailed { pub entity: Entity, pub error: String }
 ```
@@ -1062,8 +1063,19 @@ Flow (`MobSet::Generation`):
   Headless example runs exit non-zero with the error.
 - Hot reload (`reload_changed_assets`): mobs whose plan or authored meshes changed on disk
   regenerate.
-- Not yet: a disk cache by `BodyKey`, and freeing a body's atlas space when it goes
-  (`roadmap.md`, Phase 2).
+- **Bodies cached on disk** (2026-11-02): `BodyMeshCache::set_dir` keeps the meshes of each
+  `BodyKey` in one file, so a second run reads a body back instead of building it. The cached
+  seam is `[BodyMeshData; 3]` plus the coat's `[CoatMeshes; 3]` — meshing, garments, annotation,
+  centres of rotation, muscle flex, soft-tissue weights and the coat's cards and shells, which
+  are nearly all of generation and depend on nothing but the key. Anatomy, the motion bake and
+  the contact set are rebuilt: the man is 15 ms warm against 1.57 s built, and the bench's crowd
+  cold start 1.0 s against 37.6 (toth, 2026-11-02), with the steady frame unchanged. A body is
+  about 8 MB of plain little-endian arrays written by hand (`mob::mesh_cache`), nothing is
+  evicted, and a file that is damaged, from another layout version, or written under other
+  `PartLodRules` (the one generation input the key does not cover, recorded in the file) is
+  ignored and the body built again. Off by default — the crate writes nothing to disk unless an
+  app asks.
+- Not yet: freeing a body's atlas space when it goes (`roadmap.md`, Phase 2).
 
 ---
 

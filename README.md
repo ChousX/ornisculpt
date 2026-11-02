@@ -68,7 +68,7 @@ Tests: `cargo test --release --lib`. Lints are strict (clippy pedantic and nurse
 `expect`, indexing, panics or `as`), so run `cargo clippy --release --all-targets` with each
 feature a change touches.
 
-## Caching converted meshes
+## Caching generated bodies
 
 An authored mesh (a sculpted head) becomes an SDF grid before it can be blended into the body,
 which costs about 0.5 s on a desktop and 1 s on a Steam Deck, once per distinct mesh per launch.
@@ -86,6 +86,31 @@ mesh's content hash and the resolution, so an edited mesh writes a new file rath
 colliding, and nothing is ever evicted — point it at a cache directory the platform may clear,
 not at save data. A file that is truncated, junk, or from an older layout is ignored and the
 grid converted again.
+
+Generating a body is the bigger cost: meshing it and the deformation stages that follow are 1.5 s
+on a desktop and 3.6 s on a Steam Deck for a man, and a 4000-mob crowd of two dozen distinct
+bodies is 35 to 78 s of it before the crowd is standing. Those stages are a pure function of the
+body's `BodyKey`, so `BodyMeshCache::set_dir` keeps their output too:
+
+```rust,ignore
+fn body_cache(mut cache: ResMut<BodyMeshCache>) {
+    cache.set_dir(dirs::cache_dir().unwrap_or_default().join("my-game/bodies"));
+}
+```
+
+A warm run reads a body back in about 1 ms and rebuilds only anatomy, the motion bake and the
+contact set, a hundredth of generating it (15 ms against 1.57 s for the man). The bench's crowd
+cold start is 37.6 s cold and 1.0 s warm on this desktop, with the steady frame unchanged.
+
+The same caveats as the grids, and one more: a body is large — about 8 MB, a crowd's two dozen
+190 MB — because every level's vertices, the coat's cards and shells, the centres of rotation and
+the soft-tissue weights are all in there, uncompressed. A changed plan, coat, outfit, surface
+setting, part mesh or generator version writes a new file rather than replacing the old one, so a
+cache directory the platform may clear is the only sensible place for it. Part LOD thresholds
+(`PartLodRules`) are the one input a `BodyKey` does not cover; the file records them and is
+refused if they have changed.
+
+The examples take both as `ORNISCULPT_CACHE=<dir>`, which is how the figures above were measured.
 
 ## Shadows: a render layer you should know about
 

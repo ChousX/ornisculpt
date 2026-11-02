@@ -18,6 +18,8 @@
 //! `ORNISCULPT_TIERS=hero_px,near_px[,max_hero]` sets the quality profile (Q still cycles the
 //! presets), for measuring what a tier costs per mob;
 //! `ORNISCULPT_SHADOWS=0` stops the key light casting, for weighing the shadow passes;
+//! `ORNISCULPT_CACHE=<dir>` keeps converted part SDFs and generated bodies there between runs,
+//! so a second run starts warm (`ORNISCULPT_CACHE=/tmp/ornisculpt-cache`);
 //! `ORNISCULPT_CROWD_SHADOWS=1` lets the crowd tiers cast too (they are `NotShadowCaster` by
 //! default), for pricing crowd shadows and a coarse shadow proxy for heroes.
 
@@ -34,7 +36,7 @@ use ornisculpt::num::{Saturate, ToF32};
 
 mod common;
 use common::crowd::{self, BODIES, ROOTS};
-use common::{Orbit, cycle_quality, default_plugins, orbit_camera, screenshot_frames, spawn_stage, tier_counts};
+use common::{Orbit, cycle_quality, default_plugins, disk_caches, orbit_camera, screenshot_frames, spawn_stage, tier_counts};
 
 fn main() -> AppExit {
     let count: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(4000);
@@ -49,7 +51,7 @@ fn main() -> AppExit {
         .insert_resource(Orbit::from_env(0.6, 0.5, 30.0, Vec3::ZERO, (0.5, 400.0)))
         .insert_resource(quality_from_env())
         .init_resource::<UploadStats>()
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (disk_caches, setup))
         .add_systems(Update, (crowd::wander, act, orbit_camera, controls, report, crowd_shadows, screenshot_frames(600)))
         .add_systems(Last, count_uploads)
         .add_observer(common::exit_on_body_failed)

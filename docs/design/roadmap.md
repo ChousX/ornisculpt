@@ -166,12 +166,16 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      - *Done* (2026-11-02), the head SDF half: `PartAssetCache::set_cache_dir` keeps converted
        grids by (mesh hash, resolution). The man's head is 0.5 s to convert and 3 ms to read
        back, 7 MB on disk. Off by default; a damaged or stale file is converted again.
-     - Still open, the body half. Caching `GenOutput` whole would mean serde across the
-       anatomy graph (`Anatomy` alone has twenty fields of its own types) and a binary codec.
-       The narrower seam is `BodyMeshData`: a dozen parallel arrays of plain data, so the
-       levels, coat meshes and their centres and weights can be written by hand the way the SDF
-       grid is, leaving only the cheap part of anatomy to rebuild (0.1 s once the head's grid is
-       cached). That is the next step, and it is where the rest of the 78 s lives.
+     - *Done* (2026-11-02), the body half: `BodyMeshCache::set_dir`. The seam is the one the
+       item wanted — `[BodyMeshData; 3]` and the coat's `[CoatMeshes; 3]`, a dozen parallel
+       arrays of plain data written by hand (`mob::mesh_cache`), not serde across the anatomy
+       graph. Those stages (meshing, garments, annotation, centres of rotation, muscle flex,
+       soft-tissue weights, coat geometry) are a pure function of the key; anatomy, the motion
+       bake and the contact set are rebuilt. The man is 15 ms warm against 1.57 s built, and
+       the bench's crowd cold start 1.0 s against 37.6 on toth, steady frame unchanged. A body
+       is about 8 MB and nothing is evicted, so it wants a cache directory the platform may
+       clear; `PartLodRules` is the one input the key does not cover, so the file records it.
+       Still owed: the same measurement on the Deck, where the cold start is 78 s.
 6. **Motion gaps:** `Reach` arm IK, fingers closing on a grip, `BoneScales` and custom gaits in
    crowd tiers, and crowd shadows. The game's needs set the order.
 7. **Bugs the work above turned up.**
