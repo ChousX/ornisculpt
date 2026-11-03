@@ -64,9 +64,11 @@ fails to load exits the headless run non-zero with the error.
 | `viability` | `cargo run --release --example viability` | The built-in checks over every sample plan, headless. |
 | `bench` | `cargo run --release --example bench -- <gen\|hero\|motion\|crowd\|all> [--out DIR]` | The fixed benchmark; results are logged in `bench/LOG.md`. |
 
-Tests: `cargo test --release --lib`. Lints are strict (clippy pedantic and nursery, no `unwrap`,
-`expect`, indexing, panics or `as`), so run `cargo clippy --release --all-targets` with each
-feature a change touches.
+Tests: `cargo test --release --all-features`. Lints are strict (clippy pedantic and nursery, no
+`unwrap`, `expect`, indexing, panics or `as`): `cargo clippy --release --all-targets --all-features`.
+Always pass `--all-features`. Most of the crate sits behind features (`genetics`, `soft-tissue`,
+`joint-limits`, `interchange`, `web`), and a gate without them never compiles that code: the
+genome's own tests were red for three days under green default-feature gates.
 
 ## Caching generated bodies
 
