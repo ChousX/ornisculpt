@@ -25,26 +25,28 @@ use crate::num::{Clamp, Idx, Saturate, ToF32};
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
 
-/// `e^-x` for finite `x >= 0`, to about 6e-6 relative: `2^-t` split into an integer power (an
-/// exponent shift) and a degree-4 polynomial on the fraction. `f32::exp` is a `libm` call per bone
-/// pair per triangle, half of this stage's time; the similarity weights don't need its last bits.
-///
-/// Straight-line: no early-out for large `x`. The exponent shift saturates to zero on its own
-/// (below), and in [`group_centres`] only 0.3 % of calls are large enough for one to fire.
+/// Samples in [`exp_table`] over `[0, EXP_LAST]`.
+const EXP_STEPS: usize = 2048;
+/// Where [`exp_table`] stops. Past it `exp_neg` is zero: the term is under 1e-7 of the largest,
+/// and the 3.8 % of calls that land there carry a billionth of the total weight (measured on the
+/// biped's hero mesh).
+const EXP_LAST: f32 = 16.0;
+
+/// `e^-x` sampled at `i * EXP_LAST / EXP_STEPS`, with one entry past the end for the interpolation.
+fn exp_table() -> Vec<f32> {
+    (0..=EXP_STEPS + 1).map(|i| (-(i.to_f32() * (EXP_LAST / EXP_STEPS.to_f32()))).exp()).collect()
+}
+
+/// `e^-x` for finite `x >= 0`, to about 8e-6 relative, by interpolating [`exp_table`]; zero past
+/// `EXP_LAST`. `f32::exp` is a `libm` call per bone pair per triangle, half of this stage's time;
+/// the similarity weights don't need its last bits.
 #[inline]
-#[allow(clippy::suboptimal_flops)] // a Horner chain of plain multiplies, for the reason given at `group_centres`
-fn exp_neg(x: f32) -> f32 {
-    let t = x * std::f32::consts::LOG2_E;
-    // Truncation is the floor for t >= 0 (`f32::floor` is a libm call on x86 without SSE4.1).
-    let whole = t.sat_i32();
-    let frac = whole.to_f32() - t; // (-1, 0]
-    // 2^frac on (-1, 0]: the least-relative-error quartic through (0, 1), which beats the
-    // degree-6 Taylor series (6e-6 against 3e-5 measured in f32) with two multiplies fewer in the chain.
-    let series = 1.0 + frac * (0.693_063_6 + frac * (0.239_456_87 + frac * (0.053_223_83 + frac * 0.006_832_04)));
-    // 2^-whole as a float with exponent 127 - whole. Past whole = 127 the exponent would go
-    // negative, and 2^-128 is already below the smallest f32 this is ever added to, so clamping
-    // the shift to zero returns zero — which is what the large-`x` early-out used to return.
-    f32::from_bits((127 - whole).max(0).clamp_u32() << 23) * series
+#[allow(clippy::suboptimal_flops)] // plain multiplies, for the reason given at `group_centres`
+fn exp_neg(table: &[f32], x: f32) -> f32 {
+    let t = x * (EXP_STEPS.to_f32() / EXP_LAST);
+    let i = t.sat_usize();
+    let (Some(&lo), Some(&hi)) = (table.get(i), table.get(i + 1)) else { return 0.0 };
+    lo + (t - i.to_f32()) * (hi - lo)
 }
 
 type Weights = smallvec::SmallVec<[(u16, f32); 8]>;
@@ -115,6 +117,7 @@ fn group_centres(
     uniques: &[usize],
     tris: &[Tri],
     buckets: &HashMap<(u16, u16), Vec<u32>>,
+    exp: &[f32],
     out: &mut Vec<(u32, Option<Vec3>)>,
 ) {
     let n = bones.len();
@@ -176,7 +179,7 @@ fn group_centres(
             for &(i, pj, pk) in shared {
                 let Some(&(vj, vk, vjk)) = vp.get(i.idx()) else { continue };
                 let e = pk * vj - pj * vk;
-                sim += pj * pk * vjk * exp_neg(e * e * inv_s2);
+                sim += pj * pk * vjk * exp_neg(exp, e * e * inv_s2);
             }
             let contribution = 2.0 * sim * area;
             num += centre * contribution;
@@ -265,9 +268,10 @@ pub fn centres_of_rotation(mesh: &BodyMeshData) -> Vec<Vec3> {
     groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     // Big groups (the trunk's bones) split into chunks so the threads share them.
     let items: Vec<(&[u16], &[u32])> = groups.iter().flat_map(|(bones, members)| members.chunks(GROUP_CHUNK).map(move |c| (bones.as_slice(), c))).collect();
+    let exp = exp_table();
     let per_item = super::par_jobs(&items, || (), |(), &(bones, members)| {
         let mut out = Vec::new();
-        group_centres(bones, members, &weights, &uniques, &tris, &buckets, &mut out);
+        group_centres(bones, members, &weights, &uniques, &tris, &buckets, &exp, &mut out);
         out
     });
     // A worker's panic leaves every vertex at its own position.
@@ -289,15 +293,16 @@ mod tests {
 
     #[test]
     fn cheap_exponential_matches_exp() {
+        let table = exp_table();
         let mut worst = 0.0f32;
-        for i in 0..=8000 {
+        for i in 0..=1600 {
             let x = f32::from(i16::try_from(i).unwrap()) * 0.01;
-            let (got, want) = (exp_neg(x), (-x).exp());
+            let (got, want) = (exp_neg(&table, x), (-x).exp());
             worst = worst.max((got - want).abs() / want.max(1e-30));
         }
         assert!(worst < 1e-5, "largest relative error {worst}");
-        assert_eq!(exp_neg(0.0), 1.0);
-        assert_eq!(exp_neg(100.0), 0.0);
+        assert_eq!(exp_neg(&table, 0.0), 1.0);
+        assert_eq!(exp_neg(&table, 100.0), 0.0);
     }
 
     /// The grouped evaluation matches the paper's formula summed over every triangle, vertex by
