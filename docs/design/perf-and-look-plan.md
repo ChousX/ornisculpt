@@ -166,8 +166,13 @@ item at 36 %** (`sdf::shape` 17 %, `Acc::gather` 16 %, the rest in `eval` and `s
 head's SDF conversion 12 %. The body field has now had its first pass (3ab02aa, 7c44291): the
 round cone's taper is hoisted out of the per-point path and the shape dispatch is inlined into the
 gather, for −3.62 % of generation CPU and −4.6 to −6.5 % of the `mesh` stage, meshes bit-identical.
-**What is left in the field is the ellipsoid's two `divps`**, ~42 % of `sdf::shape` and ~6.9 % of
-the run; precomputing the reciprocals is an output change and needs the goldens. Meshing is what
+**The ellipsoid's reciprocals were tried and rejected** (row in `bench/LOG.md`): worth only
+−0.50 % — the two `divps` are ~5.5 % of `sdf::shape`, not the ~42 % the branch as a whole
+occupies, because the branch's cost is mostly its two `sqrt`s and its final scalar divide — and
+the 0.42 µm it moves the field tips the adaptive contour on 11 of 75 plan×level meshes, failing
+the image gate on 12 of 25 shots (worst `ox_hereford.eye` 12.0 % of pixels, 26.7 dB). What is
+left in the field is therefore the `sqrt` and divide chain inside `sdf::ellipsoid` itself, which
+is inherent to the formula, and `Acc::slot`'s linear scan (1.1 %). Meshing is what
 is left on the Deck, at 1.4 to 2.5 s a mob.
 
 **Correction, so this does not mislead a third pass:** the claim below that *"the other stages'
