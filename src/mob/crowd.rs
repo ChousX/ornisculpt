@@ -608,6 +608,85 @@ mod tests {
     /// A body's clips are a block of the atlas, and a block whose body has gone must be reused
     /// rather than left as a hole: a session that keeps replacing bodies would otherwise grow
     /// the clip buffer without bound.
+
+    /// **Probe (roadmap Phase 2.5): how much of the clip atlas is holes over a session that
+    /// replaces bodies?**
+    ///
+    /// Compaction would have to rewrite every `ClipLayout`, which is a real cost, so it is only
+    /// worth paying if the fragmentation is real. This measures it before anything is built.
+    ///
+    /// Block sizes are the real ones, exactly as `register_clips` sizes them:
+    /// `bones * (1 + modes * BAKE_FRAMES) + 2 * ROW_MATRICES`, with the crowd bone
+    /// count of each of the bench's six plans, read from the plans themselves. The session keeps
+    /// `live` bodies resident and replaces one at a time, which is the pattern the roadmap
+    /// describes (an editor's previews, a game streaming creatures).
+    ///
+    /// `cargo test --release -- --ignored clip_atlas_fragmentation --nocapture`
+    #[test]
+    #[ignore = "fragmentation probe"]
+    fn clip_atlas_fragmentation() {
+        use rand::RngExt;
+        let plans: [(&str, &str); 6] = [
+            ("man", include_str!("../../assets/mobs/man.body.ron")),
+            ("woman", include_str!("../../assets/mobs/woman.body.ron")),
+            ("horse", include_str!("../../assets/mobs/horse.body.ron")),
+            ("ox", include_str!("../../assets/mobs/ox.body.ron")),
+            ("spider", include_str!("../../assets/mobs/spider.body.ron")),
+            ("darner", include_str!("../../assets/mobs/darner.body.ron")),
+        ];
+        // Three gait modes, as `motion::library::standard` bakes for a crowd mob.
+        let modes = 3u32;
+        let sizes: Vec<(&str, u32)> = plans
+            .iter()
+            .map(|(name, src)| {
+                let bones = crate::anatomy::build_src(src).skeleton.crowd.bones.len().clamp_u32();
+                (*name, bones * (1 + modes * BAKE_FRAMES.clamp_u32()) + 2 * ROW_MATRICES.clamp_u32())
+            })
+            .collect();
+        for (name, size) in &sizes {
+            println!("plan {name}: block {size} matrices");
+        }
+
+        // Each scenario: (label, the block sizes a session draws from).
+        let uniform: Vec<(&str, u32)> = vec![("one size", sizes.first().map_or(1, |(_, s)| *s))];
+        let wide: Vec<(&str, u32)> = (1..=8).map(|k| ("wide", 300 * k)).collect();
+        for (label, set) in [("real six plans", &sizes), ("one size only (control)", &uniform), ("wide spread (stress)", &wide)] {
+            for live in [8usize, 24] {
+                let mut skin = CrowdSkin::for_test();
+                let mut uploads = CrowdUploads::default();
+                let mut rng = rand_pcg::Pcg32::new(0x5f3d_1a77, 0xa02b_dbf7);
+                let mut resident: Vec<(u32, u32)> = Vec::new();
+                let pick = |rng: &mut rand_pcg::Pcg32| {
+                    let i = usize::try_from(rng.random_range(0..set.len().clamp_u32())).unwrap_or(0);
+                    set.get(i).map_or(1, |(_, s)| *s)
+                };
+                let mut worst = 0.0f32;
+                print!("{label:24} live {live:3}:");
+                for step in 1..=5000usize {
+                    if resident.len() >= live {
+                        let i = usize::try_from(rng.random_range(0..resident.len().clamp_u32())).unwrap_or(0);
+                        if i < resident.len() {
+                            let (base, len) = resident.swap_remove(i);
+                            skin.release_range(base, len);
+                        }
+                    }
+                    let len = pick(&mut rng);
+                    let base = skin.append(Arc::new(vec![[0.0; 16]; len.idx()]), &mut uploads);
+                    resident.push((base, len));
+                    let (atlas, holes) = skin.atlas_usage();
+                    let frac = if atlas == 0 { 0.0 } else { holes.to_f32() / atlas.to_f32() * 100.0 };
+                    worst = worst.max(frac);
+                    if matches!(step, 50 | 500 | 5000) {
+                        print!("  n={step} {frac:.1}%");
+                    }
+                }
+                let (atlas, holes) = skin.atlas_usage();
+                let live_total: u32 = resident.iter().map(|(_, l)| *l).sum();
+                println!("  | final atlas {atlas} holes {holes} live {live_total} worst-seen {worst:.1}%");
+            }
+        }
+    }
+
     #[test]
     fn a_released_block_is_used_again() {
         let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
