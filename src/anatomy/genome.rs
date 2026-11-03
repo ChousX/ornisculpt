@@ -261,6 +261,29 @@ mod tests {
         assert_eq!(ron(&genome.decode::<CreatureGenes>().unwrap()), ron(&genes));
     }
 
+    /// Every sample body survives DNA, whatever parts and overrides it uses: a genome reads a
+    /// struct field by field in order, so a field serde leaves out (`skip_serializing_if`)
+    /// shifts every gene after it, and the next fixed gene is read as the skipped field's shape
+    /// (`WrongGene { path: "body.root.side", found: "an option", gene: "fixed" }`).
+    #[test]
+    fn every_sample_body_round_trips_through_dna() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mobs");
+        let mut bodies = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.to_string_lossy().ends_with(".body.ron") {
+                continue;
+            }
+            let body: BodyPlan = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let genes = CreatureGenes { body, coat: Coat::default(), form: Form::default() };
+            let genome = Genome::encode(&genes, &Variation::new()).unwrap();
+            let back = genome.decode::<CreatureGenes>().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(ron(&back), ron(&genes), "{}", path.display());
+            bodies += 1;
+        }
+        assert!(bodies > 20, "only {bodies} sample bodies");
+    }
+
     #[test]
     fn mutants_stay_viable_and_of_one_lineage() {
         let founder = design().founder().unwrap();

@@ -41,7 +41,10 @@ pub struct PartNode {
     pub share_regions: bool,
     /// Set by [`BodyPlan::expand_symmetry`] on the later copies of a `share_regions` series: the
     /// sibling (the first copy, on this side) whose regions this one takes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Every field is written, none skipped when empty: a genome (`genetics`) reads a struct
+    /// field by field in order, so a field left out shifts every one after it.
+    #[serde(default)]
     pub regions_with: Option<String>,
     /// Set by [`BodyPlan::expand_symmetry`]; authored plans leave it `Center`.
     #[serde(default)]
@@ -62,11 +65,11 @@ pub struct PartNode {
     pub children: Vec<Self>,
     /// On a mirrored part, how its left copy differs from the part as authored; applied by
     /// [`BodyPlan::expand_symmetry`]. See [`SideOverride`].
-    #[serde(default, skip_serializing_if = "SideOverride::is_empty")]
+    #[serde(default)]
     pub left: SideOverride,
     /// Likewise for the right copy: a lobster's crusher claw opposite its cutter, a boar that has
     /// lost a tusk.
-    #[serde(default, skip_serializing_if = "SideOverride::is_empty")]
+    #[serde(default)]
     pub right: SideOverride,
 }
 
@@ -505,10 +508,11 @@ mod tests {
         for (name, authored) in &plans {
             let plain = without_overrides(authored);
             let before = ron::to_string(&expand_v1(&plain)).unwrap();
-            let after = ron::to_string(&plain.expand_symmetry()).unwrap();
+            let expanded = plain.expand_symmetry();
+            let after = ron::to_string(&expanded).unwrap();
             assert_eq!(before, after, "{name}");
             // An expanded plan carries no overrides, so nothing downstream can meet one.
-            assert!(!after.contains("left:") && !after.contains("right:"), "{name}");
+            expanded.visit(|path, n| assert!(n.left.is_empty() && n.right.is_empty(), "{name}: {path:?}"));
         }
     }
 
@@ -608,12 +612,18 @@ mod tests {
     }
 
     /// Overrides are plan text like any other: an authored plan with them reads and writes the
-    /// same, and one without them writes no `left`/`right` at all.
+    /// same. (An empty override is written out too, as every field is: see `PartNode::regions_with`.)
     #[test]
     fn overrides_round_trip_through_ron() {
         let p = plan(CLAWS);
         let text = ron::to_string(&p).unwrap();
-        assert!(text.contains("right:(absent:false,kind:Some(Limb(") && !text.contains("left:"), "{text}");
+        assert!(text.contains("right:(absent:false,kind:Some(Limb("), "{text}");
+        let (mut lefts, mut rights) = (0, 0);
+        p.visit(|_, n| {
+            lefts += usize::from(!n.left.is_empty());
+            rights += usize::from(!n.right.is_empty());
+        });
+        assert_eq!((lefts, rights), (0, 1), "only the right claw differs");
         let again: BodyPlan = ron::from_str(&text).unwrap();
         assert_eq!(ron::to_string(&again).unwrap(), text);
         assert_eq!(ron::to_string(&again.expand_symmetry()).unwrap(), ron::to_string(&p.expand_symmetry()).unwrap());
