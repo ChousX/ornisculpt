@@ -9,9 +9,11 @@
 //! Only triangles sharing a weighted bone pair with the vertex contribute (the similarity is zero
 //! otherwise), so triangles are bucketed by bone pair; and the centre depends only on the
 //! weights, so vertices with the same (quantized) weights share one. Weight vectors on the same
-//! bones share their candidate triangles too, so each such group gathers them once into a dense
+//! bones share their candidate triangles too, so each such group gathers them into one compact
 //! array and scores all its members against it (cache-friendly; 2–2.6× faster than walking the
-//! buckets once per weight vector).
+//! buckets once per weight vector) — once per work item of up to `GROUP_CHUNK` members, not once
+//! per group. The gather also strips each triangle down to the group's bone pairs it actually
+//! weights, so the member loop visits only the pairs that score.
 
 use std::collections::HashMap;
 
@@ -124,11 +126,28 @@ fn group_centres(
     }
     candidates.sort_unstable();
     candidates.dedup();
-    // Dense per-triangle data: centre·area, area, and the weights of the group's bones.
-    let mut tri_weights: Vec<f32> = Vec::with_capacity(candidates.len() * n);
+    // Per-triangle data: the centre and area, and only the group's bone pairs the triangle
+    // actually weights, with their weights. Most candidates share only some of the group's pairs
+    // (half the visits scored nothing), and which they share, like `pj`, `pk` and their product,
+    // is a property of the triangle and the pair, not of the member being scored: computing it
+    // here costs one pass over the candidates instead of one per member.
     let mut centres: Vec<(Vec3, f32)> = Vec::with_capacity(candidates.len());
+    // (index into `pairs`, pj, pk, pj·pk), grouped by triangle; `pair_ends[t]` ends triangle `t`.
+    let mut tri_pairs: Vec<(u32, f32, f32, f32)> = Vec::with_capacity(candidates.len() * 2);
+    let mut pair_ends: Vec<u32> = Vec::with_capacity(candidates.len());
+    let mut pw: smallvec::SmallVec<[f32; 8]> = smallvec::SmallVec::new();
     for tri in candidates.iter().filter_map(|&t| tris.get(t.idx())) {
-        tri_weights.extend(bones.iter().map(|&b| get(&tri.weights, b)));
+        pw.clear();
+        pw.extend(bones.iter().map(|&b| get(&tri.weights, b)));
+        for (i, &(j, k)) in pairs.iter().enumerate() {
+            let (Some(&pj), Some(&pk)) = (pw.get(j), pw.get(k)) else { continue };
+            // A triangle off either bone of the pair adds nothing.
+            let pjk = pj * pk;
+            if pjk != 0.0 {
+                tri_pairs.push((i.clamp_u32(), pj, pk, pjk));
+            }
+        }
+        pair_ends.push(tri_pairs.len().clamp_u32());
         centres.push((tri.centre, tri.area));
     }
     let inv_s2 = 1.0 / (SIGMA * SIGMA);
@@ -145,16 +164,14 @@ fn group_centres(
             (vj, vk, vj * vk)
         }));
         let (mut num, mut den) = (Vec3::ZERO, 0.0f32);
-        for (p, &(centre, area)) in tri_weights.chunks_exact(n).zip(&centres) {
+        let mut start = 0usize;
+        for (&end, &(centre, area)) in pair_ends.iter().zip(&centres) {
+            let (from, upto) = (start, end.idx());
+            start = upto;
+            let Some(shared) = tri_pairs.get(from..upto) else { continue };
             let mut sim = 0.0f32;
-            for (&(j, k), &(vj, vk, vjk)) in pairs.iter().zip(&vp) {
-                let (Some(&pj), Some(&pk)) = (p.get(j), p.get(k)) else { continue };
-                // A triangle off either bone of the pair adds nothing (most candidates share
-                // only some of the group's pairs).
-                let pjk = pj * pk;
-                if pjk == 0.0 {
-                    continue;
-                }
+            for &(i, pj, pk, pjk) in shared {
+                let Some(&(vj, vk, vjk)) = vp.get(i.idx()) else { continue };
                 let e = pk * vj - pj * vk;
                 sim += pjk * vjk * exp_neg(e * e * inv_s2);
             }
