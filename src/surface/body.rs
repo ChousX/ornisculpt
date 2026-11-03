@@ -329,6 +329,8 @@ pub(super) struct PreparedPrim {
     /// Smallest axis scale of the local → model transform (keeps distances conservative).
     pub(super) min_scale: f32,
     pub(super) shape: PrimShape,
+    /// The shape's point-independent constants (see [`sdf::ShapePrep`]).
+    prep: sdf::ShapePrep,
     pub(super) blend: f32,
     /// Local anchor point and reach for blend fading (see `Primitive::blend_anchor`).
     pub(super) anchor: Option<(Vec3A, f32)>,
@@ -350,7 +352,7 @@ impl PreparedPrim {
     #[inline]
     fn eval(&self, p: Vec3A) -> (f32, f32) {
         let q = self.to_local.transform_point3a(p);
-        let d = sdf::shape(q, &self.shape);
+        let d = sdf::shape_prepared(q, &self.shape, &self.prep);
         let blend = match self.anchor {
             Some((a, reach)) => self.blend * (1.0 - (q - a).length() * self.min_scale / reach).clamp(0.0, 1.0),
             None => self.blend,
@@ -506,6 +508,7 @@ impl BodyField {
             prims.push(PreparedPrim {
                 to_local: m.inverse(),
                 min_scale,
+                prep: sdf::ShapePrep::of(&shape),
                 shape,
                 blend: p.blend,
                 anchor: p.blend_anchor.map(|(a, r)| (a.into(), r)),
