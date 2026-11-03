@@ -1022,10 +1022,22 @@ fn spawn_mob(commands: &mut Commands, assets: &AssetServer, mob: usize, extra: i
     // rendering, upload or capture — and the coat is the part of the render whose fragments are
     // alpha-tested and overlapping, where draw order can reach the pixels. If the shots go
     // byte-identical without coats, the coat's render path is the carrier.
-    if let Some(coat) = coat.filter(|_| !std::env::var("ORNISCULPT_BENCH_NO_COAT").is_ok_and(|v| v == "1")) {
+    if let Some(coat) = coat.filter(|_| !no_coat()) {
         e.insert(MobCoat(assets.load(coat)));
     }
     Some(e.id())
+}
+
+/// `ORNISCULPT_BENCH_NO_COAT=1`: spawn bodies without their coats, in **every** scenario.
+///
+/// Without coats the hero shots' worst same-binary difference falls from 2.242 % to 0.010 %
+/// (`woman.head`), 1.137 % to 0.072 % (`ox_hereford.eye`) and 0.664 % to 0.026 %
+/// (`horse_bay.eye`), so the coat's drawing carries nearly all of the gate's non-repeatability.
+/// The crowd honours it too, because `crowd4000` draws coats as well and its instability had been
+/// blamed on its capture trigger instead.
+fn no_coat() -> bool {
+    static NO_COAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NO_COAT.get_or_init(|| std::env::var("ORNISCULPT_BENCH_NO_COAT").is_ok_and(|v| v == "1"))
 }
 
 /// The crowd of `examples/crowd.rs` with `ORNISCULPT_COATS=1`.
@@ -1039,7 +1051,7 @@ fn spawn_crowd(commands: &mut Commands, assets: &AssetServer) -> Vec<Entity> {
         .enumerate()
         .map(|(i, (path, root))| {
             let mut mob = crowd::spawn(commands, assets, i, side, (*path, root));
-            if let Some(coat) = crowd::coat(i) {
+            if let Some(coat) = crowd::coat(i).filter(|_| !no_coat()) {
                 mob.insert(MobCoat(assets.load(coat)));
             }
             mob.id()
