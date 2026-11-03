@@ -163,8 +163,21 @@ Since then the three LODs mesh at once (3d42f66) and a formed plan's hash is mem
 both have rows in `bench/LOG.md`. `group_centres` was then 47 % of the bench's generation CPU on
 toth and has had a night's work (below): it is **33 %** now, and **the body field is the biggest
 item at 36 %** (`sdf::shape` 17 %, `Acc::gather` 16 %, the rest in `eval` and `slot`), with the
-head's SDF conversion 12 %. Next: the body field; and meshing is what is left on the Deck, at 1.4
-to 2.5 s a mob.
+head's SDF conversion 12 %. The body field has now had its first pass (3ab02aa, 7c44291): the
+round cone's taper is hoisted out of the per-point path and the shape dispatch is inlined into the
+gather, for −3.62 % of generation CPU and −4.6 to −6.5 % of the `mesh` stage, meshes bit-identical.
+**What is left in the field is the ellipsoid's two `divps`**, ~42 % of `sdf::shape` and ~6.9 % of
+the run; precomputing the reciprocals is an output change and needs the goldens. Meshing is what
+is left on the Deck, at 1.4 to 2.5 s a mob.
+
+**Correction, so this does not mislead a third pass:** the claim below that *"the other stages'
+`mul_add`s (`surface::body`, `sdf.rs`, `contact.rs`) cost the same way wherever they are hot"* is
+**false for the body field**, and was measured so on 2026-11-03. `compiler_builtins` ifuncs `fmaf`
+to `fmaf_with_fma`, so those `mul_add`s are **already hardware FMA** and time inside the callee is
+1.79 % of a whole `gen` run. What cost there was the *call* — a 72-byte stack frame and the point
+spilled across it, plus an indirect call from `Acc::gather` because there is no
+`[profile.release]` and release builds take cargo's 16 codegen units and no LTO. It is a
+calling-convention and inlining problem in this stage, not an arithmetic one.
 
 Hypotheses, ranked. Each one is confirmed by a Tracy capture first, then fixed and measured on
 C1/G.
