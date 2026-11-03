@@ -605,10 +605,6 @@ mod tests {
         Arc::new(vec![[mark; 16]; n])
     }
 
-    /// A body's clips are a block of the atlas, and a block whose body has gone must be reused
-    /// rather than left as a hole: a session that keeps replacing bodies would otherwise grow
-    /// the clip buffer without bound.
-
     /// **Probe (roadmap Phase 2.5): how much of the clip atlas is holes over a session that
     /// replaces bodies?**
     ///
@@ -687,6 +683,9 @@ mod tests {
         }
     }
 
+    /// A body's clips are a block of the atlas, and a block whose body has gone must be reused
+    /// rather than left as a hole: a session that keeps replacing bodies would otherwise grow
+    /// the clip buffer without bound.
     #[test]
     fn a_released_block_is_used_again() {
         let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
