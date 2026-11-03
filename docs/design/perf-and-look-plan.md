@@ -213,6 +213,40 @@ spilled across it, plus an indirect call from `Acc::gather` because there is no
 `[profile.release]` and release builds take cargo's 16 codegen units and no LTO. It is a
 calling-convention and inlining problem in this stage, not an arithmetic one.
 
+**The profile redrawn (2026-11-03, after the hasher and the field's first pass.)** Two
+`perf record -e cpu-clock:u -F 2000` runs of `bench gen` at 0a2c9e0, 895 K and 872 K samples.
+The shares are stable to **half a point** between runs taken at different machine loads
+(3.6–15.5 and 3.6–11.2) — which is the evidence that a profile's *shares* survive a busy toth
+even though its wall-clock times do not:
+
+| group | share | the symbols in it |
+|---|---|---|
+| **body field** (`surface::body`) | **37.5 %** | `PreparedPrim::eval` 22.4, `Acc::gather` 10.1 (two instantiations), `BodyField::eval` 2.2, `Acc::slot` 1.2, `paired` 1.1, `info_on` 0.5 |
+| **`group_centres`** (`surface::cor`) | **35.5 %** | `group_centres` 35.2 plus its un-inlined `SmallVec` extend 0.3 |
+| **head SDF** (`anatomy::mesh_sdf`) | **12.7 %** | `Tri::closest` 6.3, `flood_row` 6.1, `SdfGrid::sample` 0.3 |
+| octree + its memo | 3.7 % | `Builder::build` 2.4, `corners` 0.5, the memo's `insert`/rehash **0.7** |
+| skin binding (`surface::binding`) | 2.7 % | `spread`'s worker 1.4, `bind` 0.7, the heap's `pop` 0.4 |
+| `libm` fma shim | 1.4 % | `fmaf_with_fma` 1.0, `fmaf` 0.4 |
+| memmove/memcpy | 1.5 % | |
+| `meshopt_simplifyEdge` | 0.7 % | |
+
+Two readings worth keeping. **The memo's hashing is now 0.7 %, from 5.0 %** before it stopped
+using SipHash — the profile reproduces that change independently of the A/B that measured it
+(−6.6 % of the `mesh` stage), which is a calibration of the instrument as much as a result.
+And **the body field is now the largest *stage* at 37.5 %, while `group_centres` is still the
+largest single *function* at 35.2 %** — the two are within two points of each other, so neither
+dominates and the next pass is a choice rather than an obligation.
+
+*How these shares were read, because the method matters here.* Call graphs do not open under this
+kernel's `perf_event_paranoid`, so this is a flat profile, and a flat profile attributes a stall to
+the instruction **waiting** on a result rather than to the long-latency operation that produced
+it. That is what made the ellipsoid prediction an 8× over-estimate. So these are **function-level**
+shares, where the effect largely cancels (the consumer of a slow result is usually inside the same
+function), and no share here is converted into a predicted saving: a share is an **upper bound**
+on what removing the work can return. The one case with both numbers bears that out — the memo's
+5.0 % share returned −3.5 % of total generation when built. Inlined callees are attributed to their
+caller, so a row's "symbols in it" is a floor on what it contains, not an inventory.
+
 Hypotheses, ranked. Each one is confirmed by a Tracy capture first, then fixed and measured on
 C1/G.
 
