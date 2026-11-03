@@ -160,9 +160,11 @@ and grouped centres of rotation: crowd cold start 45.4 → 34.8 s, p95 frames 28
 over 100 ms 175 → 3 (`bench/LOG.md`, v3). Tracy showed the old 1.5 s spike was renderer start-up
 (excluded by the v3 pre-roll). Found on the way: meshing depended on the thread count (fixed).
 Since then the three LODs mesh at once (3d42f66) and a formed plan's hash is memoised (7d498d8);
-both have rows in `bench/LOG.md`. Next: `group_centres` is 47 % of the bench's generation CPU on
-toth and the body field 26 % (`bench/LOG.md`, 2026-11-01), and meshing is what is left on the
-Deck, at 1.4 to 2.5 s a mob.
+both have rows in `bench/LOG.md`. `group_centres` was then 47 % of the bench's generation CPU on
+toth and has had a night's work (below): it is **33 %** now, and **the body field is the biggest
+item at 36 %** (`sdf::shape` 17 %, `Acc::gather` 16 %, the rest in `eval` and `slot`), with the
+head's SDF conversion 12 %. Next: the body field; and meshing is what is left on the Deck, at 1.4
+to 2.5 s a mob.
 
 Hypotheses, ranked. Each one is confirmed by a Tracy capture first, then fixed and measured on
 C1/G.
@@ -193,8 +195,23 @@ C1/G.
      `mesh_lod` biped 673 → 340 ms and horse 1206 → 556; gen totals −48 to −55 % (biped
      1199 → 544 ms, horse 2452 → 1107); meshes bit-identical.
    - *Done*: `centres_of_rotation` runs per group on `par_jobs` (`src/surface/cor.rs`), and then
-     lost another half to a cheap exponential and plain arithmetic (c31efed, 3717f25). It is
-     still 47 % of generation CPU on toth, so what is left there is algorithmic, not threading.
+     lost another half to a cheap exponential and plain arithmetic (c31efed, 3717f25), and then
+     another 42 % on 2026-11-02 (fa0b724, 483ee8a, c79988c, 269c3c3, ecb283c; five rows in
+     `bench/LOG.md`): the gather strips each candidate triangle down to the bone pairs it can
+     score, so the member loop stops visiting the 47 % of pairs that scored nothing, and `exp_neg`
+     became a table lookup. Centres stage on toth, 3 interleaved runs of each: man 448 → 271 ms,
+     woman 904 → 527, horse 922 → 526, ox 729 → 420, spider 101 → 65, darner 21.5 → 15.0; the
+     whole `gen` run's user CPU 595 → 475 s. `group_centres` is now **33 %** of generation CPU,
+     and `exp_neg` 43 % of that.
+     What is left there is algorithmic. The work is `Σ members × candidate triangles × 2.6 scoring
+     pairs` — 215 M exponentials for the biped's 29 k-vertex hero mesh — and measurements rule out
+     the cheap ways to cut it: the per-chunk re-gather is 0.4 % of the work it feeds; 74 % of the
+     exponential's arguments land in x ≤ 1, so there is nothing to skip and no window to prune to;
+     and two leaner data layouts for the pair list were worth 2 %, against the table's 12 %, so
+     the loop is latency-bound, not memory-bound. The two routes left both change the output and
+     need their own error budget against the brute-force test's 5 mm (1.33 mm used): collapse
+     candidate triangles by quantized weight the way vertices already are, or bucket candidates by
+     which pairs they weight so the inner loop has a fixed trip count and vectorises.
    - `muscle_flex`: 12 smoothing passes; check its cost and use a parallel or sparse version if
      it is large.
    - Run the same LOD-parallel treatment on `build_coat_meshes`.
