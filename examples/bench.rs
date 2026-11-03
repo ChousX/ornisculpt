@@ -5,9 +5,17 @@
 //! ```text
 //! cargo run --release --example bench -- <gen|hero|motion|crowd|all> [--out DIR] [--allow-battery] [--no-gpu-timing]
 //! cargo run --release --example bench -- compare BASE[,BASE...] NEW [--accept]
+//! cargo run --release --example bench -- provenance
 //! ```
 //!
-//! Results go to `bench/results/<git sha>[-dirty]/` unless `--out` is given: one `<scenario>.ron`
+//! Every report carries a provenance header: the commit the binary was **compiled** from and the
+//! binary's own xxh3 (`build.rs`), the checkout it was run against, the command line, every
+//! `ORNISCULPT_*` and graphics environment variable, and the workload's compile-time defaults.
+//! A binary built at one commit and run against a checkout at another says so loudly
+//! (`stale_binary`), and two A/B sides are provably different builds exactly when their
+//! `build.exe_xxh3` differ — `bench provenance` prints the header without measuring anything.
+//!
+//! Results go to `bench/results/<build sha>[-dirty]/` unless `--out` is given: one `<scenario>.ron`
 //! per scenario plus a PNG per shot. Every workload parameter is fixed here; changing one bumps
 //! [`BENCH_VERSION`], and results are only compared within a version. Input files are hashed into
 //! each report, so an edited plan or coat shows up in `compare`.
@@ -64,8 +72,8 @@ use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
 use ornisculpt::mob::{
-    BodyFailed, BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, StageTimes, TierCamera,
-    generate_body,
+    BodyFailed, BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, QualityProfile, StageTimes,
+    TierCamera, generate_body,
 };
 use ornisculpt::num::{Saturate, ToF32};
 use ornisculpt::surface::{BodyMeshData, SurfaceSettings};
@@ -121,6 +129,12 @@ fn main() -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .map_or_else(default_out_dir, PathBuf::from);
     let result = match args.first().map(String::as_str) {
+        // The header a run would write, without running anything: for checking what a binary is
+        // before trusting a result that came out of it, and cheap enough to do on every build.
+        Some("provenance") => {
+            print_provenance(&meta("provenance", None, None, None));
+            Ok(())
+        }
         Some("compare") => match (args.get(1), args.get(2)) {
             (Some(base), Some(new)) => compare(base, Path::new(new), flag("--accept")),
             _ => Err(usage()),
@@ -151,7 +165,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> String {
-    "usage: bench <gen|hero|motion|crowd|all> [--out DIR] [--allow-battery] | bench compare BASE[,BASE...] NEW [--accept]".into()
+    "usage: bench <gen|hero|motion|crowd|all> [--out DIR] [--allow-battery] | bench compare BASE[,BASE...] NEW [--accept] | bench provenance".into()
 }
 
 /// Each rendered scenario in its own process: a fresh renderer, and its own peak memory.
@@ -183,20 +197,70 @@ struct Report {
     cases: Vec<CaseResult>,
 }
 
+/// Every field is `serde(default)` so a report written before a field existed still reads: a new
+/// header field must not make old baselines unreadable to `compare`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 struct Meta {
     bench_version: u32,
     scenario: String,
-    git: String,
-    dirty: bool,
+    /// What produced this report: stamped into the binary at compile time, so it survives being
+    /// carried to another machine and run against another checkout.
+    build: Build,
+    /// `HEAD` of the checkout the run *read* ([`root`]: this one, or `ORNISCULPT_BENCH_ROOT`) at
+    /// run time. Not the provenance of the measurement — [`Build::git`] is. The two differ
+    /// whenever a binary outlives the checkout it was built from, which is the mistake this
+    /// header exists to catch.
+    run_git: String,
+    run_dirty: bool,
+    /// `run_git` is a real commit and is not [`Build::git`]: **the binary is stale**, the numbers
+    /// below were produced by code that is not what the checkout now says.
+    stale_binary: bool,
     machine: String,
     cpus: usize,
     gpu: String,
     driver: String,
     backend: String,
     on_mains: bool,
+    /// The whole command line, so `--allow-battery`, `--no-gpu-timing` and `--out` are on the
+    /// record. A flag that isn't in the header can't be checked from the record afterwards.
+    args: Vec<String>,
+    /// Every `ORNISCULPT_*` variable set for the run, plus the graphics variables that change
+    /// what the GPU did (see [`ENV_PREFIXES`]). Captured by prefix, not by name, so a knob added
+    /// later lands in the header without anyone remembering to add it.
+    env: BTreeMap<String, String>,
+    /// Workload knobs that are compile-time defaults rather than flags — resolution, MSAA, the
+    /// tier thresholds, `PartLodRules`, `SurfaceSettings`. A commit that changes one of these
+    /// changes the workload, and without them in the header the change is invisible.
+    settings: BTreeMap<String, String>,
     /// Asset path → xxh3 of its content.
     inputs: BTreeMap<String, String>,
+}
+
+/// Build-time provenance (`build.rs`) plus the binary's own fingerprint. Two result trees are
+/// provably from two different builds when their [`Self::exe_xxh3`] differ, and provably from the
+/// same one when they match — the check the tarasaur Deck driver does with md5, in the report
+/// itself so it also holds for runs nobody drove.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+struct Build {
+    /// `HEAD` when this binary was compiled.
+    git: String,
+    /// A watched path (`build.rs`: `src`, `examples`, `assets`, the manifests) was modified when
+    /// this binary was compiled, so `git` alone does not describe it.
+    dirty: bool,
+    /// xxh3-128 of the running executable: the same hash the `inputs` map uses, so no new
+    /// dependency. Not a cryptographic hash — it answers "are these two binaries the same file",
+    /// which is the question an A/B has.
+    exe_xxh3: String,
+    exe_bytes: u64,
+    /// The file the fingerprint was taken of — not always `current_exe` (see [`exe_path`]).
+    exe_file: String,
+    rustc: String,
+    profile: String,
+    target: String,
+    /// Enabled cargo features, comma-separated (`soft-tissue,joint-limits`).
+    features: String,
 }
 
 /// Metrics ending in `_ms` or `_s` are times (lower is better, gated); the rest are informational.
@@ -216,9 +280,13 @@ fn git(args: &[&str]) -> String {
         .map_or_default(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
 }
 
+/// Named after the commit the **binary** was built from, not the checkout it is run against: the
+/// old run-time naming is how six result trees — the three baseline-named ones included — came to
+/// be stamped `ecb283c`. Falls back to the run-time sha only when there is no build stamp at all.
 fn default_out_dir() -> PathBuf {
-    let sha = git(&["rev-parse", "--short", "HEAD"]);
-    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty();
+    let build = env!("ORNISCULPT_BUILD_GIT");
+    let sha: String = if build.is_empty() { git(&["rev-parse", "--short", "HEAD"]) } else { build.chars().take(7).collect() };
+    let dirty = env!("ORNISCULPT_BUILD_DIRTY") == "1";
     root().join("bench/results").join(format!("{sha}{}", if dirty { "-dirty" } else { "" }))
 }
 
@@ -265,12 +333,117 @@ fn scenario_inputs(scenario: &str) -> Vec<&'static str> {
     v
 }
 
-fn meta(scenario: &str, adapter: Option<&RenderAdapterInfo>) -> Meta {
+/// Variables captured into [`Meta::env`], by prefix: everything the crate and its examples read
+/// (`ORNISCULPT_`), and the graphics environment, where one variable can move a frame time more
+/// than anything in this repo.
+const ENV_PREFIXES: [&str; 9] = ["ORNISCULPT_", "WGPU_", "VK_", "MESA_", "RADV_", "AMD_", "LIBGL_", "MANGOHUD", "RUST_LOG"];
+
+/// A `build.rs` stamp, owned. Through a function because `env!` expands to a literal, and an
+/// empty one — no cargo features enabled — reads to clippy as a hand-written `String::new()`.
+fn stamp(s: &str) -> String {
+    s.to_owned()
+}
+
+/// What the binary was compiled from, and which binary it is.
+fn provenance() -> Build {
+    let (exe_xxh3, exe_bytes) = exe_fingerprint();
+    Build {
+        exe_file: exe_path().unwrap_or_default().display().to_string(),
+        git: stamp(env!("ORNISCULPT_BUILD_GIT")),
+        dirty: env!("ORNISCULPT_BUILD_DIRTY") == "1",
+        exe_xxh3,
+        exe_bytes,
+        rustc: stamp(env!("ORNISCULPT_BUILD_RUSTC")),
+        profile: stamp(env!("ORNISCULPT_BUILD_PROFILE")),
+        target: stamp(env!("ORNISCULPT_BUILD_TARGET")),
+        features: stamp(env!("ORNISCULPT_BUILD_FEATURES")),
+    }
+}
+
+/// The bench binary's own path. `current_exe` is not always it: on the Steam Deck the bench is
+/// started through an explicit dynamic loader (`tools/deck/bench.sh`, nix glibc against `SteamOS`'s
+/// libraries), and then `/proc/self/exe` is `ld-linux-x86-64.so.2` — the same file for both sides
+/// of an A/B, which would make the fingerprint below silently useless on the one machine whose
+/// numbers decide things. The loader execs with `argv[0]` set to the program, so fall back to that.
+fn exe_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    let is_loader = exe
+        .as_deref()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n.to_string_lossy().starts_with("ld-linux") || n.to_string_lossy().starts_with("ld.so"));
+    if !is_loader {
+        return exe;
+    }
+    std::env::args_os().next().map(PathBuf::from).filter(|p| p.is_file()).or(exe)
+}
+
+/// xxh3-128 of this executable and its length. Read in chunks rather than whole: the report
+/// records peak RSS, and slurping a release binary would show up in it.
+fn exe_fingerprint() -> (String, u64) {
+    let Some(path) = exe_path() else { return ("unknown".into(), 0) };
+    let Ok(mut file) = std::fs::File::open(&path) else { return ("unreadable".into(), 0) };
+    let mut hash = xxhash_rust::xxh3::Xxh3::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut len = 0u64;
+    loop {
+        match std::io::Read::read(&mut file, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                len += u64::try_from(n).unwrap_or(0);
+                match buf.get(..n) {
+                    Some(chunk) => hash.update(chunk),
+                    None => return ("unreadable".into(), len),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
+            Err(_) => return ("unreadable".into(), len),
+        }
+    }
+    (format!("{:032x}", hash.digest128()), len)
+}
+
+/// The run's environment, filtered to [`ENV_PREFIXES`] and sorted. A value that is a path is kept
+/// whole: `ORNISCULPT_CACHE=<dir>` changes the workload completely, and which dir it was matters.
+fn env_snapshot() -> BTreeMap<String, String> {
+    // `vars`, not `vars_os`, panics on a value that isn't UTF-8, and a benchmark must not die of
+    // its own header.
+    std::env::vars_os()
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+        .filter(|(k, _)| ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
+        .collect()
+}
+
+/// The workload's compile-time defaults, flattened to strings: things an A/B could turn that are
+/// not flags. `quality` and `msaa` come from the running app, which is why they are passed in;
+/// `gen` has no renderer and records neither.
+fn settings_snapshot(quality: Option<&QualityProfile>, msaa: Option<&Msaa>) -> BTreeMap<String, String> {
+    let mut s = BTreeMap::new();
+    s.insert("resolution".into(), format!("{}x{}", RESOLUTION.x, RESOLUTION.y));
+    s.insert("hero_fov_deg".into(), format!("{HERO_FOV_DEG}"));
+    s.insert("part_lod_rules".into(), format!("{:?}", PartLodRules::default()));
+    s.insert("surface_settings".into(), format!("{:016x}", xxhash_rust::xxh3::xxh3_64(format!("{:?}", SurfaceSettings::default()).as_bytes())));
+    if let Some(q) = quality {
+        s.insert("quality_profile".into(), format!("{q:?}"));
+    }
+    if let Some(m) = msaa {
+        s.insert("msaa".into(), format!("{}", m.samples()));
+    }
+    s
+}
+
+fn meta(scenario: &str, adapter: Option<&RenderAdapterInfo>, quality: Option<&QualityProfile>, msaa: Option<&Msaa>) -> Meta {
+    let build = provenance();
+    let run_git = git(&["rev-parse", "HEAD"]);
     Meta {
         bench_version: BENCH_VERSION,
         scenario: scenario.into(),
-        git: git(&["rev-parse", "HEAD"]),
-        dirty: !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty(),
+        stale_binary: !run_git.is_empty() && !build.git.is_empty() && run_git != build.git,
+        build,
+        run_git,
+        run_dirty: !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty(),
+        args: std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect(),
+        env: env_snapshot(),
+        settings: settings_snapshot(quality, msaa),
         machine: machine(),
         cpus: std::thread::available_parallelism().map_or(0, std::num::NonZero::get),
         gpu: adapter.map_or_default(|a| a.name.clone()),
@@ -281,7 +454,45 @@ fn meta(scenario: &str, adapter: Option<&RenderAdapterInfo>) -> Meta {
     }
 }
 
+/// The provenance block, printed beside every report as it is written and by the `provenance`
+/// subcommand. A mismatch between the commit the binary was built from and the checkout it ran
+/// against is shouted, not noted: measuring a stale binary against a moved checkout is the exact
+/// mistake this block exists to catch, and a quiet line in a log would be read past.
+fn print_provenance(meta: &Meta) {
+    let b = &meta.build;
+    let short = |s: &str| -> String { if s.is_empty() { "unknown".into() } else { s.chars().take(7).collect() } };
+    println!("bench provenance ({}):", meta.scenario);
+    println!("  built from   {}{}", short(&b.git), if b.dirty { " -dirty (watched paths modified at build time)" } else { "" });
+    println!("  binary       xxh3 {} ({} bytes) {}", b.exe_xxh3, b.exe_bytes, b.exe_file);
+    println!("  toolchain    {} / {} / {}", b.rustc, b.profile, b.target);
+    println!("  features     {}", if b.features.is_empty() { "(none)" } else { b.features.as_str() });
+    println!("  checkout     {}{} at {}", short(&meta.run_git), if meta.run_dirty { " -dirty" } else { "" }, root().display());
+    println!("  bench        version {}, {}", meta.bench_version, meta.settings.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "));
+    if meta.env.is_empty() {
+        println!("  env          (no ORNISCULPT_*/graphics variables set)");
+    } else {
+        for (k, v) in &meta.env {
+            println!("  env          {k}={v}");
+        }
+    }
+    if b.git.is_empty() {
+        eprintln!("bench: !! NO BUILD STAMP: this binary was compiled outside a git checkout; its commit is unknown");
+    }
+    if meta.stale_binary {
+        eprintln!(
+            "bench: !! STALE BINARY: built from {}, run against a checkout at {} — these numbers are NOT {}'s",
+            short(&b.git),
+            short(&meta.run_git),
+            short(&meta.run_git)
+        );
+    }
+    if b.dirty {
+        eprintln!("bench: !! DIRTY BUILD: the tree had uncommitted changes under src/examples/assets when this binary was compiled; {} does not describe it", short(&b.git));
+    }
+}
+
 fn write_report(out: &Path, report: &Report) -> Result<(), String> {
+    print_provenance(&report.meta);
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let text = ron::ser::to_string_pretty(report, ron::ser::PrettyConfig::default()).map_err(|e| e.to_string())?;
     let path = out.join(format!("{}.ron", report.meta.scenario));
@@ -370,7 +581,7 @@ fn gen_input(plan: &str, coat: Option<&str>) -> Result<GenInput, String> {
 }
 
 fn run_gen(out: &Path) -> Result<(), String> {
-    let mut report = Report { meta: meta("gen", None), cases: Vec::new() };
+    let mut report = Report { meta: meta("gen", None, None, None), cases: Vec::new() };
     for (name, plan, coat) in MOBS {
         let mut totals = Vec::new();
         let mut stages: BTreeMap<&'static str, Vec<f32>> = BTreeMap::new();
@@ -854,6 +1065,8 @@ fn drive(
     mut time: ResMut<Time<Virtual>>,
     cache: Res<GenCache>,
     adapter: Option<Res<RenderAdapterInfo>>,
+    quality: Option<Res<QualityProfile>>,
+    msaa: Query<&Msaa, With<BenchCamera>>,
     target: Res<Target>,
     mobs: Query<(Has<MobBody>, Option<&MobTier>), With<Mob>>,
     mut exit: MessageWriter<AppExit>,
@@ -861,7 +1074,7 @@ fn drive(
     let Some(case) = bench.cases.get(bench.case).cloned() else {
         if bench.phase != Phase::Done {
             bench.phase = Phase::Done;
-            let report = Report { meta: meta(&bench.scenario, adapter.as_deref()), cases: std::mem::take(&mut bench.results) };
+            let report = Report { meta: meta(&bench.scenario, adapter.as_deref(), quality.as_deref(), msaa.iter().next()), cases: std::mem::take(&mut bench.results) };
             if let Err(e) = write_report(&bench.out, &report) {
                 error!("bench: {e}");
             }
@@ -1058,6 +1271,75 @@ fn image_diff(a: &Path, b: &Path) -> Result<(f32, f32), String> {
     Ok((changed.to_f32() / px.max(1).to_f32(), psnr))
 }
 
+/// What the two sides of a comparison can and cannot prove about each other. None of this fails a
+/// run — a deliberate same-binary comparison is how the noise floor is measured — but all of it is
+/// said out loud, because every one of these is a confounder that has already produced a wrong
+/// conclusion somewhere in this repo's bench history.
+fn compare_provenance(olds: &[&Report], new: &Report) {
+    let short = |s: &str| -> String { if s.is_empty() { "unknown".into() } else { s.chars().take(7).collect() } };
+    let b = &new.meta.build;
+    let unstamped = std::iter::once(new).chain(olds.iter().copied()).filter(|r| r.meta.build.git.is_empty()).count();
+    if unstamped > 0 {
+        println!("   !! {unstamped} of {} reports have no build stamp: this comparison cannot prove what it ran", olds.len() + 1);
+    }
+    if olds.iter().all(|o| o.meta.build.exe_xxh3 == b.exe_xxh3) && !b.exe_xxh3.is_empty() {
+        println!("   !! same binary as every baseline (xxh3 {}): this measures run-to-run noise, not a change", short(&b.exe_xxh3));
+    } else {
+        println!("   binaries differ: baseline xxh3 {} → new {}", short(&first_of(olds).map_or_default(|o| o.meta.build.exe_xxh3.clone())), short(&b.exe_xxh3));
+    }
+    for (what, r) in std::iter::once(("new", new)).chain(olds.iter().map(|o| ("baseline", *o))) {
+        if r.meta.stale_binary {
+            println!("   !! {what} was a stale binary: built {}, run against {}", short(&r.meta.build.git), short(&r.meta.run_git));
+        }
+        if r.meta.build.dirty {
+            println!("   !! {what} was built from a dirty tree ({})", short(&r.meta.build.git));
+        }
+    }
+    let Some(base) = first_of(olds) else { return };
+    for (what, old, now) in [
+        ("rustc", &base.meta.build.rustc, &b.rustc),
+        ("profile", &base.meta.build.profile, &b.profile),
+        ("target", &base.meta.build.target, &b.target),
+        ("features", &base.meta.build.features, &b.features),
+    ] {
+        if old != now {
+            println!("   !! {what} differs: {old:?} → {now:?}");
+        }
+    }
+    diff_map("setting", &base.meta.settings, &new.meta.settings);
+    diff_map("env", &base.meta.env, &new.meta.env);
+    // `--out` names the result directory and is expected to differ; nothing else should.
+    let strip_out = |a: &[String]| -> Vec<String> {
+        let at = a.iter().position(|x| x == "--out");
+        a.iter().enumerate().filter(|(i, _)| at.is_none_or(|o| *i != o && *i != o + 1)).map(|(_, s)| s.clone()).collect()
+    };
+    let (old_args, new_args) = (strip_out(&base.meta.args), strip_out(&new.meta.args));
+    // The program path itself differs whenever the two sides were built into different trees.
+    if old_args.get(1..) != new_args.get(1..) {
+        println!("   !! command line differs: {:?} → {:?}", old_args.get(1..).unwrap_or_default(), new_args.get(1..).unwrap_or_default());
+    }
+}
+
+const fn first_of<'a>(olds: &[&'a Report]) -> Option<&'a Report> {
+    olds.first().copied()
+}
+
+/// Keys that differ between the baseline's header map and the new one's, in either direction.
+fn diff_map(what: &str, old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) {
+    for (k, v) in new {
+        match old.get(k) {
+            Some(o) if o == v => (),
+            Some(o) => println!("   !! {what} {k} differs: {o:?} → {v:?}"),
+            None => println!("   !! {what} {k} set only in the new run: {v:?}"),
+        }
+    }
+    for (k, v) in old {
+        if !new.contains_key(k) {
+            println!("   !! {what} {k} set only in the baseline: {v:?}");
+        }
+    }
+}
+
 fn compare(bases: &str, new: &Path, accept: bool) -> Result<(), String> {
     let base_dirs: Vec<PathBuf> = bases.split(',').map(PathBuf::from).collect();
     let base_reports: Vec<_> = base_dirs.iter().map(|d| read_reports(d)).collect();
@@ -1082,6 +1364,7 @@ fn compare(bases: &str, new: &Path, accept: bool) -> Result<(), String> {
         if first.meta.gpu != report.meta.gpu || first.meta.machine != report.meta.machine {
             println!("   note: different machine/GPU ({} / {} vs {} / {})", first.meta.machine, first.meta.gpu, report.meta.machine, report.meta.gpu);
         }
+        compare_provenance(&olds, report);
         for case in &report.cases {
             for (metric, &v) in &case.metrics {
                 let mut vals: Vec<f32> =
