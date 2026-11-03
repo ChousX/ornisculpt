@@ -35,17 +35,50 @@ pub fn ellipsoid(p: Vec3A, radii: Vec3A) -> f32 {
     if k1 == 0.0 { -radii.min_element() } else { k0 * (k0 - 1.0) / k1 }
 }
 
+/// The constants of a [`PrimShape`] that depend only on the primitive, not on the point: worked
+/// out once when the primitive is prepared rather than on every evaluation.
+///
+/// Only [`PrimShape::RoundCone`] has any. Hoisting them matters more than the arithmetic suggests:
+/// the taper's `cos` is a `mul_add`, which on x86 without the FMA target feature is a call into
+/// `libm`, and a call in [`shape`] gives it a stack frame and spills the point across it (it was
+/// 15 % of `shape`'s own samples). The values are the same multiplies in the same order, so the
+/// field is unchanged bit for bit.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShapePrep {
+    /// Sine and cosine of a round cone's taper, and `cos * len`, the length of its side.
+    cone: (f32, f32, f32),
+}
+
+impl ShapePrep {
+    #[must_use]
+    pub fn of(s: &PrimShape) -> Self {
+        match *s {
+            PrimShape::RoundCone { r0, r1, len } => {
+                let sin = (r0 - r1) / len;
+                let cos = sin.mul_add(-sin, 1.0).max(0.0).sqrt();
+                Self { cone: (sin, cos, cos * len) }
+            }
+            _ => Self::default(),
+        }
+    }
+}
+
 /// Round cone (or tapered capsule) along +Y, exact: radius `r0` at the origin, `r1` at `len`.
 #[must_use]
 pub fn round_cone(p: Vec3A, r0: f32, r1: f32, len: f32) -> f32 {
+    let prep = ShapePrep::of(&PrimShape::RoundCone { r0, r1, len });
+    round_cone_prepared(p, r0, r1, len, &prep)
+}
+
+/// [`round_cone`] with its taper already worked out (see [`ShapePrep`]).
+fn round_cone_prepared(p: Vec3A, r0: f32, r1: f32, len: f32, prep: &ShapePrep) -> f32 {
+    let (sin, cos, side) = prep.cone;
     let q = Vec2::new(Vec2::new(p.x, p.z).length(), p.y);
-    let sin = (r0 - r1) / len;
-    let cos = sin.mul_add(-sin, 1.0).max(0.0).sqrt();
     let along = q.dot(Vec2::new(-sin, cos));
     if along < 0.0 {
         return q.length() - r0;
     }
-    if along > cos * len {
+    if along > side {
         return (q - Vec2::new(0.0, len)).length() - r1;
     }
     q.dot(Vec2::new(cos, sin)) - r0
@@ -100,10 +133,22 @@ fn tube(p: Vec3A, points: &[Vec3A], radius: impl Fn(usize) -> f32, aspect: f32, 
 /// Dispatches on [`PrimShape`] (point already in primitive-local space).
 #[must_use]
 pub fn shape(p: Vec3A, s: &PrimShape) -> f32 {
+    shape_prepared(p, s, &ShapePrep::of(s))
+}
+
+/// [`shape`] with the primitive's own constants already worked out (see [`ShapePrep`]): what the
+/// per-point path uses.
+///
+/// `#[inline]` because the call was the cost, not the body: with 16 codegen units and no LTO the
+/// caller reached it indirectly, so the point went to memory and back around a function that does
+/// a handful of arithmetic.
+#[inline]
+#[must_use]
+pub fn shape_prepared(p: Vec3A, s: &PrimShape, prep: &ShapePrep) -> f32 {
     match s {
         PrimShape::Sphere { r } => sphere(p, *r),
         PrimShape::Ellipsoid { radii } => ellipsoid(p, (*radii).into()),
-        PrimShape::RoundCone { r0, r1, len } => round_cone(p, *r0, *r1, *len),
+        PrimShape::RoundCone { r0, r1, len } => round_cone_prepared(p, *r0, *r1, *len, prep),
         PrimShape::RoundBox { half, round } => round_box(p, (*half).into(), *round),
         PrimShape::Grid { grid, mirror_x } => {
             let q = if *mirror_x { Vec3A::new(-p.x, p.y, p.z) } else { p };
