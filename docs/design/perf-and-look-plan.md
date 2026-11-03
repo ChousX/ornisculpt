@@ -209,9 +209,16 @@ C1/G.
      exponential's arguments land in x ≤ 1, so there is nothing to skip and no window to prune to;
      and two leaner data layouts for the pair list were worth 2 %, against the table's 12 %, so
      the loop is latency-bound, not memory-bound. The two routes left both change the output and
-     need their own error budget against the brute-force test's 5 mm (1.33 mm used): collapse
-     candidate triangles by quantized weight the way vertices already are, or bucket candidates by
-     which pairs they weight so the inner loop has a fixed trip count and vectorises.
+     need their own error budget against the brute-force test's 5 mm (1.33 mm used), and an
+     image-diff budget that cannot be discharged on toth today (`bench/golden` is not recorded
+     here):
+     - **Collapse candidate triangles by quantized weight**, the way vertices already are. A probe
+       on the biped's hero mesh counted the member×candidate visits it would remove: at the same
+       1/256 step the vertex side uses, 79.5 M → 51.2 M (**1.55× fewer**); at 1/128, 2.10×; at
+       1/64, 3.43×; at 1/32, 7.22×. Sum `area` and `area × centre` per bucket and score it once.
+     - **Bucket candidates by which pairs they weight** so the inner loop has a fixed trip count
+       and vectorises; `exp_neg` is straight-line now, so it would. The sums reorder, so the
+       centres stop being bit-identical.
    - `muscle_flex`: 12 smoothing passes; check its cost and use a parallel or sparse version if
      it is large.
    - Run the same LOD-parallel treatment on `build_coat_meshes`.
