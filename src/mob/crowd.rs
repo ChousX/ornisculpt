@@ -718,7 +718,7 @@ mod tests {
                         let i = usize::try_from(rng.random_range(0..set.len().clamp_u32())).unwrap_or(0);
                         set.get(i).map_or(1, |(_, s)| *s)
                     };
-                    let (mut worst, mut moved, mut compacts) = (0.0f32, 0u64, 0u32);
+                    let (mut worst, mut matrices_moved, mut compacts) = (0.0f32, 0u64, 0u32);
                     let mut marks: Vec<String> = Vec::new();
                     for step in 1..=5000usize {
                         if resident.len() >= live {
@@ -736,13 +736,13 @@ mod tests {
                         let (atlas, holes) = skin.atlas_usage();
                         if atlas > 0 && holes.saturating_mul(100) >= atlas.saturating_mul(thresh) {
                             uploads.clips.clear();
-                            let moves = skin.compact(&mut uploads);
-                            if !moves.is_empty() {
+                            let relocations = skin.compact(&mut uploads);
+                            if !relocations.is_empty() {
                                 compacts += 1;
-                                moved += uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum::<u64>();
+                                matrices_moved += uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum::<u64>();
                                 // Every resident block's base follows its block.
                                 for (b, _) in &mut resident {
-                                    if let Some(to) = remap(&moves, *b) {
+                                    if let Some(to) = remap(&relocations, *b) {
                                         *b = to;
                                     }
                                 }
@@ -757,7 +757,7 @@ mod tests {
                     }
                     let at = if thresh > 100 { "never".to_owned() } else { format!("{thresh}%") };
                     println!(
-                        "{label:24} {live:>4} {at:>5}  {}  {moved:>9} {compacts:>8}  worst {worst:.1}% atlas {}",
+                        "{label:24} {live:>4} {at:>5}  {}  {matrices_moved:>9} {compacts:>8}  worst {worst:.1}% atlas {}",
                         marks.join(" "),
                         skin.atlas_usage().0
                     );
@@ -862,25 +862,25 @@ mod tests {
             (skin, uploads)
         };
         let mut times = Vec::new();
-        let (mut moved, mut atlas_before, mut atlas_after) = (0u64, 0u32, 0u32);
+        let (mut matrices_moved, mut atlas_before, mut atlas_after) = (0u64, 0u32, 0u32);
         for _ in 0..200 {
             let (mut skin, mut uploads) = build();
             uploads.clips.clear();
             atlas_before = skin.atlas_usage().0;
             let t = Instant::now();
-            let moves = skin.compact(&mut uploads);
+            let relocations = skin.compact(&mut uploads);
             let dt = t.elapsed();
             times.push(dt.as_secs_f64() * 1e6);
             atlas_after = skin.atlas_usage().0;
-            moved = uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum();
-            assert!(!moves.is_empty(), "the fragmented atlas should have something to move");
+            matrices_moved = uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum();
+            assert!(!relocations.is_empty(), "the fragmented atlas should have something to move");
         }
         times.sort_unstable_by(f64::total_cmp);
         let med = times.get(times.len() / 2).copied().unwrap_or(0.0);
         let (lo, hi) = (times.first().copied().unwrap_or(0.0), times.last().copied().unwrap_or(0.0));
         println!("compaction of a 24-block atlas: atlas {atlas_before} -> {atlas_after} matrices");
         println!("  CPU: median {med:.1} us (min {lo:.1}, max {hi:.1}, n=200)");
-        println!("  GPU: {moved} matrices re-uploaded = {:.2} MB at 64 B each", (moved * 64).to_f32() / 1_048_576.0);
+        println!("  GPU: {matrices_moved} matrices re-uploaded = {:.2} MB at 64 B each", (matrices_moved * 64).to_f32() / 1_048_576.0);
     }
 
     /// **Output-neutrality, proved by value rather than by pixels.** Compaction must leave every
