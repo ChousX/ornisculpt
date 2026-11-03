@@ -12,6 +12,7 @@
 //! in Ju et al. and its widely used reference implementations.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use bevy::math::Vec3A;
 use bevy::prelude::*;
@@ -166,12 +167,53 @@ impl Grid {
     }
 }
 
+/// A [`Hasher`] for cell-coordinate keys, in place of the default `SipHash`.
+///
+/// Hashing the two memos below was **5.0 % of generation CPU** (`sip::Hasher::write` 2.35,
+/// `hash_one::<&IVec3>` 2.21, `insert` 0.45), which is a lot to pay for a property neither memo
+/// needs: `SipHash` is keyed and collision-resistant against *adversarial* keys, and a cell
+/// coordinate is chosen by the mesher, from a lattice, inside one build, and is never seen by
+/// anything outside this file. The multiply-xor below is the shape `rustc`'s own `FxHasher` uses.
+///
+/// This cannot change what is meshed. Both memos are pure caches, read only through `get` and
+/// written only through `insert`; **neither is ever iterated**, so no ordering they impose can
+/// reach a vertex. The same would be true of the other spatial maps in the crate
+/// (`clothing::cover`, `surface::process`), which still use the default hasher — one change at a
+/// time.
+#[derive(Clone, Copy, Default)]
+struct CellHasher(u64);
+
+/// Odd multiplier with well-spread bits, as `FxHasher` uses: each round mixes the new bits up
+/// into the high end, and the rotate stops the three coordinates of a cell cancelling out.
+const CELL_MIX: u64 = 0x517c_c1b7_2722_0a95;
+
+impl Hasher for CellHasher {
+    /// [`IVec3`] hashes as three `i32`s, so [`Self::write_i32`] is the path that runs; this is
+    /// here for correctness, not speed.
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(CELL_MIX);
+        }
+    }
+
+    fn write_i32(&mut self, i: i32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(i.cast_unsigned())).wrapping_mul(CELL_MIX);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A cell-keyed memo: [`HashMap`] with [`CellHasher`] instead of `SipHash`.
+type CellMap<V> = HashMap<IVec3, V, BuildHasherDefault<CellHasher>>;
+
 /// One thread's octree builder: shares corner samples between neighbouring cells.
 struct Builder<'a> {
     grid: &'a Grid,
-    corners: HashMap<IVec3, f32>,
+    corners: CellMap<f32>,
     /// Corner [`Sample`]s, for leaves where the surface may part.
-    samples: HashMap<IVec3, Sample>,
+    samples: CellMap<Sample>,
 }
 
 impl Builder<'_> {
@@ -419,7 +461,7 @@ impl Mesher for AdaptiveContour {
         let mut results: Vec<Option<Node>> = super::par_jobs(&jobs, || (), |(), cell| {
             // A fresh corner cache per job: corners on a job's border are sampled through its own
             // view, so the mesh doesn't depend on which jobs share a thread.
-            let mut builder = Builder { grid: &grid, corners: HashMap::new(), samples: HashMap::new() };
+            let mut builder = Builder { grid: &grid, corners: CellMap::default(), samples: CellMap::default() };
             let view = field.view(grid.region(*cell, job_level, grid.fine));
             builder.build(&view, *cell, job_level)
         })
