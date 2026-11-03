@@ -72,7 +72,7 @@ use ornisculpt::OrnisculptPlugin;
 use ornisculpt::anatomy::{BodyPlan, Form, HardKind, LodLevel, PartLodRules, apply_form};
 use ornisculpt::coat::{Coat, MobCoat};
 use ornisculpt::mob::{
-    BodyFailed, BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, QualityProfile, StageTimes,
+    BodyFailed, BodyReady, CrowdUploads, ForceTier, GenCache, GenInput, GenOutput, GeneratedBody, Mob, MobBody, MobSkeleton, MobTier, QualityProfile, StageTimes,
     TierCamera, generate_body,
 };
 use ornisculpt::num::{Saturate, ToF32};
@@ -561,6 +561,54 @@ const fn mesh_bytes(d: &BodyMeshData) -> usize {
         + size_of_val(d.indices.as_slice())
 }
 
+/// Bit-exact fingerprint of a generated body's geometry and deformation data.
+///
+/// For asking whether generation is deterministic *within one process*. `gen` already calls
+/// `generate_body` six times per mob, so comparing these answers the question that decides the
+/// whole non-repeatability hunt: if the six agree but differ between processes, the cause is
+/// per-process state (a `RandomState`-seeded map, an address); if they disagree inside one
+/// process, it is per-invocation (threads, uninitialised memory).
+///
+/// Over the raw bits, not rounded: this is an equality test, so a difference of one ulp must count.
+fn body_fingerprint(out: &GenOutput) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut mix = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    };
+    for lod in &out.lods {
+        for v in &lod.positions {
+            for c in v.to_array() {
+                mix(u64::from(c.to_bits()));
+            }
+        }
+        for v in &lod.normals {
+            for c in v.to_array() {
+                mix(u64::from(c.to_bits()));
+            }
+        }
+        for v in &lod.cor {
+            for c in v.to_array() {
+                mix(u64::from(c.to_bits()));
+            }
+        }
+        for w in &lod.weights {
+            for c in *w {
+                mix(u64::from(c.to_bits()));
+            }
+        }
+        for j in &lod.joints {
+            for c in *j {
+                mix(u64::from(c));
+            }
+        }
+        for &i in &lod.indices {
+            mix(u64::from(i));
+        }
+    }
+    h
+}
+
 fn gen_input(plan: &str, coat: Option<&str>) -> Result<GenInput, String> {
     let read = |p: &str| std::fs::read_to_string(asset_path(p)).map_err(|e| format!("{p}: {e}"));
     let plan_def: BodyPlan = ron::from_str(&read(plan)?).map_err(|e| format!("{plan}: {e}"))?;
@@ -584,6 +632,7 @@ fn run_gen(out: &Path) -> Result<(), String> {
     let mut report = Report { meta: meta("gen", None, None, None), cases: Vec::new() };
     for (name, plan, coat) in MOBS {
         let mut totals = Vec::new();
+        let mut prints: Vec<u64> = Vec::new();
         let mut stages: BTreeMap<&'static str, Vec<f32>> = BTreeMap::new();
         let mut metrics = BTreeMap::new();
         for run in 0..=GEN_RUNS {
@@ -592,6 +641,7 @@ fn run_gen(out: &Path) -> Result<(), String> {
             let t = Instant::now();
             let output = generate_body(input, &mut times)?;
             let total = ms(t.elapsed());
+            prints.push(body_fingerprint(&output));
             // Run 0 warms caches and the allocator.
             if run == 0 {
                 for (level, lod) in LodLevel::ALL.iter().zip(&output.lods) {
@@ -610,6 +660,12 @@ fn run_gen(out: &Path) -> Result<(), String> {
                 stages.entry(stage).or_default().push(ms(d));
             }
         }
+        // How many *distinct* bodies the six invocations produced. 1 means generation is
+        // deterministic within this process; more means it is not.
+        prints.sort_unstable();
+        let distinct = prints.windows(2).filter(|w| w[0] != w[1]).count() + usize::from(!prints.is_empty());
+        metrics.insert("gen.distinct_bodies".into(), distinct.to_f32());
+        metrics.insert("gen.fingerprint24".into(), (prints.first().copied().unwrap_or(0) & 0xff_ffff).to_f32());
         let median = |v: &mut Vec<f32>| {
             v.sort_unstable_by(f32::total_cmp);
             percentile(v, 0.5)
