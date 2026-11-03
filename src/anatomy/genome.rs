@@ -24,6 +24,12 @@ use crate::coat::Coat;
 use crate::num::Saturate;
 
 /// What a creature's genome encodes.
+///
+/// Never put `skip_serializing_if`, `skip`, `flatten`, `untagged` or anything else that changes
+/// how many fields a type writes on any type reachable from here (the body plan and its parts,
+/// the coat, the form): `genetics` encodes a value by position, field after field with no names,
+/// so a field left out shifts every gene after it and no genome decodes. Every arm is checked by
+/// `every_sample_body_round_trips_through_dna` and `every_sample_coat_and_a_form_round_trip_through_dna`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CreatureGenes {
     pub body: BodyPlan,
@@ -282,6 +288,34 @@ mod tests {
             bodies += 1;
         }
         assert!(bodies > 20, "only {bodies} sample bodies");
+    }
+
+    /// The coat and form arms likewise: every sample coat, and a form that scales and patches,
+    /// through DNA beside a body.
+    #[test]
+    fn every_sample_coat_and_a_form_round_trip_through_dna() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/coats");
+        let form = Form {
+            overall_scale: 1.1,
+            patches: vec![
+                FormPatch { part: PartPath("torso".into()), lever: Lever::Fat, value: 1.3 },
+                FormPatch { part: PartPath("torso/limb.front".into()), lever: Lever::Length, value: 0.9 },
+            ],
+        };
+        let mut coats = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.to_string_lossy().ends_with(".coat.ron") {
+                continue;
+            }
+            let coat: Coat = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let genes = CreatureGenes { body: quadruped(), coat, form: form.clone() };
+            let genome = Genome::encode(&genes, &Variation::new()).unwrap();
+            let back = genome.decode::<CreatureGenes>().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(ron(&back), ron(&genes), "{}", path.display());
+            coats += 1;
+        }
+        assert!(coats > 10, "only {coats} sample coats");
     }
 
     #[test]
