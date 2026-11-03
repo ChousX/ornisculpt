@@ -172,7 +172,19 @@ occupies, because the branch's cost is mostly its two `sqrt`s and its final scal
 the 0.42 µm it moves the field tips the adaptive contour on 11 of 75 plan×level meshes, failing
 the image gate on 12 of 25 shots (worst `ox_hereford.eye` 12.0 % of pixels, 26.7 dB). What is
 left in the field is therefore the `sqrt` and divide chain inside `sdf::ellipsoid` itself, which
-is inherent to the formula, and `Acc::slot`'s linear scan (1.1 %). Meshing is what
+is inherent to the formula, and `Acc::slot`'s linear scan (1.1 %).
+
+Two facts about this stage worth having before profiling it again. **`BodyField::info_on`
+evaluates every union primitive twice per call** — the owner loop and the influences loop each
+call `prim.eval(p)` on the same primitives, so each one's `sdf::shape` runs twice per
+`surface_info` call, per vertex, at every level. Removing exactly half of that measured
+**+0.12 %, a null** (row in `bench/LOG.md`), which is the useful part: it says `surface_info` is a
+small share of the field's evaluations beside the octree's distance sampling, and that is where
+`sdf::shape`'s 16 % comes from. Buffering the first pass is not the fix; choosing the owner without
+a second pass at all was not tried. And **rule 2 is not about chunks** — "count the work, not the
+chunks" has now been true of chunks that produce nothing, of visits that bought 0.2 %, of halved
+evaluations whose bookkeeping cost more than the evaluations, and of a profile branch's share
+mistaken for one instruction's share. It is about every proxy for cost. Meshing is what
 is left on the Deck, at 1.4 to 2.5 s a mob.
 
 **Correction, so this does not mislead a third pass:** the claim below that *"the other stages'
