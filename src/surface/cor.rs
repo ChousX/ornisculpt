@@ -25,8 +25,8 @@ use crate::num::{Clamp, Idx, Saturate, ToF32};
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
 
-/// `e^-x` for `x >= 0`, to about 2e-5 relative: `2^-t` split into an integer power (an exponent
-/// shift) and a degree-6 series on the fraction. `f32::exp` is a `libm` call per bone pair per
+/// `e^-x` for `x >= 0`, to about 6e-6 relative: `2^-t` split into an integer power (an exponent
+/// shift) and a degree-4 polynomial on the fraction. `f32::exp` is a `libm` call per bone pair per
 /// triangle, half of this stage's time; the similarity weights don't need its last bits.
 #[inline]
 #[allow(clippy::suboptimal_flops)] // a Horner chain of plain multiplies, for the reason given at `group_centres`
@@ -38,8 +38,9 @@ fn exp_neg(x: f32) -> f32 {
     // Truncation is the floor for t >= 0 (`f32::floor` is a libm call on x86 without SSE4.1).
     let whole = t.sat_i32();
     let frac = whole.to_f32() - t; // (-1, 0]
-    // Taylor series of 2^frac about 0: ln2^n / n!.
-    let series = 1.0 + frac * (std::f32::consts::LN_2 + frac * (0.240_226_5 + frac * (0.055_504_1 + frac * (0.009_618_13 + frac * (0.001_333_36 + frac * 0.000_154_035)))));
+    // 2^frac on (-1, 0]: the least-relative-error quartic through (0, 1), which beats the
+    // degree-6 Taylor series (6e-6 against 3e-5 measured in f32) with two multiplies fewer in the chain.
+    let series = 1.0 + frac * (0.693_063_6 + frac * (0.239_456_87 + frac * (0.053_223_83 + frac * 0.006_832_04)));
     // 2^-whole as a float with exponent 127 - whole (whole <= 116, so never a subnormal).
     f32::from_bits((127 - whole).clamp_u32() << 23) * series
 }
@@ -292,7 +293,7 @@ mod tests {
             let (got, want) = (exp_neg(x), (-x).exp());
             worst = worst.max((got - want).abs() / want.max(1e-30));
         }
-        assert!(worst < 5e-5, "largest relative error {worst}");
+        assert!(worst < 1e-5, "largest relative error {worst}");
         assert_eq!(exp_neg(0.0), 1.0);
         assert_eq!(exp_neg(100.0), 0.0);
     }
