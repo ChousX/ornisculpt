@@ -135,8 +135,8 @@ fn group_centres(
     // is a property of the triangle and the pair, not of the member being scored: computing it
     // here costs one pass over the candidates instead of one per member.
     let mut centres: Vec<(Vec3, f32)> = Vec::with_capacity(candidates.len());
-    // (index into `pairs`, pj, pk, pj·pk), grouped by triangle; `pair_ends[t]` ends triangle `t`.
-    let mut tri_pairs: Vec<(u32, f32, f32, f32)> = Vec::with_capacity(candidates.len() * 2);
+    // (index into `pairs`, pj, pk), grouped by triangle; `pair_ends[t]` ends triangle `t`.
+    let mut tri_pairs: Vec<(u8, f32, f32)> = Vec::with_capacity(candidates.len() * 2);
     let mut pair_ends: Vec<u32> = Vec::with_capacity(candidates.len());
     let mut pw: smallvec::SmallVec<[f32; 8]> = smallvec::SmallVec::new();
     for tri in candidates.iter().filter_map(|&t| tris.get(t.idx())) {
@@ -147,7 +147,7 @@ fn group_centres(
             // A triangle off either bone of the pair adds nothing.
             let pjk = pj * pk;
             if pjk != 0.0 {
-                tri_pairs.push((i.clamp_u32(), pj, pk, pjk));
+                tri_pairs.push((i.clamp_u8(), pj, pk));
             }
         }
         pair_ends.push(tri_pairs.len().clamp_u32());
@@ -173,10 +173,10 @@ fn group_centres(
             start = upto;
             let Some(shared) = tri_pairs.get(from..upto) else { continue };
             let mut sim = 0.0f32;
-            for &(i, pj, pk, pjk) in shared {
+            for &(i, pj, pk) in shared {
                 let Some(&(vj, vk, vjk)) = vp.get(i.idx()) else { continue };
                 let e = pk * vj - pj * vk;
-                sim += pjk * vjk * exp_neg(e * e * inv_s2);
+                sim += pj * pk * vjk * exp_neg(e * e * inv_s2);
             }
             let contribution = 2.0 * sim * area;
             num += centre * contribution;
