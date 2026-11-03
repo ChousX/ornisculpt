@@ -1017,8 +1017,13 @@ fn record_frame(mut bench: ResMut<Bench>, diagnostics: Res<DiagnosticsStore>, up
 fn spawn_mob(commands: &mut Commands, assets: &AssetServer, mob: usize, extra: impl Bundle) -> Option<Entity> {
     let (_, plan, coat) = MOBS.get(mob)?;
     let mut e = commands.spawn((Mob::new(assets.load(*plan)), ForceTier(LodLevel::Hero), extra));
-    if let Some(coat) = coat {
-        e.insert(MobCoat(assets.load(*coat)));
+    // `ORNISCULPT_BENCH_NO_COAT=1` spawns the body without its coat. A diagnostic, not a workload
+    // knob: generation is now known bit-identical across processes, so the image variation is in
+    // rendering, upload or capture — and the coat is the part of the render whose fragments are
+    // alpha-tested and overlapping, where draw order can reach the pixels. If the shots go
+    // byte-identical without coats, the coat's render path is the carrier.
+    if let Some(coat) = coat.filter(|_| !std::env::var("ORNISCULPT_BENCH_NO_COAT").is_ok_and(|v| v == "1")) {
+        e.insert(MobCoat(assets.load(coat)));
     }
     Some(e.id())
 }
