@@ -25,9 +25,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Paths `ORNISCULPT_BUILD_DIRTY` is computed over, and that cargo is asked to rerun this script
-/// for. Everything a bench run's behaviour comes out of; `docs/` and `bench/` are left out so
-/// writing up a result doesn't recompile the crate.
-const WATCHED: [&str; 6] = ["src", "examples", "assets", "Cargo.toml", "Cargo.lock", "build.rs"];
+/// for: everything whose *content* determines what the code does.
+///
+/// Deliberately narrow, because `cargo:rerun-if-changed` on a directory makes any **mtime**
+/// change under it recompile the whole crate — even when every value emitted below is identical
+/// (measured: touching one asset cost a 1m30s rebuild). Anything that rewrites files without
+/// editing them trips it: `rsync` without `-c`, a checkout that rewrites mtimes, a backup
+/// restore, a script that copies assets between worktrees. So `assets/` is **not** here, even
+/// though a changed asset certainly changes a bench result: asset content is covered far better
+/// by the report's `inputs` map, which carries an xxh3 of every asset a scenario actually reads.
+/// `docs/` and `bench/` are out for the same reason — writing up a result shouldn't rebuild.
+///
+/// Whatever is listed here, the dirty flag can only be as honest as the rerun set: a change cargo
+/// does not rerun this script for cannot flip it.
+const WATCHED: [&str; 5] = ["src", "examples", "Cargo.toml", "Cargo.lock", "build.rs"];
 
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
