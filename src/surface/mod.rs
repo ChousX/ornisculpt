@@ -73,11 +73,26 @@ pub fn set_worker_threads(threads: usize) {
     WORKER_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `ORNISCULPT_WORKERS`, parsed once: overrides both [`set_worker_threads`] and the core count.
+///
+/// For reproducing scheduling-dependent results. A generation stage whose output depends on how
+/// work was distributed rather than only on its inputs has existed here before — `bench/LOG.md`
+/// records "meshing depended on the thread count (fixed)" — and the cheap discriminator is to run
+/// the same thing with one worker and see whether it becomes repeatable. Without a knob that is a
+/// rebuild; with one it is an environment variable the bench already records in `meta.env`.
+fn worker_override() -> Option<usize> {
+    static OVERRIDE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| std::env::var("ORNISCULPT_WORKERS").ok()?.parse::<usize>().ok().filter(|n| *n > 0))
+}
+
 /// Threads a parallel stage may use now (always 1 with the `web` feature: browsers have no threads).
 #[must_use]
 pub fn worker_threads() -> usize {
     if cfg!(feature = "web") {
         return 1;
+    }
+    if let Some(n) = worker_override() {
+        return n;
     }
     match WORKER_THREADS.load(std::sync::atomic::Ordering::Relaxed) {
         0 => std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
@@ -211,6 +226,25 @@ pub enum SurfaceError {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ORNISCULPT_WORKERS` actually binds. A flag that silently fails to take effect is how an
+    /// earlier six-run A/B here produced a perfect null: `--compute-floor 2` against `1` measured
+    /// the flag and not the thread count, because `min_threads` was a floor only and both runs used
+    /// four threads. So the override gets a test rather than an assumption.
+    #[test]
+    fn worker_override_binds() {
+        // Parsed once per process, so assert on the parse rather than mutating the environment
+        // under other tests: `worker_threads` returns exactly what a valid override says.
+        assert_eq!(super::worker_override(), std::env::var("ORNISCULPT_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0));
+        if let Some(n) = super::worker_override() {
+            assert_eq!(super::worker_threads(), n, "the override must win over set_worker_threads and the core count");
+        } else {
+            super::set_worker_threads(3);
+            assert_eq!(super::worker_threads(), 3);
+            super::set_worker_threads(0);
+            assert!(super::worker_threads() >= 1);
+        }
+    }
     use super::*;
     use crate::anatomy::{LodLevel, build_src};
 

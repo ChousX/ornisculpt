@@ -1218,6 +1218,43 @@ fn place_camera(
 /// Relative change in a time that counts as real, before noise is considered.
 const MIN_DELTA: f32 = 0.03;
 /// Image gate: share of pixels with any channel off by more than [`PIXEL_TOLERANCE`].
+///
+/// # This bar is below the gate's own repeatability on some shots
+///
+/// Measured 2026-11-03 on toth: **three `bench all` runs of one unchanged binary**, compared
+/// pairwise. The worst difference a shot showed *against itself* — its noise floor — is nothing
+/// like uniform, and for one shot it is **six times this threshold**:
+///
+/// | shot | floor | vs the 0.5 % bar |
+/// |---|---|---|
+/// | `crowd4000` | **3.153 %** | **6.3× the bar — this shot cannot judge a change of this size** |
+/// | `ox_hereford.eye` | 0.282 % | |
+/// | `woman.head` | 0.249 % | |
+/// | `horse_bay.eye` | 0.208 % | |
+/// | `spider.head` | 0.076 % | |
+/// | `darner.eye` | 0.061 % | |
+/// | `man.full`, `man.head`, `man.eye` | **0.000 %, PSNR inf** | byte-identical in all three runs |
+///
+/// So **compare a figure against its own shot's floor, not against this constant**. The spread
+/// across shots is the point: a single global floor would be the wrong lesson, and the `man.*`
+/// shots at exactly zero show the pipeline *can* be deterministic.
+///
+/// The non-determinism is order-dependent and spares the first entry in [`MOBS`]: the man is
+/// identical across runs, every later mob varies. `bench/LOG.md` records an earlier instance of
+/// the class — "meshing depended on the thread count (fixed)" — so a generation stage whose result
+/// depends on how work was distributed rather than only on its inputs has existed here before.
+/// `ORNISCULPT_WORKERS=1` forces one worker, which is the cheap discriminator between work
+/// distribution and arithmetic.
+///
+/// The PSNR half of the gate is sound: verified against an independent decoder sharing no code with
+/// this one (40.09 against 40.1, 32.91 against 32.9). It is the thresholded *count* that cannot
+/// carry a verdict at this scale — being a count over a threshold, it is a non-linear function of
+/// the underlying difference, and a population of pixels near 8/255 can cross the line and move it
+/// a long way while the image barely changes.
+///
+/// Also note the `noise` column printed beside each shot is the baseline set compared **against
+/// itself**, so it reads 0.000 % / inf dB always. That demonstrates the comparison works; it is
+/// **not** a measurement of run-to-run noise, and it was mistaken for one.
 const MAX_CHANGED_PIXELS: f32 = 0.005;
 const PIXEL_TOLERANCE: u8 = 8;
 const MIN_PSNR_DB: f32 = 40.0;

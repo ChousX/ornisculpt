@@ -297,9 +297,25 @@ C1/G.
        on the biped's hero mesh counted the member×candidate visits it would remove: at the same
        1/256 step the vertex side uses, 79.5 M → 51.2 M (**1.55× fewer**); at 1/128, 2.10×; at
        1/64, 3.43×; at 1/32, 7.22×. Sum `area` and `area × centre` per bucket and score it once.
+       *Built and measured 2026-11-03 (`perf/cor-collapse`, **held back**); the visit counts above
+       are confirmed to the digit. The speed is real and large — **−29.99 %** of generation user
+       CPU at 1/32, −19.86 % at 1/128, with the centres stage summed 2161.7 → 461.4 ms — but **no
+       step could be justified**, for two reasons. First, **the framing below is wrong**: it asks
+       for "the coarsest step the budget and the image gate will both accept", which presumes the
+       gate verdict is monotone in the step, and 1/256 is finer than 1/128 while being worse on
+       every framing (`woman.head` 0.043 % → 1.517 %). **There is no boundary to find; test the
+       steps you intend to use.** Second, the gate itself proved unrepeatable (row in
+       `bench/LOG.md`): `crowd4000`'s own noise floor is 3.153 % against a 0.5 % bar, so every
+       `crowd4000` verdict is withdrawn, and `woman.head`'s 0.043 % was below its shot's floor. The
+       one surviving signal is `ox_hereford.eye` at 7.6× its floor at 1/32. The field error, by
+       contrast, **is** smooth and monotone in the step, and the brute-force check holds to 1/32
+       (1.4831 mm of 5 mm) and breaks at 1/8 (6.5347 mm).*
      - **Bucket candidates by which pairs they weight** so the inner loop has a fixed trip count
        and vectorises; `exp_neg` is straight-line now, so it would. The sums reorder, so the
-       centres stop being bit-identical.
+       centres stop being bit-identical. *Recommended against: the collapse above cuts this stage
+       to ~7 % of generation at 1/32, so a route that gives up bit-identity for an error with no
+       step size to state competes for a seventh of the budget it was proposed for. Re-price only
+       if the step finally chosen is fine enough to leave the stage large.*
    - `muscle_flex`: 12 smoothing passes; check its cost and use a parallel or sparse version if
      it is large.
    - Run the same LOD-parallel treatment on `build_coat_meshes`.
