@@ -168,6 +168,24 @@ gives up the crowd tiers, which are where the frame budget goes furthest.
      `register_clips` frees a body's clips on `AssetEvent::Removed`, and `CrowdCycles` frees a
      bake's block when its graphs reload or its body goes. Blocks are reused but never moved,
      so compaction is still open and still wants every `ClipLayout` rewritten.
+     - *Measured* (2026-11-03): the fragmentation is **real**, so this does not close.
+       `mob::crowd::tests::clip_atlas_fragmentation` (an `#[ignore]`d probe, 2 s, no GPU) runs
+       the real allocator over a session that replaces one body at a time, with the block sizes
+       `register_clips` really asks for — the bench's six plans give man 1318, woman 1537,
+       horse 2121, ox/spider/darner 2340 matrices. Over 5000 replacements, holes are **14.5 %**
+       of the atlas with 24 bodies resident (worst seen 29.6 %) and **30.1 %** with 8 (worst
+       41.1 %). With one block size it is **0.0 % throughout**, which locates the cause: not the
+       replacing but the *spread* of sizes. What accumulates is slivers — a freed 2340 hosting a
+       1318 leaves 1022, and 1022 is smaller than any block that exists.
+     - *Tried and rejected* (2026-11-03), two allocator policies that would have avoided moving
+       anything, both measured with that probe and both **worse than the smallest-fit already
+       there** in the realistic case (24 resident, final atlas): refusing a hole that would
+       leave a sliver smaller than the smallest block seen, 55588 → **67661 (+21.7 %)**, because
+       it trades a dead sliver for a whole unused hole and there are more holes than slivers;
+       and largest-fit instead of smallest-fit, 55588 → **60057 (+8.0 %)**. Both help a little
+       at 8 resident (22090 → 20115 and 19531) and neither helps where it matters. So the cheap
+       levers are spent and **compaction is the only remaining one**: it now has a number to
+       beat, 14.5 % of the atlas at 24 resident bodies, and a 2-second instrument to judge it by.
    - Keep a disk cache of generated bodies by `BodyKey`. A crowd's cold start (78 s for 4000 on
      the Deck) and the first head SDF are then paid once per install.
      - *Done* (2026-11-02), the head SDF half: `PartAssetCache::set_cache_dir` keeps converted
