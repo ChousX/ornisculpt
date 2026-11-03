@@ -268,6 +268,13 @@ pub struct CrowdSkin {
     chunks: Vec<(u32, Arc<Vec<[f32; 16]>>)>,
 }
 
+/// `new_base` for a block that was at `old`, from the moves [`CrowdSkin::compact`] returned.
+/// `None` when that block did not move.
+#[must_use]
+pub fn remap(moves: &[(u32, u32)], old: u32) -> Option<u32> {
+    moves.binary_search_by_key(&old, |(from, _)| *from).ok().and_then(|i| moves.get(i)).map(|(_, to)| *to)
+}
+
 impl FromWorld for CrowdSkin {
     fn from_world(world: &mut World) -> Self {
         let capacity = 64;
@@ -403,6 +410,54 @@ impl CrowdSkin {
         let at = self.chunks.partition_point(|(b, _)| *b < layout.base);
         let len = self.chunks.get(at).filter(|(b, _)| *b == layout.base).map_or(0, |(_, data)| data.len().clamp_u32());
         self.release_range(layout.base, len);
+    }
+
+    /// Packs the live blocks down to close every hole, and returns `(old_base, new_base)` for
+    /// each block that moved, sorted by `old_base`.
+    ///
+    /// Fragmentation in this atlas is **holes between live blocks**, not waste inside them —
+    /// measured at 14.5 % of the atlas with 24 bodies resident, and 0.0 % when every block is
+    /// the same size (`clip_atlas_fragmentation`). Two placement policies that would have
+    /// avoided moving anything were measured and were both worse than the smallest-fit here
+    /// (roadmap Phase 2.5), so closing those holes means moving live blocks.
+    ///
+    /// Blocks keep their order and only ever move **down**, and every moved block is re-uploaded
+    /// from the CPU copy this type already keeps ([`Self::chunks`]), so nothing is copied
+    /// GPU-side and no source is read after it has been overwritten. A block's span still equals
+    /// its data length afterwards, so [`release_range`](Self::release_range)'s contract is
+    /// untouched.
+    ///
+    /// **This does not fix up the atlas offsets held outside this type.** `CrowdGaits` and
+    /// `CrowdCycles` keep their own (`BakedGait::layout`/`block`, and absolute `base`/`mask`
+    /// inside each `Arc<GraphClips>`), and the returned moves are what they are remapped by;
+    /// `compact_atlas` is the system that does it. The per-mob `CrowdInstance`s need nothing:
+    /// they are rebuilt from the layouts every frame and re-uploaded when they differ.
+    pub fn compact(&mut self, uploads: &mut CrowdUploads) -> Vec<(u32, u32)> {
+        let mut moves: Vec<(u32, u32)> = Vec::new();
+        let mut next = 0u32;
+        // `chunks` is every live block, sorted by base, and holds each one's data, so packing in
+        // that order moves a block down or not at all.
+        for (base, data) in &mut self.chunks {
+            if *base != next {
+                moves.push((*base, next));
+                *base = next;
+                uploads.clips.push((next, Arc::clone(data)));
+            }
+            next += data.len().clamp_u32();
+        }
+        self.atlas_len = next;
+        self.free_clips.clear();
+        if !moves.is_empty() {
+            for layout in self.atlas.values_mut() {
+                if let Some(to) = remap(&moves, layout.base) {
+                    // `legs` is an index inside the block, so it shifts by the block's delta
+                    // rather than being remapped on its own.
+                    layout.legs = layout.legs.wrapping_add(to).wrapping_sub(layout.base);
+                    layout.base = to;
+                }
+            }
+        }
+        moves
     }
 
     /// Matrices in the atlas, and the holes left in it by blocks that were released.
@@ -646,41 +701,134 @@ mod tests {
         // Each scenario: (label, the block sizes a session draws from).
         let uniform: Vec<(&str, u32)> = vec![("one size", sizes.first().map_or(1, |(_, s)| *s))];
         let wide: Vec<(&str, u32)> = (1..=8).map(|k| ("wide", 300 * k)).collect();
+        // `thresh` is the hole share (percent) at or above which the session compacts; 101 never
+        // does, which is the baseline this is measured against. Rule 2: the quantity is the hole
+        // share, which is what the result column reports. Matrices moved is the *cost* of getting
+        // it, reported beside it and never instead of it.
+        println!();
+        println!("{:24} {:>4} {:>5}  {:>7} {:>7} {:>7}  {:>9} {:>8}", "session", "live", "at%", "n=50", "n=500", "n=5000", "moved", "compacts");
         for (label, set) in [("real six plans", &sizes), ("one size only (control)", &uniform), ("wide spread (stress)", &wide)] {
             for live in [8usize, 24] {
-                let mut skin = CrowdSkin::for_test();
-                let mut uploads = CrowdUploads::default();
-                let mut rng = rand_pcg::Pcg32::new(0x5f3d_1a77, 0xa02b_dbf7);
-                let mut resident: Vec<(u32, u32)> = Vec::new();
-                let pick = |rng: &mut rand_pcg::Pcg32| {
-                    let i = usize::try_from(rng.random_range(0..set.len().clamp_u32())).unwrap_or(0);
-                    set.get(i).map_or(1, |(_, s)| *s)
-                };
-                let mut worst = 0.0f32;
-                print!("{label:24} live {live:3}:");
-                for step in 1..=5000usize {
-                    if resident.len() >= live {
-                        let i = usize::try_from(rng.random_range(0..resident.len().clamp_u32())).unwrap_or(0);
-                        if i < resident.len() {
-                            let (base, len) = resident.swap_remove(i);
-                            skin.release_range(base, len);
+                for thresh in [101u32, 25, 10, 5] {
+                    let mut skin = CrowdSkin::for_test();
+                    let mut uploads = CrowdUploads::default();
+                    let mut rng = rand_pcg::Pcg32::new(0x5f3d_1a77, 0xa02b_dbf7);
+                    let mut resident: Vec<(u32, u32)> = Vec::new();
+                    let pick = |rng: &mut rand_pcg::Pcg32| {
+                        let i = usize::try_from(rng.random_range(0..set.len().clamp_u32())).unwrap_or(0);
+                        set.get(i).map_or(1, |(_, s)| *s)
+                    };
+                    let (mut worst, mut moved, mut compacts) = (0.0f32, 0u64, 0u32);
+                    let mut marks: Vec<String> = Vec::new();
+                    for step in 1..=5000usize {
+                        if resident.len() >= live {
+                            let i = usize::try_from(rng.random_range(0..resident.len().clamp_u32())).unwrap_or(0);
+                            if i < resident.len() {
+                                let (base, len) = resident.swap_remove(i);
+                                skin.release_range(base, len);
+                            }
+                        }
+                        let len = pick(&mut rng);
+                        let base = skin.append(Arc::new(vec![[0.0; 16]; len.idx()]), &mut uploads);
+                        resident.push((base, len));
+                        // The policy `compact_atlas` applies, driven here so the threshold can be
+                        // swept without rebuilding.
+                        let (atlas, holes) = skin.atlas_usage();
+                        if atlas > 0 && holes.saturating_mul(100) >= atlas.saturating_mul(thresh) {
+                            uploads.clips.clear();
+                            let moves = skin.compact(&mut uploads);
+                            if !moves.is_empty() {
+                                compacts += 1;
+                                moved += uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum::<u64>();
+                                // Every resident block's base follows its block.
+                                for (b, _) in &mut resident {
+                                    if let Some(to) = remap(&moves, *b) {
+                                        *b = to;
+                                    }
+                                }
+                            }
+                        }
+                        let (atlas, holes) = skin.atlas_usage();
+                        let frac = if atlas == 0 { 0.0 } else { holes.to_f32() / atlas.to_f32() * 100.0 };
+                        worst = worst.max(frac);
+                        if matches!(step, 50 | 500 | 5000) {
+                            marks.push(format!("{frac:6.1}%"));
                         }
                     }
-                    let len = pick(&mut rng);
-                    let base = skin.append(Arc::new(vec![[0.0; 16]; len.idx()]), &mut uploads);
-                    resident.push((base, len));
-                    let (atlas, holes) = skin.atlas_usage();
-                    let frac = if atlas == 0 { 0.0 } else { holes.to_f32() / atlas.to_f32() * 100.0 };
-                    worst = worst.max(frac);
-                    if matches!(step, 50 | 500 | 5000) {
-                        print!("  n={step} {frac:.1}%");
-                    }
+                    let at = if thresh > 100 { "never".to_owned() } else { format!("{thresh}%") };
+                    println!(
+                        "{label:24} {live:>4} {at:>5}  {}  {moved:>9} {compacts:>8}  worst {worst:.1}% atlas {}",
+                        marks.join(" "),
+                        skin.atlas_usage().0
+                    );
                 }
-                let (atlas, holes) = skin.atlas_usage();
-                let live_total: u32 = resident.iter().map(|(_, l)| *l).sum();
-                println!("  | final atlas {atlas} holes {holes} live {live_total} worst-seen {worst:.1}%");
             }
         }
+    }
+
+    /// Compaction closes every hole, keeps each block's contents, and leaves each block's span
+    /// equal to its data length — so `release_range`, which is called with the data length,
+    /// still gives back exactly what the block holds.
+    #[test]
+    fn compaction_closes_the_holes_and_moves_the_blocks_down() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let a = skin.append(block(10, 1.0), &mut uploads);
+        let b = skin.append(block(4, 2.0), &mut uploads);
+        let c = skin.append(block(6, 3.0), &mut uploads);
+        let d = skin.append(block(5, 4.0), &mut uploads);
+        assert_eq!((a, b, c, d), (0, 10, 14, 20));
+        // Free two in the middle, not touching, so neither joins the other nor the end.
+        skin.release_range(b, 4);
+        skin.release_range(c, 6);
+        assert_eq!(skin.atlas_usage(), (25, 10));
+
+        uploads.clips.clear();
+        let moves = skin.compact(&mut uploads);
+        assert_eq!(skin.atlas_usage(), (15, 0), "no holes, and the atlas is the live total");
+        assert_eq!(moves, vec![(20, 10)], "only the block after the holes moved, and downward");
+        assert_eq!(uploads.clips.len(), 1, "only the moved block is re-uploaded");
+        // Contents follow the block.
+        assert_eq!(skin.matrix(0).map(|m| m[0]), Some(1.0));
+        assert_eq!(skin.matrix(10).map(|m| m[0]), Some(4.0), "d is where the holes were");
+        assert_eq!(skin.matrix(15), None, "nothing past the end");
+    }
+
+    /// A block that has been moved still gives back its whole span when it is freed, which is
+    /// the contract `release_range` is called under (it is passed the data length, not a span).
+    #[test]
+    fn a_moved_block_still_gives_back_its_whole_span() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let a = skin.append(block(10, 1.0), &mut uploads);
+        skin.append(block(4, 2.0), &mut uploads);
+        let c = skin.append(block(6, 3.0), &mut uploads);
+        skin.release_range(a, 10);
+        let moves = skin.compact(&mut uploads);
+        assert_eq!(skin.atlas_usage(), (10, 0));
+        // Everything that moved, freed at its new base with its own data length, empties the atlas.
+        let c_now = remap(&moves, c).unwrap_or(c);
+        let b_now = remap(&moves, 10).unwrap_or(10);
+        skin.release_range(b_now, 4);
+        skin.release_range(c_now, 6);
+        assert_eq!(skin.atlas_usage(), (0, 0), "an emptied atlas is empty, with nothing left over");
+    }
+
+    /// A body's `ClipLayout` follows its block, and `legs` — an index *inside* the block — moves
+    /// with it rather than being remapped on its own.
+    #[test]
+    fn a_layout_follows_its_block_through_a_compaction() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let first = skin.append(block(8, 1.0), &mut uploads);
+        let base = skin.append(block(6, 2.0), &mut uploads);
+        let body = AssetId::<GeneratedBody>::default();
+        let layout = ClipLayout { base, bones: 2, modes: 1, legs: base + 4 };
+        skin.set_layout(body, layout);
+        skin.release_range(first, 8);
+
+        skin.compact(&mut uploads);
+        let moved = skin.layout(body).expect("the layout is still there");
+        assert_eq!(moved.base, 0, "the block moved down into the hole");
+        assert_eq!(moved.legs, 4, "legs stayed 4 matrices into the block");
+        assert_eq!((moved.bones, moved.modes), (2, 1), "the rest of the layout is untouched");
     }
 
     /// A body's clips are a block of the atlas, and a block whose body has gone must be reused

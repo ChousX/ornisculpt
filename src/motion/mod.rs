@@ -144,7 +144,7 @@ impl Plugin for MotionPlugin {
                     (pose::choose_steps, pose::advance_clocks).chain().in_set(M::Clock),
                     (
                         (pose::write_probes, player::evaluate_cycles, pose::pose_heroes, pose::write_joints).chain(),
-                        (crowd::bake_crowd_gaits, crowd::bake_graph_clips, ground::crowd_ground, crowd::crowd_animate).chain(),
+                        (crowd::bake_crowd_gaits, crowd::bake_graph_clips, crowd::compact_atlas, ground::crowd_ground, crowd::crowd_animate).chain(),
                     )
                         .in_set(M::Pose),
                 ),

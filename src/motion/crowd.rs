@@ -32,7 +32,7 @@ use super::bake::bake_motion;
 use super::{BakedMotion, Gait, GaitClock, Locomotion, MobGait};
 use crate::anatomy::Anatomy;
 use crate::mob::{
-    CROWD_LAYERS, ClipBlock, ClipLayout, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, GeneratedBody,
+    CROWD_LAYERS, ClipBlock, ClipLayout, CrowdInstance, CrowdLayer, CrowdSkin, CrowdSlot, CrowdUploaded, CrowdUploads, GeneratedBody, remap,
     LAYER_ADDITIVE, MobBody, MobSkeleton, ROW_MATRICES,
 };
 use crate::num::{Clamp, Saturate, ToF32};
@@ -339,6 +339,69 @@ fn bake_graph(anatomy: &Anatomy, rig: &MotionRig, graph: &ComposedGraph, cycles:
         }
     }
     out
+}
+
+/// Holes as a share of the atlas, in percent, at or above which [`compact_atlas`] runs.
+///
+/// Not a guess: the probe (`mob::crowd::tests::clip_atlas_fragmentation`) reports the residual
+/// hole share for a session at each threshold, and the cost of compacting is one re-upload of
+/// every block that moves. See the roadmap's Phase 2.5 entry for the figures.
+const COMPACT_AT_PERCENT: u32 = 10;
+
+/// Closes the clip atlas's holes by moving live blocks down, and remaps every atlas offset held
+/// outside [`CrowdSkin`].
+///
+/// **The referrers, which is the whole difficulty.** A block's atlas offset is cached in five
+/// places, and a compaction that misses one plays the wrong clips:
+///
+/// 1. `CrowdSkin::atlas` — a `ClipLayout` per body (`base`, and `legs` inside the block).
+///    Remapped by `compact` itself.
+/// 2. `CrowdSkin::chunks` — the CPU copy, keyed by base and kept sorted. Likewise.
+/// 3. `CrowdSkin::free_clips` — the holes; emptied by definition.
+/// 4. [`CrowdGaits`] — `BakedGait::layout` and `BakedGait::block`, for a mob whose gait is its
+///    own. Remapped here.
+/// 5. [`CrowdCycles`] — each bake's `Range<u32>` **and the absolute `base`/`mask` inside its
+///    `Arc<GraphClips>`**, which were folded in when the bake landed (`base + frame0`). The
+///    `Arc` is rebuilt here with the offsets shifted.
+///
+/// The per-mob `CrowdInstance`s are deliberately *not* in that list: `crowd_animate` rebuilds
+/// each one from its layout every frame and uploads it when it differs from `CrowdUploaded`, so
+/// they correct themselves the same frame. That is why this runs before it in the chain.
+pub fn compact_atlas(
+    mut skin: ResMut<CrowdSkin>,
+    mut uploads: ResMut<CrowdUploads>,
+    mut gaits: ResMut<CrowdGaits>,
+    mut cycles: ResMut<CrowdCycles>,
+) {
+    let (atlas, holes) = skin.atlas_usage();
+    if atlas == 0 || holes.saturating_mul(100) < atlas.saturating_mul(COMPACT_AT_PERCENT) {
+        return;
+    }
+    let moves = skin.compact(&mut uploads);
+    if moves.is_empty() {
+        return;
+    }
+    debug!("crowd: compacted the clip atlas, {} blocks moved, now {} matrices", moves.len(), skin.atlas_usage().0);
+    for baked in gaits.baked.values_mut() {
+        let Some(to) = remap(&moves, baked.block.start) else { continue };
+        let (delta, len) = (baked.block.start.saturating_sub(to), baked.block.end.saturating_sub(baked.block.start));
+        baked.layout.base = baked.layout.base.saturating_sub(delta);
+        baked.layout.legs = baked.layout.legs.saturating_sub(delta);
+        baked.block = to..to + len;
+    }
+    for bakes in cycles.baked.values_mut() {
+        for (_, clips, block) in bakes.iter_mut() {
+            let Some(to) = remap(&moves, block.start) else { continue };
+            let (delta, len) = (block.start.saturating_sub(to), block.end.saturating_sub(block.start));
+            let shifted = clips
+                .clips
+                .iter()
+                .map(|c| c.map(|c| CrowdClip { base: c.base.saturating_sub(delta), mask: c.mask.saturating_sub(delta), ..c }))
+                .collect();
+            *clips = Arc::new(GraphClips { cycles: clips.cycles, clips: shifted });
+            *block = to..to + len;
+        }
+    }
 }
 
 /// Starts bakes for crowd mobs whose body hasn't met their graph yet, and lands finished ones in
