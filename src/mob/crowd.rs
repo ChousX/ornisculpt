@@ -831,6 +831,97 @@ mod tests {
         assert_eq!((moved.bones, moved.modes), (2, 1), "the rest of the layout is untouched");
     }
 
+    /// **Probe: what one compaction costs on the CPU**, at the size a real session reaches.
+    ///
+    /// The hole share is the result; this is the price of it, and a win that costs a frame spike
+    /// is a trade rather than a win. Only the CPU side is timed here: the GPU cost is the
+    /// re-upload of the moved blocks, which is reported in matrices (64 bytes each) because the
+    /// bench cannot exercise it — no body is ever dropped in a bench run, so no block is ever
+    /// freed and compaction never fires there.
+    ///
+    /// `cargo test --release -- --ignored compaction_cost --nocapture`
+    #[test]
+    #[ignore = "timing probe"]
+    fn compaction_cost() {
+        use std::time::Instant;
+        let sizes = [1318u32, 1537, 2121, 2340, 2340, 2340];
+        // A fragmented atlas the shape a 24-resident session reaches: every third block freed,
+        // which leaves holes between live blocks rather than at the end.
+        let build = || {
+            let (mut skin, mut uploads) = (CrowdSkin::for_test(), CrowdUploads::default());
+            let mut bases = Vec::new();
+            for i in 0..24usize {
+                let len = sizes.get(i % sizes.len()).copied().unwrap_or(2340);
+                bases.push((skin.append(Arc::new(vec![[0.0; 16]; len.idx()]), &mut uploads), len));
+            }
+            for (i, (base, len)) in bases.iter().enumerate() {
+                if i % 3 == 1 {
+                    skin.release_range(*base, *len);
+                }
+            }
+            (skin, uploads)
+        };
+        let mut times = Vec::new();
+        let (mut moved, mut atlas_before, mut atlas_after) = (0u64, 0u32, 0u32);
+        for _ in 0..200 {
+            let (mut skin, mut uploads) = build();
+            uploads.clips.clear();
+            atlas_before = skin.atlas_usage().0;
+            let t = Instant::now();
+            let moves = skin.compact(&mut uploads);
+            let dt = t.elapsed();
+            times.push(dt.as_secs_f64() * 1e6);
+            atlas_after = skin.atlas_usage().0;
+            moved = uploads.clips.iter().map(|(_, d)| u64::try_from(d.len()).unwrap_or(0)).sum();
+            assert!(!moves.is_empty(), "the fragmented atlas should have something to move");
+        }
+        times.sort_unstable_by(f64::total_cmp);
+        let med = times.get(times.len() / 2).copied().unwrap_or(0.0);
+        let (lo, hi) = (times.first().copied().unwrap_or(0.0), times.last().copied().unwrap_or(0.0));
+        println!("compaction of a 24-block atlas: atlas {atlas_before} -> {atlas_after} matrices");
+        println!("  CPU: median {med:.1} us (min {lo:.1}, max {hi:.1}, n=200)");
+        println!("  GPU: {moved} matrices re-uploaded = {:.2} MB at 64 B each", (moved * 64).to_f32() / 1_048_576.0);
+    }
+
+    /// **Output-neutrality, proved by value rather than by pixels.** Compaction must leave every
+    /// live block reading exactly the matrices it read before, at its new base. This checks the
+    /// whole atlas matrix by matrix, which is a stronger statement than any image comparison and
+    /// does not depend on the image gate — which is being worked on this wave and is not a
+    /// reliable judge of an output-changing change right now. Compaction should change no output
+    /// at all, so a single differing matrix is a bug in the compaction.
+    #[test]
+    fn compaction_changes_no_matrix_a_block_reads() {
+        let (mut skin, mut uploads) = (skin(), CrowdUploads::default());
+        let sizes = [7u32, 3, 11, 5, 9, 4];
+        let mut live: Vec<(u32, u32, f32)> = Vec::new();
+        for (i, len) in sizes.iter().enumerate() {
+            let mark = (i + 1).to_f32();
+            let base = skin.append(block(len.idx(), mark), &mut uploads);
+            live.push((base, *len, mark));
+        }
+        // Free a scattering of them, leaving holes between the survivors.
+        let freed = [1usize, 3];
+        for i in freed {
+            if let Some((base, len, _)) = live.get(i).copied() {
+                skin.release_range(base, len);
+            }
+        }
+        let live: Vec<(u32, u32, f32)> = live.iter().copied().enumerate().filter(|(i, _)| !freed.contains(i)).map(|(_, b)| b).collect();
+        // What every survivor reads, matrix by matrix, before the move.
+        let before: Vec<(f32, Vec<f32>)> =
+            live.iter().map(|(b, len, mark)| (*mark, (0..*len).map(|k| skin.matrix(b + k).map_or(f32::NAN, |m| m[0])).collect())).collect();
+
+        let moves = skin.compact(&mut uploads);
+        assert_eq!(skin.atlas_usage().1, 0, "no holes left");
+
+        for ((base, len, mark), (was_mark, was)) in live.iter().zip(&before) {
+            let now = remap(&moves, *base).unwrap_or(*base);
+            let after: Vec<f32> = (0..*len).map(|k| skin.matrix(now + k).map_or(f32::NAN, |m| m[0])).collect();
+            assert_eq!(&after, was, "block {mark} reads different matrices after compaction");
+            assert!(after.iter().all(|v| (*v - *was_mark).abs() < f32::EPSILON), "block {mark} is not its own data");
+        }
+    }
+
     /// A body's clips are a block of the atlas, and a block whose body has gone must be reused
     /// rather than left as a hole: a session that keeps replacing bodies would otherwise grow
     /// the clip buffer without bound.
