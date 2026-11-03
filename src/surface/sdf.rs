@@ -138,6 +138,11 @@ pub fn shape(p: Vec3A, s: &PrimShape) -> f32 {
 
 /// [`shape`] with the primitive's own constants already worked out (see [`ShapePrep`]): what the
 /// per-point path uses.
+///
+/// `#[inline]` because the call was the cost, not the body: with 16 codegen units and no LTO the
+/// caller reached it indirectly, so the point went to memory and back around a function that does
+/// a handful of arithmetic.
+#[inline]
 #[must_use]
 pub fn shape_prepared(p: Vec3A, s: &PrimShape, prep: &ShapePrep) -> f32 {
     match s {
