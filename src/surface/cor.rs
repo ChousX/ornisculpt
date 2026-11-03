@@ -25,15 +25,15 @@ use crate::num::{Clamp, Idx, Saturate, ToF32};
 /// The paper's default width of the weight similarity.
 pub const SIGMA: f32 = 0.1;
 
-/// `e^-x` for `x >= 0`, to about 6e-6 relative: `2^-t` split into an integer power (an exponent
-/// shift) and a degree-4 polynomial on the fraction. `f32::exp` is a `libm` call per bone pair per
-/// triangle, half of this stage's time; the similarity weights don't need its last bits.
+/// `e^-x` for finite `x >= 0`, to about 6e-6 relative: `2^-t` split into an integer power (an
+/// exponent shift) and a degree-4 polynomial on the fraction. `f32::exp` is a `libm` call per bone
+/// pair per triangle, half of this stage's time; the similarity weights don't need its last bits.
+///
+/// Straight-line: no early-out for large `x`. The exponent shift saturates to zero on its own
+/// (below), and in [`group_centres`] only 0.3 % of calls are large enough for one to fire.
 #[inline]
 #[allow(clippy::suboptimal_flops)] // a Horner chain of plain multiplies, for the reason given at `group_centres`
 fn exp_neg(x: f32) -> f32 {
-    if x > 80.0 {
-        return 0.0;
-    }
     let t = x * std::f32::consts::LOG2_E;
     // Truncation is the floor for t >= 0 (`f32::floor` is a libm call on x86 without SSE4.1).
     let whole = t.sat_i32();
@@ -41,8 +41,10 @@ fn exp_neg(x: f32) -> f32 {
     // 2^frac on (-1, 0]: the least-relative-error quartic through (0, 1), which beats the
     // degree-6 Taylor series (6e-6 against 3e-5 measured in f32) with two multiplies fewer in the chain.
     let series = 1.0 + frac * (0.693_063_6 + frac * (0.239_456_87 + frac * (0.053_223_83 + frac * 0.006_832_04)));
-    // 2^-whole as a float with exponent 127 - whole (whole <= 116, so never a subnormal).
-    f32::from_bits((127 - whole).clamp_u32() << 23) * series
+    // 2^-whole as a float with exponent 127 - whole. Past whole = 127 the exponent would go
+    // negative, and 2^-128 is already below the smallest f32 this is ever added to, so clamping
+    // the shift to zero returns zero — which is what the large-`x` early-out used to return.
+    f32::from_bits((127 - whole).max(0).clamp_u32() << 23) * series
 }
 
 type Weights = smallvec::SmallVec<[(u16, f32); 8]>;
