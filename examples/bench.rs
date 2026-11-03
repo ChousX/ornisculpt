@@ -1239,23 +1239,37 @@ const MIN_DELTA: f32 = 0.03;
 /// across shots is the point: a single global floor would be the wrong lesson, and the `man.*`
 /// shots at exactly zero show the pipeline *can* be deterministic.
 ///
-/// The non-determinism is order-dependent and spares the first entry in [`MOBS`]: the man is
-/// identical across runs, every later mob varies. Two candidate causes are **disconfirmed**, not
-/// merely unconfirmed:
+/// The non-determinism is **per mob, not positional**. It spares the **man** specifically: with
+/// the case order reversed so the man generates *last* and the darner *first*, `man.full`,
+/// `man.head` and `man.eye` are still byte-identical (PSNR inf) and `darner.*` is still not
+/// (0.001 %, finite PSNR), while `woman.head` reaches 2.242 % and `ox_hereford.eye` 1.137 %. An
+/// earlier revision of this comment said the cause was "order-dependent and spares the first entry
+/// in `MOBS`" — that was a confound, asserted on the wrong side, and it is withdrawn.
+///
+/// Three candidate causes are **disconfirmed**, not merely unconfirmed:
 ///
 /// - **Not work distribution.** `ORNISCULPT_WORKERS=1` is still non-repeatable and mostly worse
 ///   (`crowd4000` 3.153 % → 6.255 %, `woman.head` 0.249 % → 0.745 %), so `par_jobs` chunking and
 ///   `VoxelBinding::spread`'s heap order cannot be it.
 /// - **Not tier-count drift.** Six runs give identical `steady.tier.*` (32 / 1707 / 2261) and
-///   identical `cold.bodies` (24) while the image differs. Whether the same *identities* hold
-///   those tiers is what `steady.tier_fingerprint24` records.
+///   identical `cold.bodies` (24) while the image differs.
+/// - **Not tier *identity* either.** `steady.tier_fingerprint24` is identical (5628265) across
+///   three further runs whose `cold.frames` were 1455 / 1683 / 1687, with its control
+///   `steady.entity_fingerprint24` also identical (12013424) — so entity ids are stable, the tier
+///   figure is meaningful, and the same mobs hold the same tiers every run while `crowd4000` still
+///   differs by up to 0.808 %.
 ///
 /// **`crowd4000` specifically is not reproducible by construction, and no threshold can fix it.**
 /// `cold.frames` across identical runs: 1614 / 1966 / 1667 at sixteen workers, 5396 / 4392 / 4308
-/// at one. The cold phase ends on a wall-clock condition — every body attached and nothing in
-/// flight — and the steady shot fires a fixed number of frames later, so it photographs the crowd
-/// at a different point in its animation every run. The shot needs a trigger that does not depend
-/// on how long generation took.
+/// at one, 1455 / 1683 / 1687 again later. The cold phase ends on a wall-clock condition — every
+/// body attached and nothing in flight — and the steady shot fires a fixed number of frames later.
+///
+/// **The variance is measured; the mechanism is not.** An earlier revision said the shot therefore
+/// "photographs the crowd at a different point in its animation", which is now doubtful: virtual
+/// time is paused throughout the cold phase and advances exactly 1/60 s a frame afterwards, and
+/// the tier assignment is identical by identity, so the obvious route from a longer cold phase to a
+/// different picture is closed. That half is withdrawn. What stands is that `crowd4000` is not
+/// reproducible and `cold.frames` is not stable.
 ///
 /// The hero shots' mechanism is still open and is deliberately not guessed at here.
 ///
