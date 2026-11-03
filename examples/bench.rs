@@ -1320,6 +1320,31 @@ fn compare_provenance(olds: &[&Report], new: &Report) {
     }
 }
 
+/// Where an accepted golden set came from, written beside the PNGs by `--accept`.
+const ACCEPTED: &str = "accepted.ron";
+
+/// Says which machine, GPU and build the goldens in `dir` were accepted on, and shouts when that
+/// is not the machine now being judged. **A golden set is per-machine**: the image gate compares
+/// renders, and two GPUs do not produce the same pixels, so a set recorded on toth has no
+/// authority over tir's or the Deck's renders. Without this the gate would be run across machines
+/// and its verdict read as if it meant something.
+fn report_golden_origin(dir: &Path, scenario: &str, now: &Meta) {
+    let Ok(text) = std::fs::read_to_string(dir.join(ACCEPTED)) else { return };
+    let Ok(accepted) = ron::from_str::<BTreeMap<String, Meta>>(&text) else {
+        println!("   note: {}/{ACCEPTED} could not be read", dir.display());
+        return;
+    };
+    let Some(m) = accepted.get(scenario) else { return };
+    let short: String = m.build.git.chars().take(7).collect();
+    println!("   goldens accepted on {} / {} from {} (xxh3 {})", m.machine, m.gpu, short, m.build.exe_xxh3.chars().take(7).collect::<String>());
+    if m.machine != now.machine || m.gpu != now.gpu {
+        println!("   !! these goldens judge {} / {} only — this run is {} / {}", m.machine, m.gpu, now.machine, now.gpu);
+    }
+    if m.settings != now.settings {
+        diff_map("golden setting", &m.settings, &now.settings);
+    }
+}
+
 const fn first_of<'a>(olds: &[&'a Report]) -> Option<&'a Report> {
     olds.first().copied()
 }
@@ -1347,24 +1372,32 @@ fn compare(bases: &str, new: &Path, accept: bool) -> Result<(), String> {
     let mut failures = Vec::new();
     for (scenario, report) in &new_reports {
         let olds: Vec<&Report> = base_reports.iter().filter_map(|r| r.get(scenario)).collect();
-        let Some(first) = olds.first() else {
-            println!("== {scenario}: no baseline");
-            continue;
-        };
         println!("== {scenario}");
-        if first.meta.bench_version != report.meta.bench_version {
-            failures.push(format!("{scenario}: bench version {} vs {}", first.meta.bench_version, report.meta.bench_version));
-            continue;
-        }
-        for (path, hash) in &report.meta.inputs {
-            if first.meta.inputs.get(path).is_some_and(|h| h != hash) {
-                println!("   note: input {path} changed since the baseline");
+        // `bench/golden` holds accepted PNGs and no `.ron` — which is exactly how the image gate
+        // is meant to be run (§1.4 of the plan: "passing `bench/golden` as a base compares images
+        // against the accepted look"). Having no metric baseline must therefore skip the metrics
+        // and nothing else: skipping the whole scenario made that documented command silently
+        // check nothing at all. The metric loop below already skips metrics it has no baseline for.
+        if let Some(first) = olds.first() {
+            if first.meta.bench_version != report.meta.bench_version {
+                failures.push(format!("{scenario}: bench version {} vs {}", first.meta.bench_version, report.meta.bench_version));
+                continue;
             }
+            for (path, hash) in &report.meta.inputs {
+                if first.meta.inputs.get(path).is_some_and(|h| h != hash) {
+                    println!("   note: input {path} changed since the baseline");
+                }
+            }
+            if first.meta.gpu != report.meta.gpu || first.meta.machine != report.meta.machine {
+                println!("   note: different machine/GPU ({} / {} vs {} / {})", first.meta.machine, first.meta.gpu, report.meta.machine, report.meta.gpu);
+            }
+            compare_provenance(&olds, report);
+        } else {
+            println!("   no metric baseline: images only (no .ron in the base, as in bench/golden)");
         }
-        if first.meta.gpu != report.meta.gpu || first.meta.machine != report.meta.machine {
-            println!("   note: different machine/GPU ({} / {} vs {} / {})", first.meta.machine, first.meta.gpu, report.meta.machine, report.meta.gpu);
+        for dir in &base_dirs {
+            report_golden_origin(dir, scenario, &report.meta);
         }
-        compare_provenance(&olds, report);
         for case in &report.cases {
             for (metric, &v) in &case.metrics {
                 let mut vals: Vec<f32> =
@@ -1428,7 +1461,13 @@ fn compare(bases: &str, new: &Path, accept: bool) -> Result<(), String> {
                 std::fs::copy(new.join(image), golden.join(image)).map_err(|e| format!("{image}: {e}"))?;
             }
         }
-        println!("accepted images into {}", golden.display());
+        // Whose look this is. A golden set is a record of one machine's renders by one binary, and
+        // without this the accepted PNGs say nothing about which — the same hole the result trees
+        // had. `compare` reads it back and shouts when the gate is being run on another machine.
+        let accepted: BTreeMap<&String, &Meta> = new_reports.iter().map(|(s, r)| (s, &r.meta)).collect();
+        let text = ron::ser::to_string_pretty(&accepted, ron::ser::PrettyConfig::default()).map_err(|e| e.to_string())?;
+        std::fs::write(golden.join(ACCEPTED), text).map_err(|e| e.to_string())?;
+        println!("accepted images into {} ({ACCEPTED} records the machine, GPU and build they came from)", golden.display());
     }
     if failures.is_empty() {
         println!("ok");
