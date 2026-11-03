@@ -722,7 +722,17 @@ impl Bench {
 /// Runs the app scenario; the exit says whether every body came up.
 fn run_app(scenario: &str, out: PathBuf) -> AppExit {
     let cases = match scenario {
-        "hero" => (0..MOBS.len()).map(|mob| CaseKind::Still { mob }).collect(),
+        "hero" => {
+            let mut v: Vec<CaseKind> = (0..MOBS.len()).map(|mob| CaseKind::Still { mob }).collect();
+            // `ORNISCULPT_BENCH_REVERSE=1` runs the cases back to front. A diagnostic, not a
+            // workload knob: the image gate is byte-stable for the *first* mob generated and not
+            // for any later one, and reversing the order says whether that is about position in
+            // the sequence or about the mob's own identity.
+            if std::env::var("ORNISCULPT_BENCH_REVERSE").is_ok_and(|v| v == "1") {
+                v.reverse();
+            }
+            v
+        }
         "motion" => MOTION_MOBS.iter().map(|&mob| CaseKind::Motion { mob }).collect(),
         _ => vec![CaseKind::Crowd],
     };
@@ -1025,7 +1035,7 @@ fn measure(
     target: &Handle<Image>,
     case: &CaseKind,
     n: u32,
-    mobs: &Query<(Has<MobBody>, Option<&MobTier>), With<Mob>>,
+    mobs: &Query<(Entity, Has<MobBody>, Option<&MobTier>), With<Mob>>,
 ) {
     let name = bench.case_name();
     match case {
@@ -1045,10 +1055,32 @@ fn measure(
             bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
         }
         CaseKind::Crowd if n >= CROWD_FRAMES => {
-            let counts = LodLevel::ALL.map(|l| mobs.iter().filter(|(_, t)| t.is_some_and(|t| t.0 == l)).count());
+            let counts = LodLevel::ALL.map(|l| mobs.iter().filter(|(_, _, t)| t.is_some_and(|t| t.0 == l)).count());
             for (level, c) in LodLevel::ALL.iter().zip(counts) {
                 bench.metrics.insert(format!("steady.tier.{}", format!("{level:?}").to_lowercase()), c.to_f32());
             }
+            // *Which* mobs hold which tier, not just how many. The counts were identical across
+            // six runs of one binary while the image was not, so the counts cannot say whether the
+            // same 32 mobs are the heroes each time. Summed, so it does not depend on the order the
+            // query happens to iterate.
+            let mix = |v: u64| v.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let (mut tier_fp, mut entity_fp) = (0u64, 0u64);
+            for (e, _, t) in mobs {
+                let id = e.to_bits();
+                entity_fp = entity_fp.wrapping_add(mix(id));
+                if let Some(t) = t {
+                    tier_fp = tier_fp.wrapping_add(mix(id.wrapping_mul(3).wrapping_add(t.0 as u64 + 1)));
+                }
+            }
+            // The low 24 bits, which an f32 metric holds exactly: enough to notice a change, and
+            // `compare` treats it as a number.
+            //
+            // `entity_fingerprint24` is the control and must be read first. It ignores tiers, so
+            // if *it* moves between runs the entity ids themselves differ and the tier figure says
+            // nothing; only when the control is stable does a moving tier figure mean the same
+            // mobs took different tiers.
+            bench.metrics.insert("steady.entity_fingerprint24".into(), (entity_fp & 0xff_ffff).to_f32());
+            bench.metrics.insert("steady.tier_fingerprint24".into(), (tier_fp & 0xff_ffff).to_f32());
             shoot(commands, bench, target, &name);
             finish_measure(bench, name, "steady.");
             bench.phase = Phase::Settle(SHOT_SETTLE, Next::Case);
@@ -1068,7 +1100,7 @@ fn drive(
     quality: Option<Res<QualityProfile>>,
     msaa: Query<&Msaa, With<BenchCamera>>,
     target: Res<Target>,
-    mobs: Query<(Has<MobBody>, Option<&MobTier>), With<Mob>>,
+    mobs: Query<(Entity, Has<MobBody>, Option<&MobTier>), With<Mob>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(case) = bench.cases.get(bench.case).cloned() else {
@@ -1105,7 +1137,7 @@ fn drive(
         Phase::WaitReady => {
             let ready = match case {
                 CaseKind::Crowd => {
-                    let attached = bench.entities.iter().filter(|e| mobs.get(**e).is_ok_and(|(b, t)| b && t.is_some())).count();
+                    let attached = bench.entities.iter().filter(|e| mobs.get(**e).is_ok_and(|(_, b, t)| b && t.is_some())).count();
                     let timed_out = bench.cold_start.is_some_and(|t| t.elapsed() > CROWD_COLD_CAP);
                     (attached == bench.entities.len() && cache.in_flight() == 0) || timed_out
                 }
