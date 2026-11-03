@@ -8,6 +8,25 @@ measured on 2026-10-19.
 Rule: **no optimisation or look change lands without a before/after run of the fixed benchmark
 below.** Look changes carry a frame-time budget; optimisations carry an image-diff budget.
 
+Rule, learned four times: **count the work, not a proxy for the work.** This is usually written
+"count the work, not the chunks", which reads as advice about chunks. It is not. Every proxy for
+cost has now been wrong here by a factor large enough to reverse a decision:
+
+| The proxy | What it promised | What it was worth |
+|---|---|---|
+| chunks produced | a win from skipping chunks that produce nothing | **−2.58 %**, a loss, once built |
+| CSG visits | 63.7 % of visits removed | 0.2 % |
+| evaluations | a *doubled* `prim.eval` per `surface_info` call, halved | **+0.12 %**, a null — the bookkeeping cost as much as the evaluations |
+| a profile branch's share | `sdf::ellipsoid` at ~42 % of `sdf::shape`, so ~6.9 % from its divides | **−0.50 %** — the branch's cost was its `sqrt`s and its final scalar divide, not the two `divps`; an **8× over-prediction** |
+
+The last one is the subtlest and the easiest to repeat: in a flat `cpu-clock` profile a sample
+lands on the instruction that **stalls for** a long-latency op, not on the op, so a hot line
+after a `sqrt` or a divide is that op's cost and not its own. Attribute a sample to the producer
+of the stall before believing any instruction's share.
+
+Nothing here has been reliable except an interleaved A/B of md5- or `exe_xxh3`-distinct binaries,
+three runs a side minimum, on a machine held quiet for the whole batch.
+
 ## 0. Baseline today (2026-10-19, this machine)
 
 Machine: 12-core ARM laptop, Qualcomm GPU (`msm_dpu` display, Adreno-class integrated, tiled), 15 GB RAM,
@@ -174,17 +193,15 @@ the image gate on 12 of 25 shots (worst `ox_hereford.eye` 12.0 % of pixels, 26.7
 left in the field is therefore the `sqrt` and divide chain inside `sdf::ellipsoid` itself, which
 is inherent to the formula, and `Acc::slot`'s linear scan (1.1 %).
 
-Two facts about this stage worth having before profiling it again. **`BodyField::info_on`
-evaluates every union primitive twice per call** — the owner loop and the influences loop each
-call `prim.eval(p)` on the same primitives, so each one's `sdf::shape` runs twice per
-`surface_info` call, per vertex, at every level. Removing exactly half of that measured
-**+0.12 %, a null** (row in `bench/LOG.md`), which is the useful part: it says `surface_info` is a
-small share of the field's evaluations beside the octree's distance sampling, and that is where
-`sdf::shape`'s 16 % comes from. Buffering the first pass is not the fix; choosing the owner without
-a second pass at all was not tried. And **rule 2 is not about chunks** — "count the work, not the
-chunks" has now been true of chunks that produce nothing, of visits that bought 0.2 %, of halved
-evaluations whose bookkeeping cost more than the evaluations, and of a profile branch's share
-mistaken for one instruction's share. It is about every proxy for cost. Meshing is what
+**`surface_info` is not where the field's evaluations are — the octree's distance sampling is.**
+That is the fact to carry into the next pass at this stage, and it was established the hard way.
+`BodyField::info_on` evaluates every union primitive **twice** per call (the owner loop and the
+influences loop each call `prim.eval(p)` on the same primitives), per vertex, at every level —
+a real, obvious, doubled cost. Removing exactly half of it is worth **+0.12 %: a null** (row in
+`bench/LOG.md`). So `sdf::shape`'s 16 % is reached overwhelmingly through the octree's sampling,
+not through `surface_info`, and anyone optimising the field should go at the sampling. Buffering
+the first pass is not the fix and is reverted; choosing the owner *without* a second pass at all
+was **not tried**, so this is "not fixable by buffering" rather than "not fixable". Meshing is what
 is left on the Deck, at 1.4 to 2.5 s a mob.
 
 **Correction, so this does not mislead a third pass:** the claim below that *"the other stages'
