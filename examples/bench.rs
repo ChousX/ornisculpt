@@ -1240,11 +1240,24 @@ const MIN_DELTA: f32 = 0.03;
 /// shots at exactly zero show the pipeline *can* be deterministic.
 ///
 /// The non-determinism is order-dependent and spares the first entry in [`MOBS`]: the man is
-/// identical across runs, every later mob varies. `bench/LOG.md` records an earlier instance of
-/// the class — "meshing depended on the thread count (fixed)" — so a generation stage whose result
-/// depends on how work was distributed rather than only on its inputs has existed here before.
-/// `ORNISCULPT_WORKERS=1` forces one worker, which is the cheap discriminator between work
-/// distribution and arithmetic.
+/// identical across runs, every later mob varies. Two candidate causes are **disconfirmed**, not
+/// merely unconfirmed:
+///
+/// - **Not work distribution.** `ORNISCULPT_WORKERS=1` is still non-repeatable and mostly worse
+///   (`crowd4000` 3.153 % → 6.255 %, `woman.head` 0.249 % → 0.745 %), so `par_jobs` chunking and
+///   `VoxelBinding::spread`'s heap order cannot be it.
+/// - **Not tier-count drift.** Six runs give identical `steady.tier.*` (32 / 1707 / 2261) and
+///   identical `cold.bodies` (24) while the image differs. Whether the same *identities* hold
+///   those tiers is what `steady.tier_fingerprint24` records.
+///
+/// **`crowd4000` specifically is not reproducible by construction, and no threshold can fix it.**
+/// `cold.frames` across identical runs: 1614 / 1966 / 1667 at sixteen workers, 5396 / 4392 / 4308
+/// at one. The cold phase ends on a wall-clock condition — every body attached and nothing in
+/// flight — and the steady shot fires a fixed number of frames later, so it photographs the crowd
+/// at a different point in its animation every run. The shot needs a trigger that does not depend
+/// on how long generation took.
+///
+/// The hero shots' mechanism is still open and is deliberately not guessed at here.
 ///
 /// The PSNR half of the gate is sound: verified against an independent decoder sharing no code with
 /// this one (40.09 against 40.1, 32.91 against 32.9). It is the thresholded *count* that cannot
