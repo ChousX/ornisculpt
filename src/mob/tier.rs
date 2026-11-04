@@ -241,7 +241,9 @@ mod tests {
     fn the_profiles_budget_their_casters() {
         assert_eq!(QualityProfile::LOW.max_casters, 0, "the low profile casts no crowd shadows");
         assert_eq!(QualityProfile::MEDIUM.max_casters, 0, "nor the default: the cost depends on the framing");
-        assert!(QualityProfile::HIGH.max_casters > 0, "the high profile does");
+        // A const block, because the condition is a constant: this is a claim about the
+        // profile table itself, so it should fail the build rather than a test run.
+        const { assert!(QualityProfile::HIGH.max_casters > 0, "the high profile casts crowd shadows") };
         assert_eq!(QualityProfile::default().max_casters, QualityProfile::MEDIUM.max_casters);
     }
 }
