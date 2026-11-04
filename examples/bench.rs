@@ -1028,6 +1028,24 @@ fn spawn_mob(commands: &mut Commands, assets: &AssetServer, mob: usize, extra: i
     Some(e.id())
 }
 
+/// `ORNISCULPT_BENCH_TWICE=1`: for the still cases, hold virtual time paused through the measured
+/// phase and shoot the **same framing twice**, 20 frames apart, as `<name>.png` and
+/// `<name>.again.png`.
+///
+/// The decisive split left after wave 3. Generation is bit-identical and the coat's drawing carries
+/// most of the variation, but whether what remains is *per-process* or *per-frame* is unknown, and
+/// the two are very different repairs. With the pose frozen, two captures in one process at the
+/// same pose must be byte-identical if the render is stable; if they differ, the instability is
+/// inside a single run and does not need two processes to reproduce — which makes it far cheaper
+/// to chase.
+fn twice() -> bool {
+    static TWICE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TWICE.get_or_init(|| std::env::var("ORNISCULPT_BENCH_TWICE").is_ok_and(|v| v == "1"))
+}
+
+/// Frames between the two captures of [`twice`].
+const TWICE_GAP: u32 = 20;
+
 /// `ORNISCULPT_BENCH_NO_COAT=1`: spawn bodies without their coats, in **every** scenario.
 ///
 /// Without coats the hero shots' worst same-binary difference falls from 2.242 % to 0.010 %
@@ -1112,9 +1130,15 @@ fn measure(
 ) {
     let name = bench.case_name();
     match case {
-        CaseKind::Still { .. } if n >= STILL_FRAMES => {
-            // Before the result closes, so the shot is filed with it.
+        // The first of `twice`'s two captures: shoot and keep measuring.
+        CaseKind::Still { .. } if twice() && n == STILL_FRAMES => {
             shoot(commands, bench, target, &name);
+            bench.phase = Phase::Measure(n);
+        }
+        CaseKind::Still { .. } if n >= STILL_FRAMES + if twice() { TWICE_GAP } else { 0 } => {
+            // Before the result closes, so the shot is filed with it.
+            let shot_name = if twice() { format!("{name}.again") } else { name.clone() };
+            shoot(commands, bench, target, &shot_name);
             finish_measure(bench, name, "");
             let last = bench.framing + 1 >= Framing::ALL.len();
             bench.phase = Phase::Settle(SHOT_SETTLE, if last { Next::Case } else { Next::Framing });
@@ -1228,7 +1252,10 @@ fn drive(
             if let (CaseKind::Crowd, Some(start)) = (&case, bench.cold_start.take()) {
                 bench.metrics = cold_metrics(&mut bench, start, &cache);
             }
-            time.unpause();
+            // `twice` freezes the pose so its two captures differ only in when they were taken.
+            if !(twice() && matches!(case, CaseKind::Still { .. })) {
+                time.unpause();
+            }
             let warm = match case {
                 CaseKind::Still { .. } => STILL_WARM,
                 CaseKind::Motion { .. } => MOTION_WARM,
