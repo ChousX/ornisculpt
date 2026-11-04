@@ -1043,8 +1043,22 @@ fn twice() -> bool {
     *TWICE.get_or_init(|| std::env::var("ORNISCULPT_BENCH_TWICE").is_ok_and(|v| v == "1"))
 }
 
-/// Frames between the two captures of [`twice`].
-const TWICE_GAP: u32 = 20;
+/// Frames between the two captures of [`twice`], from `ORNISCULPT_BENCH_TWICE_GAP` (default 20).
+///
+/// The gap is the measurement. With the pose frozen, two captures must agree; they do not, and the
+/// question is why. If the difference **scales with the gap**, something in the scene or the
+/// renderer evolves per frame and the shot is photographing a moving target. If it is **flat in
+/// the gap**, the two captures are equally unlike each other however far apart they are, which is
+/// capture-side noise rather than an evolving scene.
+///
+/// Must stay at or above [`SHOT_SETTLE`] (15): below it the second screenshot is requested while
+/// the first is still being read back, and the two would contend for the same render target.
+fn twice_gap() -> u32 {
+    static GAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *GAP.get_or_init(|| {
+        std::env::var("ORNISCULPT_BENCH_TWICE_GAP").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(20).max(SHOT_SETTLE + 1)
+    })
+}
 
 /// `ORNISCULPT_BENCH_NO_COAT=1`: spawn bodies without their coats, in **every** scenario.
 ///
@@ -1135,7 +1149,7 @@ fn measure(
             shoot(commands, bench, target, &name);
             bench.phase = Phase::Measure(n);
         }
-        CaseKind::Still { .. } if n >= STILL_FRAMES + if twice() { TWICE_GAP } else { 0 } => {
+        CaseKind::Still { .. } if n >= STILL_FRAMES + if twice() { twice_gap() } else { 0 } => {
             // Before the result closes, so the shot is filed with it.
             let shot_name = if twice() { format!("{name}.again") } else { name.clone() };
             shoot(commands, bench, target, &shot_name);
