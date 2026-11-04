@@ -25,8 +25,22 @@ use crate::coat::CoatMeshes;
 use crate::num::{Clamp, Idx};
 use crate::surface::{BodyMeshData, MaterialSlot, MuscleFlex, SoftVertex, Submesh};
 
-/// Magic and version of a cached body on disk. Bump the digit when the layout changes: an older
-/// file is then ignored and the body meshed again, rather than read as nonsense.
+/// Magic and version of a cached body on disk. Bump the digit when the **layout** changes: an
+/// older file is then ignored and the body meshed again, rather than read as nonsense.
+///
+/// Only the layout. What the bytes *mean* is
+/// [`GENERATOR_VERSION`](super::GENERATOR_VERSION)'s business, and the two are independent:
+///
+/// - the layout changed (a field added to [`BodyMeshData`], a word reordered) — bump this digit;
+///   the file is unreadable by this code and must not be parsed;
+/// - the geometry changed but the layout did not (a different field, a different mesher) — raise
+///   `GENERATOR_VERSION`; the file is perfectly readable and simply describes another body. It is
+///   in the [`BodyKey`], and the key is the file's name, so a raised version looks at a different
+///   path and never meets the old file at all.
+///
+/// Which is why the collapse needed the version raised and not this digit: same layout, different
+/// body. Bumping this instead would have worked by accident, and would have thrown away every
+/// cached body on every unrelated layout change thereafter.
 const BODY_FILE_MAGIC: [u8; 8] = *b"ORNIBOD1";
 
 /// Where generated body meshes are kept between runs.
