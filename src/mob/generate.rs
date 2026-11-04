@@ -20,7 +20,7 @@ use super::CrowdSkin;
 use bevy::pbr::ExtendedMaterial;
 use bevy::render::storage::ShaderBuffer;
 use crate::clothing::{GarmentCover, MobOutfit, Outfit, cover_skin, fit_outfit, garment_lods};
-use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotation, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
+use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotation_at, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
 pub const GENERATOR_VERSION: u32 = 1;
@@ -552,8 +552,8 @@ fn body_meshes(input: &MeshInputs, times: &mut StageTimes) -> Result<CachedMeshe
     // Centres of rotation on the final vertices and weights (coat meshes copy them). Levels
     // without `deformation` keep neither (empty = linear skinning, still muscles).
     times.stage("centres_of_rotation", || {
-        for (lod, _) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
-            lod.cor = centres_of_rotation(lod);
+        for (lod, level) in lods.iter_mut().zip(LodLevel::ALL).filter(|(_, l)| settings.get(*l).deformation) {
+            lod.cor = centres_of_rotation_at(lod, level);
         }
     });
     // Muscle flex on the final skin (before the coat copies it onto shells and cards).
