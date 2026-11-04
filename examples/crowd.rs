@@ -24,6 +24,7 @@
 //! 64); `ORNISCULPT_CROWD_SHADOWS=1` lets every one of them cast, for pricing crowd shadows.
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 use ornisculpt::OrnisculptPlugin;
@@ -167,21 +168,27 @@ fn quality_from_env() -> QualityProfile {
     profile
 }
 
+/// What the report counts: every mob, the tier it is in, and whether it casts a shadow.
+#[derive(SystemParam)]
+struct Counts<'w, 's> {
+    tiers: Query<'w, 's, &'static MobTier>,
+    mobs: Query<'w, 's, (), With<Mob>>,
+    casters: Query<'w, 's, (), With<CrowdCaster>>,
+}
+
 fn report(
     time: Res<Time>,
     mut next: Local<f32>,
     diagnostics: Res<DiagnosticsStore>,
     cache: Res<GenCache>,
     mut uploads: ResMut<UploadStats>,
-    tiers: Query<&MobTier>,
-    mobs: Query<(), With<Mob>>,
-    casters: Query<(), With<CrowdCaster>>,
+    counts: Counts,
 ) {
     if time.elapsed_secs() < *next {
         return;
     }
     *next = time.elapsed_secs() + 2.0;
-    let counts = tier_counts(&tiers);
+    let tiers = tier_counts(&counts.tiers);
     let frame_ms = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
         .and_then(bevy::diagnostic::Diagnostic::smoothed)
@@ -190,13 +197,13 @@ fn report(
     *uploads = default();
     info!(
         "{} mobs | frame {:.2} ms ({:.0} fps) | bodies {} cached, {} generating | hero/near/far {:?} | {} casting | {:.0} slots ({:.1} KB) uploaded/frame",
-        mobs.iter().count(),
+        counts.mobs.iter().count(),
         frame_ms,
         1000.0 / frame_ms.max(0.001),
         cache.bodies.len(),
         cache.in_flight(),
-        counts,
-        casters.iter().count(),
+        tiers,
+        counts.casters.iter().count(),
         per_frame,
         per_frame * size_of::<CrowdInstance>().to_f32() / 1024.0,
     );
