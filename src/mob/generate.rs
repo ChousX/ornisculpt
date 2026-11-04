@@ -23,7 +23,18 @@ use crate::clothing::{GarmentCover, MobOutfit, Outfit, cover_skin, fit_outfit, g
 use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotation_at, MaterialSlot, SurfaceSettings, merge, mesh_all_lods_keeping, muscle_flex};
 
 /// Bump when generation output changes for the same input (invalidates cached bodies).
-pub const GENERATOR_VERSION: u32 = 1;
+///
+/// A cached body is keyed on this ([`body_key`]), so raising it is the only thing that makes a
+/// build stop reading what an older build wrote: the key is the cache file's name, so a bumped
+/// version simply looks somewhere else and the stale file is never read again.
+///
+/// It sat at 1 from the day it was introduced through every change to the field and the meshing
+/// since — the candidate-triangle collapse included, which moved a body's centres of rotation by
+/// millimetres. Both builds therefore computed the same key for the same creature, and a body
+/// meshed by the older one was read back by the newer one. Raised to 2 here, and
+/// `the_mesh_output_is_the_one_this_version_promises` now fails the build if geometry moves
+/// without it.
+pub const GENERATOR_VERSION: u32 = 2;
 
 /// Content hash identifying a generated body. Equal keys share one [`GeneratedBody`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
