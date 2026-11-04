@@ -663,7 +663,7 @@ fn run_gen(out: &Path) -> Result<(), String> {
         // How many *distinct* bodies the six invocations produced. 1 means generation is
         // deterministic within this process; more means it is not.
         prints.sort_unstable();
-        let distinct = prints.windows(2).filter(|w| w[0] != w[1]).count() + usize::from(!prints.is_empty());
+        let distinct = prints.array_windows::<2>().filter(|[a, b]| a != b).count() + usize::from(!prints.is_empty());
         metrics.insert("gen.distinct_bodies".into(), distinct.to_f32());
         metrics.insert("gen.fingerprint24".into(), (prints.first().copied().unwrap_or(0) & 0xff_ffff).to_f32());
         let median = |v: &mut Vec<f32>| {
@@ -1134,13 +1134,17 @@ fn cold_metrics(bench: &mut Bench, start: Instant, cache: &GenCache) -> BTreeMap
 }
 
 /// Measured frame `n` of `case`: shots on their frames, and the result once the case has run.
+/// The mobs a case is driving: entity (for the tier fingerprint), whether its body has arrived, and
+/// its tier if one has been assigned.
+type MobsQuery<'w, 's> = Query<'w, 's, (Entity, Has<MobBody>, Option<&'static MobTier>), With<Mob>>;
+
 fn measure(
     commands: &mut Commands,
     bench: &mut Bench,
     target: &Handle<Image>,
     case: &CaseKind,
     n: u32,
-    mobs: &Query<(Entity, Has<MobBody>, Option<&MobTier>), With<Mob>>,
+    mobs: &MobsQuery,
 ) {
     let name = bench.case_name();
     match case {
@@ -1180,7 +1184,14 @@ fn measure(
                 let id = e.to_bits();
                 entity_fp = entity_fp.wrapping_add(mix(id));
                 if let Some(t) = t {
-                    tier_fp = tier_fp.wrapping_add(mix(id.wrapping_mul(3).wrapping_add(t.0 as u64 + 1)));
+                    // Mapped rather than cast: `as` on the discriminant is a denied lint here,
+                    // and naming the levels keeps the fingerprint stable if the enum is reordered.
+                    let level = match t.0 {
+                        LodLevel::Hero => 1u64,
+                        LodLevel::Near => 2,
+                        LodLevel::Far => 3,
+                    };
+                    tier_fp = tier_fp.wrapping_add(mix(id.wrapping_mul(3).wrapping_add(level)));
                 }
             }
             // The low 24 bits, which an f32 metric holds exactly: enough to notice a change, and
@@ -1211,7 +1222,7 @@ fn drive(
     quality: Option<Res<QualityProfile>>,
     msaa: Query<&Msaa, With<BenchCamera>>,
     target: Res<Target>,
-    mobs: Query<(Entity, Has<MobBody>, Option<&MobTier>), With<Mob>>,
+    mobs: MobsQuery,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(case) = bench.cases.get(bench.case).cloned() else {
