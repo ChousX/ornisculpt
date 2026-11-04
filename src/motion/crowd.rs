@@ -13,6 +13,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use bevy::ecs::system::SystemParam;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
@@ -188,21 +189,28 @@ impl CrowdGaits {
     }
 }
 
+/// The gait and body assets a crowd bake reads, and the events that invalidate what it has
+/// already baked.
+#[derive(SystemParam)]
+pub(super) struct BakeAssets<'w, 's> {
+    gait_events: MessageReader<'w, 's, AssetEvent<Gait>>,
+    body_events: MessageReader<'w, 's, AssetEvent<GeneratedBody>>,
+    bodies: Res<'w, Assets<GeneratedBody>>,
+    gaits: Res<'w, Assets<Gait>>,
+}
+
 /// Bakes the gait of every crowd mob whose body hasn't met it yet, and lands finished ones in
 /// the atlas. A mob without a [`MobGait`] needs nothing: its body's own gait is already there.
 #[allow(clippy::type_complexity)]
 pub(super) fn bake_crowd_gaits(
     mut crowd: ResMut<CrowdGaits>,
-    mut gait_events: MessageReader<AssetEvent<Gait>>,
-    mut body_events: MessageReader<AssetEvent<GeneratedBody>>,
-    bodies: Res<Assets<GeneratedBody>>,
-    gaits: Res<Assets<Gait>>,
+    mut assets: BakeAssets,
     mut skin: ResMut<CrowdSkin>,
     mut uploads: ResMut<CrowdUploads>,
     mobs: Query<(&MobBody, &MobGait), (With<CrowdSlot>, Without<MobSkeleton>)>,
 ) {
     // A gait that reloaded, or a body that has gone, takes its bakes with it.
-    let reloaded: Vec<AssetId<Gait>> = gait_events
+    let reloaded: Vec<AssetId<Gait>> = assets.gait_events
         .read()
         .filter_map(|e| match e {
             AssetEvent::Modified { id } | AssetEvent::Removed { id } => Some(*id),
@@ -212,7 +220,7 @@ pub(super) fn bake_crowd_gaits(
     if !reloaded.is_empty() {
         crowd.forget(|_, gait| reloaded.contains(&gait), &mut skin);
     }
-    let gone: Vec<AssetId<GeneratedBody>> = body_events
+    let gone: Vec<AssetId<GeneratedBody>> = assets.body_events
         .read()
         .filter_map(|e| match e {
             AssetEvent::Removed { id } => Some(*id),
@@ -233,7 +241,7 @@ pub(super) fn bake_crowd_gaits(
         };
         let (body, gait, _) = crowd.in_flight.swap_remove(i);
         // A body that went while this baked would hold a block nothing reads.
-        let Some(b) = bodies.get(body) else { continue };
+        let Some(b) = assets.bodies.get(body) else { continue };
         let block = ClipBlock::new(&b.anatomy, &motion);
         let base = skin.append(block.data.clone(), &mut uploads);
         debug!("crowd: baked {} gait modes for body {body:?}", motion.clips.len());
@@ -251,7 +259,7 @@ pub(super) fn bake_crowd_gaits(
         if crowd.known(id, gait_id) {
             continue;
         }
-        let (Some(b), Some(gait)) = (bodies.get(id), gaits.get(gait_id)) else { continue };
+        let (Some(b), Some(gait)) = (assets.bodies.get(id), assets.gaits.get(gait_id)) else { continue };
         let (anatomy, gait) = (b.anatomy.clone(), gait.clone());
         let task = AsyncComputeTaskPool::get().spawn(async move { bake_motion(&anatomy, &gait) });
         crowd.in_flight.push((id, gait_id, task));
