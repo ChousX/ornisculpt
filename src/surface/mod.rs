@@ -227,26 +227,37 @@ pub enum SurfaceError {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+    use crate::anatomy::{LodLevel, build_src};
     /// `ORNISCULPT_WORKERS` actually binds. A flag that silently fails to take effect is how an
     /// earlier six-run A/B here produced a perfect null: `--compute-floor 2` against `1` measured
     /// the flag and not the thread count, because `min_threads` was a floor only and both runs used
     /// four threads. So the override gets a test rather than an assumption.
+    ///
+    /// With the `web` feature the count is pinned to 1 whatever anything asks for, because browsers
+    /// have no threads, so there is nothing for an override to win over and the test checks that
+    /// instead. An earlier version of this test asserted the native path unconditionally and
+    /// **failed under `--all-features`** — the override was fine, the test was wrong.
     #[test]
     fn worker_override_binds() {
         // Parsed once per process, so assert on the parse rather than mutating the environment
-        // under other tests: `worker_threads` returns exactly what a valid override says.
-        assert_eq!(super::worker_override(), std::env::var("ORNISCULPT_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0));
-        if let Some(n) = super::worker_override() {
-            assert_eq!(super::worker_threads(), n, "the override must win over set_worker_threads and the core count");
+        // under other tests.
+        let want = std::env::var("ORNISCULPT_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0);
+        assert_eq!(worker_override(), want);
+        if cfg!(feature = "web") {
+            set_worker_threads(3);
+            assert_eq!(worker_threads(), 1, "`web` pins the count to one thread, override or not");
+            set_worker_threads(0);
+        } else if let Some(n) = worker_override() {
+            assert_eq!(worker_threads(), n, "the override must win over set_worker_threads and the core count");
         } else {
-            super::set_worker_threads(3);
-            assert_eq!(super::worker_threads(), 3);
-            super::set_worker_threads(0);
-            assert!(super::worker_threads() >= 1);
+            set_worker_threads(3);
+            assert_eq!(worker_threads(), 3);
+            set_worker_threads(0);
+            assert!(worker_threads() >= 1);
         }
     }
-    use super::*;
-    use crate::anatomy::{LodLevel, build_src};
+
 
 
     /// The hero mesh and its centres of rotation are the same whatever the worker thread count
