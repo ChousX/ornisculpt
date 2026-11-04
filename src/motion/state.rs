@@ -232,6 +232,22 @@ pub struct MotionTime {
 
 impl MotionTime {
     pub(crate) fn tick(&mut self, raw: f32) {
+        // A paused clock must not advance motion. The floor below exists so a degenerate frame
+        // cannot stall a cycle, but it applied to a *paused* frame too: `Time::delta_secs()` is
+        // exactly 0 while `Time<Virtual>` is paused, the floor raised it to 1e-4 s, and motion
+        // crept forward by that much on **every frame the clock was stopped**.
+        //
+        // That is where the benchmark's image non-repeatability came from. `examples/bench.rs`
+        // pauses virtual time until a body is ready and documents that "frame N of a case renders
+        // the same pose on every run" — but the wait is a *variable* number of frames, so each run
+        // entered its measured phase with a different `elapsed` and photographed a slightly
+        // different pose. Measured: with the pose nominally frozen, two captures of one hero
+        // framing 200 frames apart differed on 20.5 % of pixels (`ox_hereford.eye`), and the
+        // difference grew linearly with the gap — 1e-4 s a frame.
+        if raw <= 0.0 {
+            self.dt = 0.0;
+            return;
+        }
         let raw = raw.clamp(1e-4, 0.1);
         self.average = if self.average <= 0.0 { raw } else { (raw.clamp(self.average * 0.5, self.average * 2.0) - self.average).mul_add(0.05, self.average) };
         self.dt = if raw > self.average * 1.8 { raw } else { self.average };
