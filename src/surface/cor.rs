@@ -351,7 +351,7 @@ const WEIGHT_STEPS: f32 = 256.0;
 /// 1/32. Quantisation is a lattice, so whether a step aligns with the actual distribution of
 /// triangle weights is not ordered by coarseness, and the adaptive contour tips ties either way.
 /// **Do not look for a boundary; test the steps you intend to use.**
-const TRI_WEIGHT_STEPS: [f32; 3] = [128.0, 128.0, 128.0];
+const TRI_WEIGHT_STEPS: [f32; 3] = [256.0, 256.0, 256.0];
 
 /// The step actually used at `level`. Constant in a normal build; the probes sweep it.
 #[cfg(not(test))]
