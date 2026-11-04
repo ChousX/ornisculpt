@@ -230,8 +230,10 @@ impl Plugin for GenomePlugin {
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
     use genetics::Genome;
-    use rand::SeedableRng;
+    use rand::{RngExt, SeedableRng};
     use rand_pcg::Pcg64Mcg;
 
     use super::*;
@@ -359,5 +361,156 @@ mod tests {
         let mut d = design();
         d.traits.push(CreatureTrait::Lever { part: PartPath("torso/tail".into()), lever: Lever::Length, range: (0.5, 1.5), founder: 2.0 });
         assert!(matches!(d.founder(), Err(DesignError::Genetics(_))));
+    }
+
+    /// The traits `design()` puts on the quadruped, over any body: they name parts, so a body
+    /// without them is given the two that every creature has instead (overall scale, and a coat
+    /// field). Returns the design and which set it got, so the report can say.
+    fn design_for(body: BodyPlan, coat: Coat) -> (CreatureDesign, &'static str) {
+        // A `Field` trait's gene must contain the authored value, or the founder cannot be
+        // encoded at all (`0.25 is outside 0.3..=0.8`) — so each range is built around the
+        // coat in hand rather than written down once.
+        let around = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            Gene::range(f64::from((v - 0.15).max(0.0)), f64::from((v + 0.15).min(1.0)))
+        };
+        let fields = vec![
+            CreatureTrait::Field(Trait { path: "coat.base.0".into(), gene: around(coat.base[0]) }),
+            CreatureTrait::Field(Trait { path: "coat.roughness".into(), gene: around(coat.roughness) }),
+        ];
+        let mut rich = design().traits;
+        rich.retain(|t| !matches!(t, CreatureTrait::Field(_)));
+        rich.extend(fields.iter().cloned());
+        let rich = CreatureDesign { body: body.clone(), coat: coat.clone(), traits: rich };
+        if rich.founder().is_ok() {
+            return (rich, "levers");
+        }
+        let mut traits = vec![CreatureTrait::Scale { range: (0.8, 1.25), founder: 1.0 }];
+        traits.extend(fields);
+        (CreatureDesign { body, coat, traits }, "scale+fields")
+    }
+
+    /// Every sample body with the default coat, and every sample coat on the quadruped: the
+    /// populations the pool proof breeds.
+    fn populations() -> Vec<(String, CreatureDesign, &'static str)> {
+        let mut out = Vec::new();
+        let read = |dir: &str, suffix: &'static str| {
+            let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.to_string_lossy().ends_with(suffix))
+                .collect();
+            // `read_dir` order is the filesystem's; sort so the run is the same every time.
+            paths.sort();
+            paths
+        };
+        for path in read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mobs"), ".body.ron") {
+            let body: BodyPlan = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let (design, kind) = design_for(body, Coat::default());
+            out.push((format!("body {}", path.file_name().unwrap().to_string_lossy()), design, kind));
+        }
+        for path in read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/coats"), ".coat.ron") {
+            let coat: Coat = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let (design, kind) = design_for(quadruped(), coat);
+            out.push((format!("coat {}", path.file_name().unwrap().to_string_lossy()), design, kind));
+        }
+        out
+    }
+
+    fn digest<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The decode-side layout guard (`genetics` `Schema::validate`) checks the **schema's**
+    /// layout, not the values on the strand — so nothing breeding can produce is refused by it.
+    /// Crossing takes whole loci from parents that share a schema; mutation rewrites bases inside
+    /// a locus. Neither moves a locus, so the reading frame stays exactly the one the encoder
+    /// built, and the guard has nothing to object to however far the values travel.
+    ///
+    /// Proved here on the real creature genome rather than a toy schema, over every sample body
+    /// and every sample coat, breeding at mutation rates from 0.05 to 0.5 — rates far above the
+    /// 0.1 `mutants_stay_viable_and_of_one_lineage` uses — for several generations:
+    ///
+    /// 1. every child decodes, with no error of any kind;
+    /// 2. decode-then-re-encode gives back the **identical** strand, so the transcode is
+    ///    one-to-one and no creature is lost or aliased on the way through (a varying locus's
+    ///    quantisation included: the re-encoded code must be the same code, not a near one);
+    /// 3. how many distinct creatures the run reaches, printed, so the pool can be compared with
+    ///    a `genetics` from before the guard.
+    #[test]
+    fn crossing_and_heavy_mutation_never_trip_the_layout_guard() {
+        /// Genomes bred at once, and generations of them. The product is what decides the run's
+        /// length; each child costs one decode and one encode of a whole body.
+        const POP: usize = 10;
+        const GENERATIONS: usize = 6;
+
+        let mut rng = Pcg64Mcg::seed_from_u64(0x60_0D_C0_DE);
+        let mut creatures = std::collections::HashSet::new();
+        let mut strands = std::collections::HashSet::new();
+        let mut children = 0usize;
+        let mut levered = 0usize;
+        let populations = populations();
+        assert!(populations.len() > 40, "only {} populations", populations.len());
+
+        for (name, design, kind) in &populations {
+            if *kind == "levers" {
+                levered += 1;
+            }
+            let (_, variation) = design.genes().unwrap_or_else(|e| panic!("{name}: {e}"));
+            let founder = design.founder().unwrap_or_else(|e| panic!("{name}: {e}"));
+            // Randomise every varying base, so the population does not start from one point.
+            let mut pop: Vec<Genome> = (0..POP).map(|_| founder.mutant(1.0, &mut rng)).collect();
+            for generation in 0..GENERATIONS {
+                let mut next = Vec::with_capacity(POP);
+                for _ in 0..POP {
+                    let a = &pop[rng.random_range(0..pop.len())];
+                    let b = &pop[rng.random_range(0..pop.len())];
+                    let rate: f64 = rng.random_range(0.05..0.5);
+                    let child = a
+                        .cross(b, &mut rng)
+                        .unwrap_or_else(|e| panic!("{name} gen {generation}: cross: {e}"))
+                        .mutant(rate, &mut rng);
+
+                    // (1) It decodes. A layout fault would land here, naming a locus.
+                    let genes: CreatureGenes = child
+                        .decode()
+                        .unwrap_or_else(|e| panic!("{name} gen {generation} rate {rate:.3}: decode: {e}"));
+
+                    // (2) And re-encoding what it decoded gives the same strand back, base for base.
+                    let back = Genome::encode(&genes, &variation).unwrap_or_else(|e| panic!("{name}: re-encode: {e}"));
+                    assert_eq!(*back.schema, *child.schema, "{name}: re-encode built a different frame");
+                    if back.dna != child.dna {
+                        // Name the locus rather than print two thousand bases.
+                        let at = child
+                            .schema
+                            .loci()
+                            .iter()
+                            .find(|l| child.dna.get(l.bases()) != back.dna.get(l.bases()))
+                            .map_or_else(|| "nowhere in any locus".to_string(), |l| format!("`{}` ({:?})", l.path, l.gene));
+                        panic!("{name} gen {generation} rate {rate:.3}: re-encode changed {at}");
+                    }
+
+                    creatures.insert(digest(&ron(&genes)));
+                    strands.insert(digest(&child.dna.to_string()));
+                    children = children.saturating_add(1);
+                    next.push(child);
+                }
+                pop = next;
+            }
+        }
+
+        // The pool: printed, because the number is the point. Compare it with the same test on a
+        // `genetics` without the guard — it must not be smaller.
+        println!(
+            "POOL {} populations ({levered} with levers), {children} children, {} distinct creatures, {} distinct strands",
+            populations.len(),
+            creatures.len(),
+            strands.len()
+        );
+        assert_eq!(children, populations.len().saturating_mul(POP).saturating_mul(GENERATIONS));
+        // Breeding must actually explore: a pool of one would pass everything above.
+        assert!(creatures.len() > children / 2, "only {} distinct creatures of {children}", creatures.len());
     }
 }
