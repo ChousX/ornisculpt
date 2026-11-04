@@ -36,6 +36,41 @@ use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotat
 /// without it.
 pub const GENERATOR_VERSION: u32 = 2;
 
+/// What each [`GENERATOR_VERSION`] has promised, oldest first: the version, and the fingerprint
+/// of [`WITNESS_BODY`]'s meshes under it. Checked by
+/// `version_guard::the_mesh_output_is_the_one_this_version_promises`.
+///
+/// **Append a row, do not edit one.** A row is a claim that this version produces these meshes,
+/// and the guard requires the last row's version to be the current one and the versions to
+/// increase — so geometry that moves cannot be recorded without raising the version with it.
+///
+/// Nothing is recorded for version 1, deliberately: several different geometries shipped under
+/// it, which is the hole this table exists to close.
+///
+/// There are two tables because the meshes are not the same at both optimisation levels. This
+/// crate's own code is unoptimised under `cargo test` and `opt-level = 3` under
+/// `cargo test --release` (dependencies are optimised either way), and the field's arithmetic
+/// does not round identically at the two, so the biped's hero mesh comes out with 29071 vertices
+/// unoptimised and 29074 optimised. Each profile is deterministic — the same digest on every run
+/// — so each records its own row. (That difference is also a hole `GENERATOR_VERSION` cannot
+/// close: a debug and a release build of one commit compute the same [`body_key`] and mesh
+/// differently. An app that caches across both needs the build in the path, as domain-expance
+/// does.)
+#[cfg(all(test, debug_assertions))]
+const WITNESSES: &[(u32, &str)] = &[(2, "Hero 29071/173952 Near 1588/9456 Far 274/1479 xxh3 97fc17f000230bbb")];
+#[cfg(all(test, not(debug_assertions)))]
+const WITNESSES: &[(u32, &str)] = &[(2, "Hero 29074/173970 Near 1588/9456 Far 274/1479 xxh3 c4e568d86c83436a")];
+
+/// The plan the guard meshes: the biped is the hero shot's subject and the body the field work
+/// is judged on, so it is the one most likely to move when meshing changes.
+#[cfg(test)]
+const WITNESS_BODY: &str = "biped";
+
+/// Fixed, so the guard is a function of the code alone. It only reaches the mesh at all where a
+/// level asks for seed-dependent geometry (`geometric_folds`).
+#[cfg(test)]
+const WITNESS_SEED: u64 = 0x5EED_5EED;
+
 /// Content hash identifying a generated body. Equal keys share one [`GeneratedBody`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BodyKey(pub u128);
@@ -948,5 +983,75 @@ mod key_tests {
         }
         let memoised = t.elapsed() / n.try_into().unwrap_or(1);
         eprintln!("plan_hash: {hash_each:?} a mob; key with it memoised: {memoised:?} a mob, {:?} for 4000", memoised * 4000);
+    }
+}
+
+/// The guard on [`GENERATOR_VERSION`]. It is raised by hand, and for twenty-odd commits the hand
+/// forgot, so something has to notice when the output moves and the constant does not.
+#[cfg(test)]
+mod version_guard {
+    use std::fmt::Write as _;
+
+    use super::*;
+
+    /// Every per-vertex array a meshing or field change moves, by its bits, at all three levels:
+    /// positions, normals, skinning, packed vertex data, the centres of rotation the collapse
+    /// changed, and the index buffer. Bit-exact on purpose — the question is whether the output
+    /// is *the same*, not whether it is close — so this is a witness for the targets the project
+    /// builds for, and a different float library or instruction set would want it re-recorded
+    /// rather than read as a regression.
+    fn fingerprint() -> String {
+        let path = format!("{}/assets/mobs/{WITNESS_BODY}.body.ron", env!("CARGO_MANIFEST_DIR"));
+        let plan: BodyPlan = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let live = apply_form(&plan, &Form::default()).unwrap();
+        let anatomy = build_anatomy(&live, &PartLodRules::default(), &PartAssets::default()).unwrap();
+        let settings = SurfaceSettings::default();
+        let lods = mesh_all_lods_keeping(&AdaptiveContour, &anatomy, &settings, WITNESS_SEED, None).unwrap();
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut counts = String::new();
+        for (level, m) in LodLevel::ALL.into_iter().zip(&lods) {
+            // Counts in the text, so a failure says at a glance whether the mesh changed shape
+            // or only moved.
+            write!(counts, "{level:?} {}/{} ", m.positions.len(), m.indices.len()).unwrap();
+            let mut f32s = |vs: &mut dyn Iterator<Item = f32>| bytes.extend(vs.flat_map(|v| v.to_bits().to_le_bytes()));
+            f32s(&mut m.positions.iter().flat_map(|v| [v.x, v.y, v.z]));
+            f32s(&mut m.normals.iter().flat_map(|v| [v.x, v.y, v.z]));
+            f32s(&mut m.cor.iter().flat_map(|v| [v.x, v.y, v.z]));
+            f32s(&mut m.weights.iter().flatten().copied());
+            bytes.extend(m.joints.iter().flatten().flat_map(|j| j.to_le_bytes()));
+            bytes.extend(m.mob_data.iter().flatten().flat_map(|d| d.to_le_bytes()));
+            bytes.extend(m.indices.iter().flat_map(|i| i.to_le_bytes()));
+        }
+        format!("{}xxh3 {:016x}", counts, xxh3_64(&bytes))
+    }
+
+    /// The table is a chain, not a note: the newest row must be this version, and a version may
+    /// appear once. Appending a row for geometry that moved therefore forces the bump.
+    #[test]
+    fn the_witness_table_is_a_chain_ending_at_this_version() {
+        let (last, _) = *WITNESSES.last().unwrap();
+        assert_eq!(last, GENERATOR_VERSION, "the newest witness is for version {last}, but GENERATOR_VERSION is {GENERATOR_VERSION}");
+        assert!(
+            WITNESSES.array_windows::<2>().all(|[(a, _), (b, _)]| a < b),
+            "witness versions must increase, one row per version: {:?}",
+            WITNESSES.iter().map(|&(v, _)| v).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_mesh_output_is_the_one_this_version_promises() {
+        let (version, promised) = *WITNESSES.last().unwrap();
+        let got = fingerprint();
+        println!("generator {version} fingerprint: {got}");
+        assert_eq!(
+            got, promised,
+            "\n\n{WITNESS_BODY}'s meshes are not what version {version} recorded.\n\
+             If you meant to change generation output, a cached body from an older build must \
+             not be read by this one: raise GENERATOR_VERSION to {} and APPEND\n\
+             \n    ({}, \"{got}\"),\n\nto WITNESSES. Do not edit the row above it.\n",
+            version + 1,
+            version + 1
+        );
     }
 }
