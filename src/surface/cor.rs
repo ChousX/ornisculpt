@@ -346,12 +346,20 @@ const WEIGHT_STEPS: f32 = 256.0;
 /// meanwhile, is almost all at hero, which has ten times the vertices of near. So the step that
 /// buys the time and the step the crowd can afford are not the same number.
 ///
-/// The step is **not** monotone in the gate verdict — `crowd4000` measured 1.974 % of pixels at
-/// 1/32, **3.084 %** at 1/64 and 1.167 % at 1/128, and 1/64 failed more shots than the coarser
-/// 1/32. Quantisation is a lattice, so whether a step aligns with the actual distribution of
-/// triangle weights is not ordered by coarseness, and the adaptive contour tips ties either way.
-/// **Do not look for a boundary; test the steps you intend to use.**
-const TRI_WEIGHT_STEPS: [f32; 3] = [256.0, 256.0, 256.0];
+/// **1/32, and the gate is not what constrains it.** Measured against the recorded goldens on a
+/// deterministic gate, the worst changed shot by step is 0.031 % at 1/16, **0.009 % at 1/32**,
+/// 0.002 % at 1/64 and 0.000 % at 1/128 — monotone, and every step inside the 0.5 % bar by at
+/// least a factor of 16. What decides the step is `grouped_centres_match_brute_force`'s 5 mm
+/// bound: 1/8 breaks it at 6.5347 mm, 1/16 leaves only 0.7 mm of margin on a bound measured on a
+/// single mesh, and 1/32 sits at 1.4831 mm — barely above the 1.3329 mm the test already tolerates
+/// with no collapse at all.
+///
+/// An earlier revision of this comment claimed the gate verdict was **not** monotone in the step
+/// and that there was no boundary to look for. That was read off an image gate that was drifting
+/// (`MotionTime` advanced while paused; see `A paused clock no longer advances motion`), whose own
+/// run-to-run floor on `crowd4000` was 3.153 % — larger than the entire spread it was reading
+/// structure into. The curve is monotone and there is a boundary.
+const TRI_WEIGHT_STEPS: [f32; 3] = [32.0, 32.0, 32.0];
 
 /// The step actually used at `level`. Constant in a normal build; the probes sweep it.
 #[cfg(not(test))]
