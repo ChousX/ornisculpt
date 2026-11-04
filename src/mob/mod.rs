@@ -23,8 +23,8 @@ pub use crowd::{
     FOOT_RANGE, MASK_ALL, ROW_MATRICES, SLOT_BYTES, blend_with, leg_rows, pack_unorm2, remap, unpack_unorm2,
 };
 pub use generate::{
-    BodyKey, CoatMeshHandles, GenBudget, GenCache, GenInput, GenOutput, GenRequest, GeneratedBody, LodMeshes, PartAssetCache, SlotMaterials,
-    StageTimes, body_key, generate_body,
+    BodyKey, CoatMeshHandles, GENERATOR_VERSION, GenBudget, GenCache, GenInput, GenOutput, GenRequest, GeneratedBody, LodMeshes,
+    PartAssetCache, SlotMaterials, StageTimes, body_key, generate_body,
 };
 pub use mesh_cache::{BodyMeshCache, CachedBody};
 pub use levers::{BoneScale, BoneScales, GraftPart, SeverPart};

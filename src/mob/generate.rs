@@ -34,6 +34,13 @@ use crate::surface::{AdaptiveContour, BodyMeshData, ContactSet, centres_of_rotat
 /// meshed by the older one was read back by the newer one. Raised to 2 here, and
 /// `the_mesh_output_is_the_one_this_version_promises` now fails the build if geometry moves
 /// without it.
+///
+/// Exported so an app that keeps bodies on disk of its own accord can put it in the path and see
+/// it in a log. It is **not** enough on its own to tell two builds apart: it is still raised by
+/// hand, the guard only watches one body's meshes (not the motion bake, the anatomy or the coat),
+/// and a debug and a release build of one commit share it while meshing differently. Something
+/// derived from the build itself — domain-expance hashes the running executable — is the
+/// belt to this crate's braces.
 pub const GENERATOR_VERSION: u32 = 2;
 
 /// What each [`GENERATOR_VERSION`] has promised, oldest first: the version, and the fingerprint
