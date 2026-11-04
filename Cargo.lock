@@ -2874,7 +2874,7 @@ dependencies = [
 [[package]]
 name = "genetics"
 version = "0.3.0"
-source = "git+https://github.com/ChousX/genetics?branch=traits#6f47519cabfe157fc6d611f5ebe6bbe544feb14f"
+source = "git+https://github.com/ChousX/genetics?branch=traits#8517bd1be667a4e52395ee440d6ce9c0e207b838"
 dependencies = [
  "rand",
  "serde",
